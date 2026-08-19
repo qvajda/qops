@@ -48,7 +48,10 @@ obstacle to route around.
   a template or a test. → `docs/reference/qops-contract.md`
 - **The root is found, never derived from `__file__`.** `config.find_root()`
   walks up from cwd. As a pinned dependency, `Path(__file__).parents[1]` is
-  site-packages and not the repo being operated on.
+  site-packages and not the repo being operated on. **An unattended run names
+  its root** (`--root`) instead of walking: there are two roots on the cron
+  host, and a picker that guesses reads the wrong backlog or none, exiting 0
+  either way. → `docs/reference/loops.md`
 - **Nothing assumes POSIX.** The cron host is a Windows desktop; `python:` is in
   config precisely so nothing else guesses at an interpreter. Asserted by
   `test_no_substrate_module_assumes_posix`. → `docs/adr/0009-...`

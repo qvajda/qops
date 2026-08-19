@@ -929,6 +929,77 @@ def test_the_launch_prompt_forbids_waiting_on_a_backgrounded_command():
     assert "only the tests you touched" in prompt
 
 
+# --- the task names its root, and an unreadable queue is not an empty one ---
+#
+# The registered task's WorkingDirectory was empty (#12, and the source repo's
+# #176), so once the picker stopped rooting off `__file__` it would have
+# resolved its root from wherever the scheduler started it. `find_root()`
+# returns cwd when it finds nothing, and the task was disabled, so the breakage
+# would have stayed invisible until someone enabled it.
+
+def _root(tmp_path, name="repo"):
+    root = tmp_path / name
+    (root / ".qops").mkdir(parents=True)
+    (root / ".qops" / "config.yml").write_text("project: x\n", encoding="utf-8")
+    return root
+
+
+def test_the_task_takes_its_root_from_the_argument(tmp_path):
+    root = _root(tmp_path)
+    assert qops_pickup.repo_root(["--root", str(root), "--launch"]) == root.resolve()
+
+
+def test_a_root_that_is_not_a_qops_root_is_refused_not_used(tmp_path, monkeypatch):
+    """With two roots on one host the silent outcomes are the wrong repo's
+    backlog or no repo at all, and the picker exits 0 on both."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        qops_pickup.repo_root([])
+    assert "not a qops root" in str(e.value)
+    with pytest.raises(SystemExit) as e:
+        qops_pickup.repo_root(["--root", str(tmp_path)])
+    assert "--root" in str(e.value)
+
+
+def test_root_says_where_the_root_it_refused_came_from(tmp_path, monkeypatch):
+    """Which of the two failures it is decides the repair: a task with no
+    --root, or a --root pointing at the wrong path."""
+    monkeypatch.chdir(tmp_path)
+    derived = str(pytest.raises(SystemExit, qops_pickup.repo_root, []).value)
+    assert "working directory" in derived
+
+
+def test_a_failed_backlog_query_is_not_an_idle_queue(tmp_path, monkeypatch):
+    """Both exit 0 through the picker unless the failure says so. A repo whose
+    labels were never created returns empty and looks identical."""
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess([], 1, "", "gh: not logged in"))
+    assert qops_pickup.candidates(tmp_path) is None
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0, "[]", ""))
+    assert qops_pickup.candidates(tmp_path) == []
+
+
+def test_an_unreadable_queue_fails_the_run_and_an_empty_one_does_not(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    monkeypatch.setattr(qops_pickup, "candidates", lambda r: None)
+    assert qops_pickup.main(["--root", str(root)]) == 1
+    monkeypatch.setattr(qops_pickup, "candidates", lambda r: [])
+    assert qops_pickup.main(["--root", str(root)]) == 0
+
+
+def test_every_run_names_the_root_and_the_tracker_it_read(tmp_path, monkeypatch, capsys):
+    """The log line that separates a healthy idle queue from a picker pointed
+    at the wrong root. Without it both print `nothing eligible`."""
+    root = _root(tmp_path)
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/n\n",
+                                               encoding="utf-8")
+    monkeypatch.setattr(qops_pickup, "candidates", lambda r: [])
+    qops_pickup.main(["--root", str(root)])
+    out = capsys.readouterr().out
+    assert str(root.resolve()) in out and "o/n" in out
+
+
 # --------------------------------------------------------------------------
 # reconcile — #150. `advance` fires on the `closed` pull-request event, and
 # GitHub raises no such event for a merge its own GITHUB_TOKEN caused, so the
