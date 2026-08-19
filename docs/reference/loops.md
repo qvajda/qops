@@ -63,7 +63,34 @@ fails before CI sees it.
 `blocked` flag, then starts a session on it.
 **Acceptance check:** it branches, commits, opens a PR and stops there. It
 never merges by hand, never activates a listing, never pushes to `master`.
-**Observed end to end, 2026-08-19 (attempt 3).** #160: claimed 08:28, branched
+**Observed end to end in THIS repo, 2026-08-19 — criterion 8.** #5: launched
+11:47:57Z, claimed `state:planned` -> `state:building` 11:48:14Z, branched
+`fix/5-state-review-label-swallowed` (ADR-0019's shape, a commit type and not a
+label), one commit, PR #18 carrying `Refs #5`. `automerge-loop` **queued** native
+auto-merge and the PR sat `BLOCKED`; the required checks went green at
+11:49:48-11:49:52Z and GitHub merged it at 11:49:54Z. `qops reconcile` advanced
+the row to `state:done` and dropped `ready:auto`. **Two minutes, no human
+keystroke between the pick and the reconcile.**
+
+Three things it does *not* prove, stated because a criterion that swallows its
+own caveats is not a criterion:
+
+- **The schedule is still unexercised.** `qops-pickup-loop-qops` is registered
+  and **disabled**; this run was hand-launched and watched, because #9 is open.
+- **The reconciler was dispatched, not scheduled.** `advance` did not fire, for
+  the documented reason: GitHub raises no workflow run from an event its own
+  `GITHUB_TOKEN` caused. The `reconcile` job in `digest.yml` is the backstop and
+  has still never run on its own cron.
+- **The subject satisfied the size rule.** R8 held, which is evidence the rule
+  works rather than evidence the loop survives a subject that breaks it.
+
+What it *does* prove, and this is the part the previous two attempts could not:
+the merge waited for the gate. Every required check completed before the merge,
+two seconds before it. On this repo's second-ever PR the same job merged ten
+seconds *ahead* of its gate (#3) — so this run is the first observation of the
+mechanism ADR-0020 always claimed.
+
+**Observed end to end in qhoto_printshop, 2026-08-19 (attempt 3).** #160: claimed 08:28, branched
 `fix/160-schema-drift-doctor-guard`, one commit, PR #166 carrying `Refs #160`
 at 08:30:59Z — 2m36s launch to PR — auto-merged green at 08:40:15Z, and the
 reconciler advanced the row to `state:done` within a minute of being dispatched.
