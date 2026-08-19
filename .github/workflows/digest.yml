@@ -48,6 +48,16 @@ jobs:
   digest:
     # The digest renders the rows the job above just repaired.
     needs: reconcile
+    # Criterion 7 of the extraction PRD: owner CI attention must not double.
+    # With two repos on one cadence it did. A project sets
+    # `ci.digest_posts_on_schedule: false` to keep the RECONCILER daily - which
+    # is the load-bearing half, since `advance` cannot fire on a merge its own
+    # GITHUB_TOKEN caused - while the digest itself becomes on-demand.
+    #
+    # `success() &&` is not decoration: adding an `if:` drops the implicit
+    # success() that `needs:` would otherwise imply, and a digest rendered from
+    # rows a failed reconcile did not repair is worse than no digest.
+    if: success() && (false || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       issues: write

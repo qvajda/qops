@@ -1350,3 +1350,38 @@ def test_the_brief_only_points_at_files_that_exist(tmp_path):
              "resume": "", "ahead": 0, "pointers": []}
     text = briefmod.render_from(state, cfg)
     assert "CONTEXT.md" not in text and cfg["repo"] in text
+
+
+def test_the_digest_job_is_gated_and_the_reconciler_is_not():
+    """Extraction criterion 7: owner CI attention must not double. With two
+    repos on one cadence it did.
+
+    A project turns its digest off by config; the reconciler stays on the cron
+    regardless, because it is the load-bearing half — `advance` cannot fire on
+    a merge its own GITHUB_TOKEN caused, so the scheduled reconcile is the only
+    thing that repairs the row on the path that matters.
+
+    `success() &&` is asserted because adding an `if:` drops the implicit
+    `success()` that `needs:` would otherwise imply, and a digest rendered from
+    rows a failed reconcile did not repair is worse than no digest at all.
+    """
+    cfg = qconfig.load(REPO)
+    text = install.render_one("digest.yml", cfg)
+    digest = text.split("\n  digest:", 1)[1]
+    assert "if: success() && (" in digest
+    assert "github.event_name == 'workflow_dispatch'" in digest
+
+    on_block = text.split("on:", 1)[1].split("jobs:", 1)[0]
+    assert "schedule:" in on_block, "the reconciler must keep its cron"
+
+    posting = install.render_one(
+        "digest.yml", {**cfg, "ci": {**cfg["ci"], "digest_posts_on_schedule": True}})
+    assert "(true ||" in posting
+    quiet = install.render_one(
+        "digest.yml", {**cfg, "ci": {**cfg["ci"], "digest_posts_on_schedule": False}})
+    assert "(false ||" in quiet
+    # A config that says nothing wants its digest — the default must not be off.
+    silent = install.render_one(
+        "digest.yml", {**cfg, "ci": {k: v for k, v in cfg["ci"].items()
+                                     if k != "digest_posts_on_schedule"}})
+    assert "(true ||" in silent
