@@ -55,10 +55,13 @@ obstacle to route around.
 - **The guard reads argv, not the command string.** Parse the git subcommand
   once and decide from that parse; a new case is a row in the parametrize list,
   never a seventh regex. → `docs/adr/0021-the-guard-reads-argv.md`
-- **`ready:auto` is the owner's to grant, and only the owner's.** The triager is
-  forbidden from applying it, and the importer refuses it at import. An issue is
-  auto-eligible only if a test file it touches proves it done (triage R8) —
-  `qops doctor` holds the checkable half.
+- **`ready:auto` is the owner's to grant, and only the owner's — but which act
+  counts as the grant depends on `origin:`.** On `origin:owner` issues the
+  filing itself is the grant; it takes effect once R8 (a test proves it done,
+  not just names one) holds, checked mechanically, no second label edit. On
+  `origin:agent` issues nothing but the owner may ever write `ready:auto`; an
+  agent may only propose it, and the owner grants by batch approval, never by
+  a lone agent's confidence. → `docs/adr/0023-...`
 - **An unattended sortie branches, commits, opens a PR, and stops.** It never
   merges by hand and never pushes to `master`. The merge is `automerge-loop`'s,
   on a `gate:machine` issue with every required check green.
