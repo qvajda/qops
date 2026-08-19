@@ -138,4 +138,16 @@ Two scripts sit outside the CLI, both rooted the same way:
 3. a `skills:` block matching what is in `.claude/skills/`, with a
    `skills-lock.json` ref per external;
 4. the six workflows rendered — `qops install`;
-5. the label taxonomy created, if the tracker is to be queried at all.
+5. the label taxonomy created — `python scripts/qops_import.py --labels`.
+
+And two settings that are the repo owner's, not the package's, without which
+`automerge-loop` cannot do its job:
+
+6. **branch protection on the default branch, with the gate as a required
+   check** (ADR-0016). This is not hygiene. `automerge-loop` queues GitHub's
+   native auto-merge; the *required checks* are what merge. With none
+   configured, a PR is mergeable the instant it opens — the substrate's own
+   second PR was merged ten seconds before its gate finished (qops#3). The job
+   now refuses and goes red instead, but a red job is a message, not a gate.
+7. **"Allow auto-merge" on**, and **"Automatically delete head branches" on** —
+   the second replaced a `--delete-branch` flag that the same fix removed.

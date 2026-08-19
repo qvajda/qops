@@ -635,15 +635,38 @@ def test_automerge_never_interpolates_the_branch_into_a_shell():
     assert "$REF" in text
 
 
-def test_automerge_squashes_and_deletes():
-    assert "--squash" in _automerge_text()
-    assert "--delete-branch" in _automerge_text()
+def test_automerge_squashes():
+    """Branch deletion is the repo's `delete_branch_on_merge` setting since
+    qops#3 - it was a flag on the call that fix removed."""
+    assert "mergeMethod: SQUASH" in _automerge_text()
 
 
-def test_automerge_waits_for_the_gate_rather_than_merging_now():
-    """`--auto` hands the merge to branch protection's required checks. Merging
-    directly would be the one thing ADR-0020 does not authorise."""
-    assert "--auto" in _automerge_text()
+def test_automerge_queues_and_never_merges_now():
+    """ADR-0020 authorises handing the merge to the required checks. It does
+    not authorise merging.
+
+    `gh pr merge --auto` cannot tell the two apart: with no required checks a
+    PR is mergeable the instant it opens, and it merges on the spot. That is
+    what happened to this repo's second PR - merged ten seconds before its own
+    gate finished (qops#3). `enablePullRequestAutoMerge` fails instead, and the
+    step treats that failure as a stop.
+
+    Note what the old assertion did: it looked for `--auto` in the rendered
+    text, and it kept passing after the call was removed, because the word
+    survived in the comment explaining why. An assertion that a string appears
+    somewhere is not an assertion about behaviour.
+    """
+    text = _automerge_text()
+    step = text.split("hand the merge to the required checks", 1)[1]
+    # Comments, not code. The step explains at length why `gh pr merge --auto`
+    # was wrong, and an assertion that cannot tell the explanation from the
+    # thing it explains is the assertion this test replaced.
+    run = " ".join(l for l in step.splitlines()
+                   if not l.strip().startswith("#"))
+    assert "enablePullRequestAutoMerge" in run
+    assert "gh pr merge" not in run, "the job merges instead of queueing"
+    assert "exit 1" in run, "a failure to queue must fail the job, not pass it"
+    assert "branch protection" in run, "the refusal must name its cause"
 
 
 # --------------------------------------------------------------------------
