@@ -18,6 +18,27 @@ WORKFLOWS = ("test.yml", "gate.yml", "guard.yml", "digest.yml", "groom.yml",
 
 _DOC_LINK = re.compile(r"docs/[A-Za-z0-9_./-]+\.md")
 
+# The one dependency-install block every rendered job that runs Python uses
+# (ADR-0024). It is a single constant because the three copies that preceded it
+# diverged into three different bugs, each surfacing only in a repo shaped
+# unlike the one that rendered it: #1 (pyproject-only repo installed nothing and
+# `test` could not start), #21 (`pip install pyyaml` only, and both guard jobs
+# import qops), and the same hole still open in digest.yml's reconcile job.
+#
+# The three shapes it must cover, asserted by
+# `tests/test_qops.py::test_the_install_block_installs_qops_in_every_repo_shape`:
+#   requirements.txt  a consumer pins qops there, so that is where it comes from
+#   pyproject.toml    the repo IS the package (this one) - install it editable
+#   neither           qops is a subdirectory; only pyyaml is missing
+INSTALL_DEPS = """python -m pip install --upgrade pip
+if [ -f requirements.txt ]; then pip install -r requirements.txt
+elif [ -f pyproject.toml ]; then pip install -e .
+else pip install pyyaml; fi
+if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi"""
+
+# Every `run: |` that carries it sits at the same depth in a workflow step.
+_RUN_INDENT = " " * 10
+
 
 def context(cfg: dict) -> dict:
     ci = cfg.get("ci", {})
@@ -36,6 +57,10 @@ def context(cfg: dict) -> dict:
         "digest_posts_on_schedule":
             "true" if ci.get("digest_posts_on_schedule", True) else "false",
         "claude_md_max_lines": str(cfg["claude_md_max_lines"]),
+        # Not from config, and deliberately: which files a repo declares its
+        # dependencies in is the repo's shape, not the project's preference,
+        # and the block has to handle every shape rather than be told one.
+        "install_deps": INSTALL_DEPS.replace("\n", "\n" + _RUN_INDENT),
     }
 
 
