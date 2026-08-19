@@ -24,7 +24,16 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install pyyaml
+      - name: install
+        # NOT just pyyaml. Both jobs below `import qops`, and in a repo that
+        # consumes qops as a dependency the package arrives through the
+        # requirements file - nowhere else. This step used to be enough only
+        # because the first repo to render it kept `qops/` as a subdirectory,
+        # where `python -m qops` resolves from the working directory (#21).
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt
+          else pip install pyyaml; fi
       - name: project tripwires
         # The list is .qops/config.yml's `tripwires:`, shared with the local
         # PreToolUse hook. Naming them here would put one project's constraints
@@ -39,7 +48,16 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: pip install pyyaml
+      - name: install
+        # NOT just pyyaml. Both jobs below `import qops`, and in a repo that
+        # consumes qops as a dependency the package arrives through the
+        # requirements file - nowhere else. This step used to be enough only
+        # because the first repo to render it kept `qops/` as a subdirectory,
+        # where `python -m qops` resolves from the working directory (#21).
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt
+          else pip install pyyaml; fi
       - name: every docs/ path cited from code resolves
         # Archiving 89 docs broke 13 citations in Phase 3 and only a check
         # caught it. Without this the next archive pass breaks silently.
