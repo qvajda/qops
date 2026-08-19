@@ -126,8 +126,10 @@ waited on an approval nobody was there to give. Three repairs:
 
 **Trigger:** any pull-request event — opened, reopened, synchronised, labelled,
 unlabelled, ready-for-review, closed.
-**Does:** turns on GitHub's **native** auto-merge for a qualifying PR. It does
-not merge; branch protection's required checks do, when they go green. On
+**Does:** queues GitHub's **native** auto-merge for a qualifying PR. It does
+not merge; branch protection's required checks do, when they go green — **and
+if the branch has no required checks it refuses to queue anything and fails
+loudly**, because there the same call would merge on the spot (qops#3). On
 `closed` + merged it advances the linked issue instead (below), and on a
 PR it declines to auto-merge it labels that issue `state:review` — the
 waiting-on-you signal the digest renders (#151).

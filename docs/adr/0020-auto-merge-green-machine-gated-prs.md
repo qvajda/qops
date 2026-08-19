@@ -39,6 +39,25 @@ removed, one step later.
 
 Squash merge, delete the branch. **Owner review is reserved for `gate:taste`.**
 
+**Amended 2026-08-19 (qops#3), and it corrects this ADR's mechanism rather than
+its decision.** Every sentence above rests on "the merge is gated on *checks*,
+which is precisely what branch protection was configured to trust". That is true
+only where required status checks exist. The extracted substrate's second-ever
+PR was merged by this workflow **ten seconds before its own gate finished**, in a
+repo whose protection had not yet been configured: with no required checks a PR
+is mergeable the instant it opens, and `gh pr merge --auto` merges rather than
+queues. The workflow documented as "does NOT merge" merged.
+
+So the proviso is now enforced instead of assumed. The `enable` job uses the
+`enablePullRequestAutoMerge` mutation, which *fails* when there is nothing to
+queue behind, and treats that failure as a stop naming branch protection as the
+cause. A consumer who installs qops and does not finish protection now gets a red
+job saying so, rather than silent auto-merge of everything `gate:machine`.
+
+Branch deletion moved with it: `--delete-branch` was a flag on the old call, and
+is now the repo's `delete_branch_on_merge` setting — an owner setting, like the
+rest of them.
+
 **Amended 2026-08-16, during implementation (#119).** The labels are read from
 the **linked issue**, not from the pull request. The first cut read
 `github.event.pull_request.labels` and was structurally incapable of firing:

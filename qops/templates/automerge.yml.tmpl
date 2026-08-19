@@ -5,10 +5,15 @@
 # judged it, so the click was a mindless approval button, and a mindless
 # approval button is not a control.
 #
-# This workflow does NOT merge. It turns on GitHub's native auto-merge, which
-# waits for branch protection's required checks (test, gate, tripwires,
-# doc-links). The workflow is the control — it fires without anyone
-# remembering — and the gate stays the thing that decides.
+# This workflow does NOT merge — *provided the default branch has required
+# status checks.* It queues GitHub's native auto-merge, which then waits for
+# them. The workflow is the control — it fires without anyone remembering — and
+# the gate stays the thing that decides.
+#
+# That proviso used to be an assumption and is now enforced, because it was
+# false once and nothing said so: with no required checks a PR is mergeable the
+# instant it opens, and the old `gh pr merge --auto` merged it on the spot.
+# See the `enable` step below.
 #
 # The gate is read from the LINKED ISSUE, not from the PR. Issues are the
 # source of truth (CLAUDE.md) and nothing labels a PR: the first cut read
@@ -82,7 +87,35 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
-        run: gh pr merge --auto --squash --delete-branch --repo {{repo}} "$PR"
+          PR_ID: ${{ github.event.pull_request.node_id }}
+        # `gh pr merge --auto` hides the difference between *queued* and
+        # *merged right now*. With no required status checks on the default
+        # branch a PR is mergeable the instant it opens, so `--auto` merges it
+        # unread - this job's own header says it does not merge, and it did.
+        # Observed on qvajda/qops #2: merged ten seconds before its own gate
+        # finished, in a repo whose branch protection was not yet configured.
+        #
+        # `enablePullRequestAutoMerge` does not hide it. It FAILS when there is
+        # nothing to queue behind, and that failure is exactly the signal that
+        # no check is gating this branch. Fail closed, and name the cause.
+        run: |
+          out=$(gh api graphql -f query='
+            mutation($pr: ID!) {
+              enablePullRequestAutoMerge(input: {
+                pullRequestId: $pr, mergeMethod: SQUASH
+              }) { clientMutationId }
+            }' -F pr="$PR_ID" 2>&1) && rc=0 || rc=$?
+          case "$out" in
+            *"already enabled"*|*"Auto merge is already"*)
+              echo "::notice::auto-merge already queued on #$PR"; exit 0 ;;
+          esac
+          if [ "$rc" = 0 ]; then
+            echo "::notice::auto-merge queued on #$PR - the required checks merge it"
+            exit 0
+          fi
+          echo "$out"
+          echo "::error::could not queue auto-merge on #$PR. The usual cause is that {{default_branch}} has no required status checks: the PR is already mergeable, there is nothing to queue behind, and enabling it would merge unread code. Configure branch protection (ADR-0016) - the checks are what merge, not this job."
+          exit 1
 
   advance:
     # #128. A merged PR means the code landed, so the sortie's issue reaches a
