@@ -704,6 +704,23 @@ def test_advance_does_not_depend_on_the_agent_writing_closes():
     assert "${{ github.event.pull_request.head.ref }}" not in advance.split("env:")[0]
 
 
+def test_declining_to_automerge_lands_state_review_regardless_of_prior_state():
+    """#5. `gh issue edit` fails as a whole when `--remove-label` names a label
+    the issue does not carry, and the old code named `state:building`
+    unconditionally. A `gate:taste` PR whose issue is `state:planned` (or any
+    other `state:`) must still land on `state:review`, exactly the way
+    `advance` already removes every `state:` label rather than one assumed
+    one."""
+    text = _automerge_text()
+    enable = text.split("\n  advance:")[0]
+    assert "--add-label state:review" in enable
+    for state in ("triage", "planned", "building", "gate", "blocked"):
+        assert f"--remove-label state:{state}" in enable
+    assert "--remove-label state:building || true" not in text
+    assert "--remove-label state:blocked \\\n                || true" not in enable, \
+        "a failed label edit must not be swallowed silently"
+
+
 def test_automerge_hears_the_merge_without_re_merging_a_closed_pr():
     text = _automerge_text()
     assert "closed" in text.split("types: [")[1].split("]")[0]

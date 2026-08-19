@@ -78,7 +78,18 @@ jobs:
               # digest.yml renders it. Set here rather than asked of the
               # launched agent: an instruction in a prompt is a preference,
               # not a control (GL-53).
-              gh issue edit "$n" --repo qvajda/qops --add-label state:review --remove-label state:building || true
+              #
+              # #5. `--remove-label state:building` failed the whole call
+              # whenever the issue carried a different `state:`, and `|| true`
+              # swallowed that failure - the add never ran, and nothing said
+              # so. Remove whichever `state:` label the issue actually
+              # carries, same as `advance` does below, and fail loudly if the
+              # edit still fails instead of hiding it.
+              gh issue edit "$n" --repo qvajda/qops --add-label state:review \
+                --remove-label state:triage --remove-label state:planned \
+                --remove-label state:building --remove-label state:gate \
+                --remove-label state:blocked \
+                || echo "::error::could not label issue #$n state:review - see the gh error above"
               stop "issue #$n is not gate:machine - the owner merges this one" ;;
           esac
 
