@@ -77,6 +77,7 @@ native, a lock entry outside the declared set, and a lock entry with no `ref`.
 | `ci.gate_command` | `python -m pytest -q` | `gate.yml` — the machine gate. |
 | `ci.runs_on` | `ubuntu-latest` | |
 | `ci.digest_cron` | `0 6 * * *` | Also when `reconcile` runs. |
+| `ci.digest_posts_on_schedule` | `true` | `false` renders the digest **on demand only** (`gh workflow run digest.yml`) while `reconcile` keeps the cron. For a second repo on one owner's cadence, this is what stops the daily digest doubling; the reconciler is the half that must not be turned off, since `advance` cannot fire on a merge its own `GITHUB_TOKEN` caused. |
 | `ci.groom_cron` | `0 5 * * 1` | |
 | `ci.status_issue_label` | `qops:status` | The pinned digest issue's label. **Must appear in `labels.flags`**, and issues carrying it are exempt from the open-issue invariants — machine bookkeeping is not a sortie (#136, #167). |
 

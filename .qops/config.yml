@@ -64,7 +64,13 @@ ci:
   test_command: python -m pytest -q
   gate_command: python -m pytest -q tests/test_qops.py
   runs_on: ubuntu-latest
-  digest_cron: '0 6 * * *'      # 06:00 UTC daily
+  digest_cron: '0 6 * * *'      # 06:00 UTC daily - the RECONCILER's cadence
+  # Extraction criterion 7: one digest, not two. The shop has a daily rhythm and
+  # is where the owner's morning attention goes; the substrate is worked in
+  # bursts, and a second 06:00 UTC digest doubled the thing that criterion
+  # exists to prevent. `qops` renders its digest on demand
+  # (`gh workflow run digest.yml`) and reconciles on the cron regardless.
+  digest_posts_on_schedule: false
   groom_cron: '0 5 * * 1'       # Mondays
   status_issue_label: 'qops:status'
 

@@ -32,6 +32,9 @@ def context(cfg: dict) -> dict:
         "digest_cron": ci.get("digest_cron", "0 6 * * *"),
         "groom_cron": ci.get("groom_cron", "0 5 * * 1"),
         "status_issue_label": ci.get("status_issue_label", "qops:status"),
+        # Default true: a project that says nothing wants its digest.
+        "digest_posts_on_schedule":
+            "true" if ci.get("digest_posts_on_schedule", True) else "false",
         "claude_md_max_lines": str(cfg["claude_md_max_lines"]),
     }
 
