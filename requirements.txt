@@ -1,0 +1,4 @@
+# The package itself, so `import qops` works and pyyaml comes with it.
+# One dependency list, in pyproject.toml; this file is what the rendered
+# test/gate workflows read.
+-e .

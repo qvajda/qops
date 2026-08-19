@@ -1,0 +1,2 @@
+# Test-only. The gate is `python -m pytest -q tests/test_qops.py`.
+pytest>=8
