@@ -151,3 +151,14 @@ And two settings that are the repo owner's, not the package's, without which
    now refuses and goes red instead, but a red job is a message, not a gate.
 7. **"Allow auto-merge" on**, and **"Automatically delete head branches" on** —
    the second replaced a `--delete-branch` flag that the same fix removed.
+
+And one that is neither the package's nor the repo's, but the machine's:
+
+8. **The workspace must be trusted once** (`hasTrustDialogAccepted` in
+   `~/.claude.json`, set by running Claude Code interactively in the root a
+   single time). Until it is, **every `permissions.allow` and `permissions.deny`
+   entry in `.claude/settings.json` is ignored** — including the `gh api -X`
+   denials that ADR-0016 and ADR-0020 rest on. It degrades quietly: a launched
+   sortie still works under `--permission-mode acceptEdits` and merely prints a
+   warning, so the controls are absent while the file that declares them, and
+   the test that asserts it, both look correct (#19).
