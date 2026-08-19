@@ -68,7 +68,10 @@ obstacle to route around.
   → `docs/reference/loops.md`, `docs/adr/0020-...`
 - **A workflow is a rendering, never a hand edit.** `.github/workflows/*` come
   from `qops/templates/*.tmpl` + config via `qops install`; `qops doctor`
-  detects a hand edit. Fix the template or the config.
+  detects a hand edit. Fix the template or the config. **And it must run in a
+  repo shaped unlike this one** — dependencies in `requirements*.txt` vs
+  `pyproject.toml`, qops vendored vs pinned. One install block, three shapes,
+  asserted by execution. → `docs/adr/0024-...`
 - **The critic of a decision is a test.** An instruction in a prompt is a
   preference, not a control — if a decision says something must never happen, an
   assertion says so too, in code, next to the decision.
