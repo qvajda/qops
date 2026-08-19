@@ -1,0 +1,119 @@
+# qops project configuration — TRACKED.
+#
+# This file is the ONLY place a project specific may live. The CLI, the hooks
+# and the rendered workflows read it; none of them carries a project name, a
+# path, an interpreter or a threshold of its own. `tests/test_qops.py` asserts
+# that property rather than measuring it once.
+#
+# This is qops configuring itself. Read `docs/reference/qops-contract.md` for
+# what every key means; this file is the worked example of it.
+
+project: qops
+repo: qvajda/qops
+default_branch: master
+
+# The interpreter the hooks and the shims invoke. `python3` on the cron host is
+# the Windows Store stub, and a hardcoded absolute path is not committable — the
+# py launcher is the portable middle (ADR-0009).
+python: py -3
+python_posix: python3
+
+# --- guard -----------------------------------------------------------------
+protected_branches: [master]
+max_worktrees: 2
+
+# **No tripwires, and that is the point.** A tripwire is a project's constraint
+# — a vendor call, a licence, a placeholder id — and the substrate has none of
+# its own. `qops guard scan` exits 0 against this list; before Phase 8 P8.1 that
+# path had never been exercised, and a crashing guard job would have failed
+# every build here from the first push.
+tripwires: []
+
+scan_exclude:
+  - CLAUDE.md
+  - README.md
+  - docs/
+  - qops/
+  - .qops/
+  - tests/
+
+# --- portability -----------------------------------------------------------
+# The word list `tests/test_qops.py` asserts substrate source against. Empty
+# here: this repo IS the substrate, so it has no project vocabulary to leak.
+# A consuming project fills this in with its own vendors and its own name.
+portability_forbidden: []
+
+# --- skills (ADR-0018) -----------------------------------------------------
+# Native only. The seven external skills are model and image tooling with no
+# use in a substrate repo, and `skill_drift` fails on a lock entry outside the
+# declared set — so `skills-lock.json` here is the mechanism with an empty map.
+skills:
+  native: [interview, spec-to-issue, triage]
+  external: []
+
+# --- hot path --------------------------------------------------------------
+claude_md_max_lines: 150
+
+# guard.yml's doc-link check: every docs/*.md path cited from these trees must
+# resolve.
+doc_link_roots: [qops, scripts, tests]
+
+# --- CI --------------------------------------------------------------------
+ci:
+  python_version: '3.12'
+  test_command: python -m pytest -q
+  gate_command: python -m pytest -q tests/test_qops.py
+  runs_on: ubuntu-latest
+  digest_cron: '0 6 * * *'      # 06:00 UTC daily
+  groom_cron: '0 5 * * 1'       # Mondays
+  status_issue_label: 'qops:status'
+
+# --- agents ----------------------------------------------------------------
+# effort: start high, drop where quality holds, xhigh only for demanding
+# agentic work. This is the project's only real cost control.
+agents:
+  planner:
+    model: opus
+    effort: high
+    tools: [Read, Grep, Glob, Bash, WebFetch]
+  coder:
+    model: sonnet
+    effort: medium
+    tools: [Read, Edit, Write, Grep, Glob, Bash]
+  reviewer:
+    model: sonnet
+    effort: high
+    tools: [Read, Grep, Glob, Bash]
+  scribe:
+    model: haiku
+    effort: low
+    tools: [Read, Edit, Write, Bash]
+  triager:
+    model: haiku
+    effort: low
+    tools: [Bash, Read, Grep]
+  interactor:
+    model: haiku
+    effort: low
+    tools: [Bash, Read]
+delegation_cap: 1
+
+# --- taxonomy --------------------------------------------------------------
+labels:
+  type: [epic, research, code, manual, test, decision]
+  state: [triage, planned, building, gate, review, blocked, done, cancelled]
+  mission: [substrate, consumers, housekeeping]
+  gate: [machine, taste, none]
+  # Every label named anywhere in this file must appear here; `qops doctor`
+  # asserts it. `qops:status` lived only under `ci:` in the source repo, so the
+  # importer never created it and the daily digest failed for weeks (#136).
+  flags: [ready:auto, no-auto, fork, budget:approved, qops:status]
+
+milestones: [substrate, consumers, housekeeping]
+
+# Every OPEN issue must carry exactly one type:, one state: and one gate:.
+# gate:none is legal at import and blocks ready:auto until it is filled in when
+# the sortie is planned.
+validate:
+  require_on_open: [type, state, gate]
+  forbid_at_import: [ready:auto]

@@ -1,0 +1,36 @@
+# RENDERED BY `qops install` from qops/templates/gate.yml.tmpl + .qops/config.yml
+# Do not hand-edit: `qops doctor` fails on drift.
+#
+# The machine gate. A taste review is legitimate only once every
+# machine-checkable precondition is green (S4).
+name: gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      # Shallow: nothing the gate runs reads history. `qops doctor` compares
+      # the rendered workflows with the templates and the docs on disk, and
+      # python -m pytest -q tests/test_qops.py touches no merge base.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+      - name: qops doctor — workflows match the config, hooks installed, docs resolve
+        run: python -m qops doctor
+      - name: substrate tests
+        run: python -m pytest -q tests/test_qops.py

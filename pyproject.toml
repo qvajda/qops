@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qops"
+version = "0.1.0"
+description = "A per-project ways-of-working substrate: brief, ledger, guard, install, doctor, metrics."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+
+[project.urls]
+Homepage = "https://github.com/qvajda/qops"
+
+# Deliberately no console_scripts entry point. Hooks invoke `python -m qops`
+# because a bare `qops` resolves in neither cmd.exe nor git-bash without a PATH
+# edit, and a PATH edit is a machine fact that does not belong in a committed
+# file.
+
+[tool.setuptools]
+packages = ["qops"]
+
+[tool.setuptools.package-data]
+qops = ["templates/*.tmpl"]

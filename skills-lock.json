@@ -1,0 +1,5 @@
+{
+  "$comment": "ADR-0018. Only EXTERNAL skills appear here; the three qops-native bodies (interview, spec-to-issue, triage) are source under .claude/skills/ and are tracked. `ref` is the upstream commit a copy was verified against - a lock with no ref cannot detect drift, so an entry without one is a defect. This repo declares no external skills, so the map is empty and `qops doctor` asserts it stays that way.",
+  "version": 1,
+  "skills": {}
+}

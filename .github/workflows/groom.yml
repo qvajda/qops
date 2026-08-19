@@ -1,0 +1,57 @@
+# RENDERED BY `qops install` from qops/templates/groom.yml.tmpl + .qops/config.yml
+# Do not hand-edit: `qops doctor` fails on drift.
+#
+# The hot-path cap is load-bearing, not hygiene. CLAUDE.md is the larger half
+# of the daily saving and it grew +10 lines/day while the cap was only
+# written down. Unenforced, the cap is re-breached in ~20 days.
+name: groom
+
+on:
+  push:
+    paths: ['CLAUDE.md']
+  pull_request:
+    paths: ['CLAUDE.md']
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hot-path-cap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CLAUDE.md is at most 150 lines
+        run: |
+          n=$(wc -l < CLAUDE.md)
+          echo "CLAUDE.md: $n lines (cap 150)"
+          if [ "$n" -gt 150 ]; then
+            echo "::error::CLAUDE.md is $n lines, cap is 150. Data belongs in docs/reference/, decisions in docs/adr/."
+            exit 1
+          fi
+
+  label-hygiene:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: every open issue carries type/state/gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bad=0
+          gh issue list --repo qvajda/qops --state open --limit 200 \
+            --json number,labels \
+            --jq '.[] | {n: .number, l: [.labels[].name]}' > issues.json || exit 0
+          while read -r row; do
+            n=$(echo "$row" | sed -n 's/.*"n":\([0-9]*\).*/\1/p')
+            for k in type state gate; do
+              echo "$row" | grep -q "\"$k:" || { echo "::warning::issue #$n has no $k: label"; bad=1; }
+            done
+          done < issues.json
+          exit 0

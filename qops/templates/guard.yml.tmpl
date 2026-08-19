@@ -1,0 +1,54 @@
+# RENDERED BY `qops install` from qops/templates/guard.yml.tmpl + .qops/config.yml
+# Do not hand-edit: `qops doctor` fails on drift.
+#
+# The server-side half of the guard. The PreToolUse hook is a local
+# convenience an agent can disable; this one cannot be.
+name: guard
+
+on:
+  push:
+    branches: ['{{default_branch}}']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tripwires:
+    runs-on: {{runs_on}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '{{python_version}}'
+          cache: pip
+      - run: pip install pyyaml
+      - name: project tripwires
+        # The list is .qops/config.yml's `tripwires:`, shared with the local
+        # PreToolUse hook. Naming them here would put one project's constraints
+        # in the substrate's template; a repo declaring none passes.
+        run: python -m qops guard scan
+
+  doc-links:
+    runs-on: {{runs_on}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '{{python_version}}'
+          cache: pip
+      - run: pip install pyyaml
+      - name: every docs/ path cited from code resolves
+        # Archiving 89 docs broke 13 citations in Phase 3 and only a check
+        # caught it. Without this the next archive pass breaks silently.
+        run: |
+          python - <<'PY'
+          import sys
+          from qops.install import broken_doc_links
+          missing = broken_doc_links('.')
+          for m in missing:
+              print(f'::error::broken doc citation: {m}')
+          sys.exit(1 if missing else 0)
+          PY

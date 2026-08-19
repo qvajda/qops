@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+
+# qops machine state. `.qops/config.yml` is TRACKED and is the whole point;
+# everything else qops writes under .qops/ is per-machine and is not.
+.qops/state.json
+.qops/resume.md
+.qops/ledger.jsonl
+.qops/outbox.jsonl
+.qops/state-report.md
+.qops/wt/
+
+# Per-machine Claude settings. settings.json is tracked; the .local one holds
+# absolute paths and is a machine fact.
+.claude/settings.local.json
+.claude/worktrees/
