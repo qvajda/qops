@@ -1488,6 +1488,73 @@ def test_ready_auto_must_name_a_test(capsys):
     assert install.issue_invariants([{"number": 3, "labels": labels}], cfg) == []
 
 
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                   text=True)
+
+
+def _r8_repo(tmp_path, pkg_base, pkg_head, test_head):
+    """A real temporary git repo: a base commit carrying `pkg_base`, and a
+    head commit on `feat/27-fixture` carrying `pkg_head` plus
+    `tests/test_thing.py`. `origin/master` is a plain branch ref rather than
+    an actual remote — `git merge-base` resolves it the same way."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "trunk")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "pkg.py").write_text(pkg_base, encoding="utf-8")
+    _git(root, "add", "pkg.py")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "branch", "origin/master")
+    _git(root, "checkout", "-q", "-b", "feat/27-fixture")
+    (root / "pkg.py").write_text(pkg_head, encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_thing.py").write_text(test_head, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "head")
+    return root
+
+
+_R8_ISSUES = [{"number": 27, "labels": [{"name": "ready:auto"}],
+              "body": "Acceptance: tests/test_thing.py::test_thing proves it."}]
+
+
+def test_r8_rejects_a_test_that_passes_without_the_change(tmp_path):
+    """R8's proof half (#27, ADR-0023): a named test that would pass even
+    against the unfixed code proves nothing, and today's label-time regex
+    (`_NAMES_A_TEST`) cannot tell — it only checks the name appears. This
+    drives `r8_proof` against a real git repo, not a mocked subprocess: the
+    discrimination is executed, not pattern-matched."""
+    root = _r8_repo(tmp_path, pkg_base="def thing():\n    return 1\n",
+                    pkg_head="def thing():\n    return 2\n",
+                    test_head="def test_thing():\n    assert True\n")
+    problems = install.r8_proof(root, _R8_ISSUES, base_ref="master",
+                                head_ref="feat/27-fixture")
+    assert any("proves nothing" in p for p in problems), problems
+
+
+def test_r8_accepts_a_test_that_fails_without_the_change(tmp_path):
+    """The other half of the same fixture: a test that genuinely exercises
+    the change (fails at the merge base, passes at HEAD) is not a problem."""
+    root = _r8_repo(tmp_path, pkg_base="def thing():\n    return 1\n",
+                    pkg_head="def thing():\n    return 2\n",
+                    test_head="import pkg\n\n\ndef test_thing():\n"
+                              "    assert pkg.thing() == 2\n")
+    problems = install.r8_proof(root, _R8_ISSUES, base_ref="master",
+                                head_ref="feat/27-fixture")
+    assert problems == []
+
+
+def test_r8_is_silent_without_a_pr_context(monkeypatch, capsys):
+    """No `GITHUB_BASE_REF`/`GITHUB_HEAD_REF` means no PR to prove anything
+    about — a laptop `doctor` run must not try, let alone fail (#27)."""
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    assert install.r8_proof(REPO, []) == []
+    assert "R8" not in capsys.readouterr().out
+
+
 def test_the_brief_says_which_tracker_it_read():
     """Two trackers from Phase 8 on. A session reading the wrong one is the
     dominant new failure mode, so the repo is named every time, not on demand

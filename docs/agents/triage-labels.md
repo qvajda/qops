@@ -57,9 +57,12 @@ process exits with its turn — so a sortie whose evidence of doneness *is* the
 full suite cannot finish, by construction. On 2026-08-18 two unattended sorties
 (#57, #71) wrote their entire change, backgrounded the suite, and ended their
 turn waiting for a notification that run can never receive. `qops doctor` holds
-the checkable half: a `ready:auto` issue whose body names no test file is a
-problem. The judgement half — whether the named test actually proves the thing —
-stays the owner's, like every other `ready:auto` grant.
+the checkable half at label time: a `ready:auto` issue whose body names no test
+file is a problem. **At PR time it goes further (#27, ADR-0023):** the named
+test is run red-before, green-after — once against the merge base with only
+the named test files carried forward, once at HEAD — so a named-but-hollow
+test (passes with or without the change) is caught mechanically instead of
+resting on the owner's judgement.
 
 ## The three concerns the gate used to carry (ADR-0026)
 
