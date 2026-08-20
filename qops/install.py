@@ -301,6 +301,13 @@ def undeclared_labels(cfg: dict) -> list[str]:
 # the thing that will judge it, not that the name resolves today.
 _NAMES_A_TEST = re.compile(r"tests?[/\\][\w./\\-]*\.py|\btest_\w+")
 
+# The states no part of the pipeline advances on its own: `state:triage` waits
+# on the planner, `state:blocked` on whatever blocks it. `ready:auto` sitting
+# on either is a promise nothing can keep. Every other state is the row moving
+# - pickup writes `state:building`, automerge writes `state:review`, reconcile
+# closes `state:done` - and reporting those deadlocked the loop (#60).
+STRANDED_STATES = {"state:triage", "state:blocked"}
+
 
 # ADR-0028's filing bar. `ready:auto` is mechanical on `origin:owner`, so there
 # is no grant-time check left and the body is the last thing between the owner's
@@ -358,11 +365,21 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
             problems.append(f"#{num}: `gate:none` — the gate was never decided, "
                             f"and it blocks ready:auto")
         # Finding 1: an inert flag reads as a filled queue. `pickup-loop`'s
-        # eligible() requires state:planned, so ready:auto anywhere else is a
-        # promise nothing can keep, and it is invisible.
-        if "ready:auto" in names and "state:planned" not in names:
-            problems.append(f"#{num}: `ready:auto` without `state:planned` — "
-                            f"pickup-loop can never pick it")
+        # eligible() requires state:planned, so ready:auto in a state nothing
+        # advances is a promise nothing can keep, and it is invisible.
+        #
+        # It is only *those* states. Reading it as "anywhere but state:planned"
+        # closed a deadlock on the loop (#60): pickup writes `state:building`
+        # at launch, `automerge` clears it only after the merge, so a picked-up
+        # row was a problem, `gate` went red, branch protection held the PR,
+        # and the label was never cleared. Every row the loop picked bricked
+        # itself - and since `gate` reads the whole tracker, it failed every
+        # other open PR too.
+        if "ready:auto" in names and names & STRANDED_STATES:
+            stranded = ", ".join(sorted(names & STRANDED_STATES))
+            problems.append(f"#{num}: `ready:auto` on {stranded} — nothing "
+                            f"advances it from there, so pickup-loop can "
+                            f"never pick it")
         # Triage R8, and the only half of it a machine can hold. The full suite
         # runs longer than one Bash call may, and a `claude -p` process exits
         # with its turn - so a sortie whose evidence of doneness IS the full

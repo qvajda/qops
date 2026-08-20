@@ -1325,16 +1325,28 @@ def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     assert any("#3" in p and "gate:none" in p for p in problems)
 
 
-def test_ready_auto_outside_state_planned_is_reported():
-    """Finding 1: pickup-loop's eligible() requires state:planned, so the flag
-    is inert and invisible anywhere else — it reads as a filled queue."""
+def test_ready_auto_is_reported_only_where_it_is_stranded():
+    """Finding 1 said `ready:auto` outside `state:planned` is inert, and that
+    over-reached: `state:building` is the flag doing its job. pickup writes
+    `state:building` at launch and only `automerge` clears it, *after* the
+    merge — so reporting it made `gate` red, held the PR, and the label was
+    never cleared. Every picked-up row bricked itself (#60). The flag is
+    stranded only where nothing downstream advances it."""
     cfg = qconfig.load(REPO)
-    issues = [{"number": 136, "labels": [{"name": "type:code"},
-                                         {"name": "state:triage"},
-                                         {"name": "gate:machine"},
-                                         {"name": "ready:auto"}]}]
-    assert any("#136" in p and "ready:auto" in p
-               for p in install.issue_invariants(issues, cfg))
+
+    def problems(state):
+        return install.issue_invariants(
+            [{"number": 136, "labels": [{"name": "type:code"},
+                                        {"name": state},
+                                        {"name": "gate:machine"},
+                                        {"name": "ready:auto"}]}], cfg)
+
+    for stranded in ("state:triage", "state:blocked"):
+        assert any("#136" in p and "ready:auto" in p
+                   for p in problems(stranded)), stranded
+    for in_flight in ("state:planned", "state:building", "state:gate",
+                      "state:review", "state:done"):
+        assert not any("ready:auto" in p for p in problems(in_flight)), in_flight
 
 
 def test_doctor_does_not_require_the_network(capsys):
@@ -1676,20 +1688,36 @@ def _declared_version() -> str:
     return m.group(1)
 
 
-def test_declared_version_is_not_already_tagged():
-    version = _declared_version()
-    tags = subprocess.run(["git", "tag", "-l", "v*"], cwd=REPO,
-                          capture_output=True, text=True).stdout.split()
-    tagged_versions = {t[1:] for t in tags if t.startswith("v")}
-    if version not in tagged_versions:
-        return
-    # version already has a tag - fine only if HEAD IS that tag (i.e. we are
-    # not mid-edit on a tree that reuses a shipped version number).
+def test_the_tag_agrees_with_the_declared_version():
+    """Asked at the tag, which is the only place it is a real question (#40).
+
+    The first shape asked it on every commit — "the declared version is not
+    already tagged" — which is red on every post-release tree until someone
+    bumps, on every branch, blocking PRs `gate` was never aimed at. And it was
+    vacuous in CI, where `actions/checkout` fetches no tags, so it fired
+    exactly where it was wrong and never where it was right.
+
+    Cutting a tag is the act ADR-0023 rests on, and it is when the two must
+    agree. Off a tag there is nothing to check, so this is silent.
+    """
     exact = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
                            cwd=REPO, capture_output=True, text=True)
-    assert exact.stdout.strip() == f"v{version}", (
-        f"version {version} is already tagged elsewhere; bump pyproject.toml "
-        f"before cutting a new tag (this is what v0.1.1 skipped)")
+    tag = exact.stdout.strip()
+    if not tag.startswith("v"):
+        return                      # not a tagged commit: no question to ask
+    assert tag == f"v{_declared_version()}", (
+        f"HEAD is tagged {tag} against a tree declaring "
+        f"{_declared_version()}; bump pyproject.toml before cutting the tag "
+        f"(this is what v0.1.1 skipped)")
+
+
+def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
+    """The half of #40 that made the check vacuous. A workflow that never runs
+    on a tag, or runs without fetching tags, cannot ask the question above —
+    and a green step that produced no observable change did not happen."""
+    rendered = install.render_one("test.yml", qconfig.load(REPO))
+    assert "tags:" in rendered, "test.yml never runs on a tag push"
+    assert "fetch-tags: true" in rendered, "checkout fetches no tags"
 
 
 # --------------------------------------------------------------------------
