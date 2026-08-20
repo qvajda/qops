@@ -13,7 +13,7 @@ is `pickup-loop`, and it is off.
 | `triage-loop` | Actions — `groom.yml` label-hygiene job | weekly + on demand | none | warns; may not label |
 | `groom-loop` | Actions — `groom.yml` hot-path job | on any `CLAUDE.md` change, weekly | none | fails the build |
 | `pickup-loop` | one Windows scheduled task per repo root, each **disabled** | hourly when enabled | yes | branch + commit + PR; merges only via `automerge-loop` |
-| `automerge-loop` | Actions — `automerge.yml`, plus the `reconcile` job in `digest.yml` | every PR event, plus daily | none | turns on native auto-merge for a `gate:machine` PR; may not merge a `gate:taste` one; labels a merged sortie `state:done`, may not close it |
+| `automerge-loop` | Actions — `automerge.yml`, plus the `reconcile` job in `digest.yml` | every PR event, plus daily | none | turns on native auto-merge for a `gate:machine` PR; may not merge a `gate:taste` one; labels a merged sortie `state:done` and closes it if `gate:machine` (ADR-0025); a `gate:taste` row stays open for the owner |
 
 ## gate-loop
 
@@ -233,9 +233,11 @@ ADR-0013's re-decision depends on was counting wrong. The `advance` job now
 fires on a merged PR whose branch names an issue, sets `state:done` and drops
 `ready:auto` and every other `state:`.
 
-- **It labels; it never closes.** A merged PR means the code landed, not that
-  the sortie is judged. On `gate:taste` work the owner's read is the only
-  judgement there is, so closing stays the owner's.
+- **It labels, and closes a `gate:machine` row (ADR-0025).** A merged PR means
+  the code landed, not that the sortie is judged — but on `gate:machine` there
+  is no taste read left to give, the same reasoning ADR-0020 already uses for
+  the merge itself. `gate:taste` still only reaches `state:done`; closing that
+  one is a judgement, and stays the owner's. `no-auto` vetoes the close.
 - **It does not rest on the agent writing `Closes #<n>`.** The branch already
   carries the issue number (ADR-0019) and the workflow already parses it to
   read the gate. #116's PR carried no such line and shipped anyway — an
@@ -259,9 +261,15 @@ failure written off as a stale row. The backstop is `qops reconcile`, a job in
 names (ADR-0019, never `Closes #n`), and advances any row that is not
 `state:done`. It reads state rather than reacting to an event, which is why it
 repairs the row however the PR merged — bot, human or hand-merge. It is
-idempotent, it labels and never closes, and a skip prints its reason. `advance`
-stays: it is the fast path on a human-token merge, and deleting it to install
-the slow one would trade latency for nothing.
+idempotent, it labels and — `gate:machine` only, ADR-0025 — closes, and a skip
+prints its reason. `advance` stays: it is the fast path on a human-token
+merge, and deleting it to install the slow one would trade latency for
+nothing.
+
+**Amended 2026-08-20 (ADR-0025, #12/#21/#23):** `reconcile` also heals a row
+`advance` already labelled `state:done` but never got to close — its own
+`--limit` window, or a hand-merge older than either mechanism ever saw, is
+otherwise indefinite, and an owner noticing is not a mechanism.
 
 ## Audit
 
