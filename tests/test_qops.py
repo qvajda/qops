@@ -1623,3 +1623,48 @@ def test_declared_version_is_not_already_tagged():
     assert exact.stdout.strip() == f"v{version}", (
         f"version {version} is already tagged elsewhere; bump pyproject.toml "
         f"before cutting a new tag (this is what v0.1.1 skipped)")
+
+
+# --------------------------------------------------------------------------
+# ADR-0026 — the gate says one thing, and the other two concerns have their own
+# carriers. R3's default inverted on the evidence in docs/2026-08-20-gate-audit.md
+# (2 of 14 resolved gate:taste rows had an owner action change the outcome), and
+# the inversion is only safe while gate:machine confers no autonomy by itself.
+# --------------------------------------------------------------------------
+
+def test_gate_machine_alone_confers_no_autonomy():
+    """The load-bearing half of ADR-0026. R3's old default was defended by "a
+    wrong `machine` label produces an autonomous sortie" — false, because the
+    picker needs three more things the owner alone grants. Relax `eligible()`
+    and the ADR's safety argument fails here, in the same commit."""
+    issue = lambda *labels: {"labels": [{"name": n} for n in labels]}
+    assert not qops_pickup.eligible(issue("gate:machine"))
+    assert not qops_pickup.eligible(issue("gate:machine", "state:planned"))
+    assert not qops_pickup.eligible(issue("gate:machine", "ready:auto"))
+    assert qops_pickup.eligible(issue("gate:machine", "state:planned", "ready:auto"))
+
+
+def test_no_auto_is_the_authority_veto_in_all_three_mechanisms():
+    """Concern 2 of ADR-0026's split: authority is `no-auto`, not `gate:`. It
+    only holds while every mechanism a gate:machine row can reach honours the
+    flag — the pickup, the merge, and reconcile's close *and* relabel."""
+    from qops import reconcile
+    issue = {"labels": [{"name": n} for n in
+                        ("gate:machine", "state:planned", "ready:auto", "no-auto")]}
+    assert not qops_pickup.eligible(issue)
+    assert not reconcile._closeable({"gate:machine", "no-auto"})
+    body = (REPO / "qops" / "templates" / "automerge.yml.tmpl").read_text(encoding="utf-8")
+    assert "no-auto" in body
+    assert "no-auto" in (REPO / "qops" / "reconcile.py").read_text(encoding="utf-8")
+
+
+def test_the_triage_rules_send_an_unsure_row_to_the_machine():
+    """R3 is prose, and prose drifts back. The old default ("when unsure,
+    `gate:taste`") is the exact string that produced the parking lot, and 14 of
+    22 open printshop taste rows carry it in effect — their own body says the
+    gate was never defined."""
+    rules = (REPO / "docs" / "agents" / "triage-labels.md").read_text(encoding="utf-8")
+    assert "When unsure, `gate:machine`" in rules
+    assert "When unsure, `gate:taste`" not in rules
+    for concern in ("Judgement", "Authority", "Verification reach"):
+        assert concern in rules
