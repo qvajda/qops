@@ -1757,3 +1757,53 @@ def test_the_filing_bar_cannot_answer_without_a_body():
     not granted a pass, the rule simply does not fire."""
     cfg = qconfig.load(REPO)
     assert install.issue_invariants([{"number": 6, "labels": _BAR_LABELS}], cfg) == []
+
+
+# --------------------------------------------------------------------------
+# #44 — the gate evaluates the invariants instead of skipping them. PR #43's
+# own gate log said, one line above the word "clean":
+#   doctor: skipping the label invariant - gh exited 4 [...] set GH_TOKEN
+# so every rule issue_invariants() holds - including ADR-0028's filing bar,
+# which that ADR calls the control replacing three others - only ever ran on
+# a laptop. A check that exists where it cannot run is ADR-0024's #1 again.
+# --------------------------------------------------------------------------
+
+def test_the_gate_evaluates_the_issue_invariants_rather_than_skipping_them():
+    """Read off the *rendered* workflow, not the template: the template is the
+    source but the workflow is what runs."""
+    rendered = install.render_one("gate.yml", qconfig.load(REPO))
+    assert "GH_TOKEN" in rendered, "the doctor step cannot query the tracker"
+    assert "issues: read" in rendered, "GH_TOKEN without the scope is still a skip"
+    assert "QOPS_STRICT" in rendered, "a failed query would go green in CI"
+
+
+def test_an_unreadable_backlog_is_a_problem_under_strict_and_a_skip_otherwise(monkeypatch):
+    """`open_issues()` returning None is right for a local instrument and wrong
+    for a required check: a rate-limited `gh` would turn the gate green over an
+    unread backlog. Same distinction `qops_pickup.candidates()` already draws
+    between an idle queue and a broken picker."""
+    monkeypatch.delenv("QOPS_STRICT", raising=False)
+    assert not install.strict()
+    monkeypatch.setenv("QOPS_STRICT", "1")
+    assert install.strict()
+
+    cfg = qconfig.load(REPO)
+    monkeypatch.setattr(install, "open_issues", lambda _cfg: None)
+    problems = install.doctor(REPO, cfg)
+    assert any("invariants" in p and "not evaluated" in p for p in problems)
+
+    monkeypatch.delenv("QOPS_STRICT")
+    assert not [p for p in install.doctor(REPO, cfg)
+                if "invariants" in p and "not evaluated" in p]
+
+
+def test_doctor_says_how_many_rows_the_invariants_read(monkeypatch, capsys):
+    """The gate log proved the invariants ran only by the *absence* of a skip
+    line, which is status-code reasoning. It now names the number it read, so
+    an evaluated backlog and a skipped one do not print the same thing."""
+    cfg = qconfig.load(REPO)
+    monkeypatch.setattr(install, "open_issues", lambda _cfg: [])
+    install.doctor(REPO, cfg)
+    out = capsys.readouterr().out
+    assert "invariants evaluated against 0 open rows" in out
+    assert cfg["repo"] in out
