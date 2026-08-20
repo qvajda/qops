@@ -16,6 +16,18 @@ concurrency:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    # `qops doctor` queries the tracker for the open-issue invariants. Without
+    # a token `gh` exits 4 and every one of them is skipped - the step passes
+    # by not running, and "doctor: clean" prints one line under the skip (#44).
+    permissions:
+      contents: read
+      issues: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A failed query is a skip on a laptop and a problem in a required check:
+      # a rate-limited `gh` must not turn this gate green over an unread
+      # backlog.
+      QOPS_STRICT: '1'
     steps:
       # Shallow: nothing the gate runs reads history. `qops doctor` compares
       # the rendered workflows with the templates and the docs on disk, and

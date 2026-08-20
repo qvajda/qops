@@ -6,6 +6,7 @@ tripwire list live in config, and the workflow is a rendering of them.
 """
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -412,6 +413,19 @@ def open_issues(cfg: dict) -> list[dict] | None:
         return None
 
 
+def strict() -> bool:
+    """CI wants an unreadable backlog red; a laptop wants it quiet.
+
+    `open_issues()` treats every failure as a skip, which is right for a local
+    instrument (#147) and wrong for a required status check - a rate-limited
+    `gh` would turn the gate green over a backlog nothing read. Explicit env
+    rather than sniffing for `GITHUB_ACTIONS`, the same idiom `QOPS_UNATTENDED`
+    already uses, so a consumer running `doctor` in some other CI gets it by
+    setting the flag rather than by being recognised.
+    """
+    return os.environ.get("QOPS_STRICT") == "1"
+
+
 def doctor(root: Path, cfg: dict) -> list[str]:
     problems = drift(root, cfg)
     problems += skill_drift(root, cfg)
@@ -419,7 +433,19 @@ def doctor(root: Path, cfg: dict) -> list[str]:
     problems += undeclared_labels(cfg)
     issues = open_issues(cfg)
     if issues is not None:
+        # Positive evidence, not the absence of the skip line. "verify by
+        # measurement, not by status code" (CLAUDE.md): a gate log that only
+        # says `doctor: clean` cannot distinguish an evaluated backlog from a
+        # skipped one, which is exactly how #44 hid.
+        print(f"doctor: invariants evaluated against {len(issues)} open rows "
+              f"on {cfg.get('repo')}")
         problems += issue_invariants(issues, cfg)
+    elif strict():
+        # The reason is already printed by open_issues(), one line up. What was
+        # missing is that the skip left no state behind: the step passed, and
+        # "doctor: clean" sat directly under the skip line (#44).
+        problems.append("the open-issue invariants were not evaluated - the "
+                        "backlog was unreadable, see the skip above (QOPS_STRICT)")
     problems += [f"broken doc citation: {m}" for m in broken_doc_links(root)]
     settings = Path(root) / ".claude" / "settings.json"
     if not settings.exists():
