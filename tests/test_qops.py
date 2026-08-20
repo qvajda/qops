@@ -6,6 +6,7 @@ assertion here.
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -1592,3 +1593,33 @@ def test_the_digest_job_is_gated_and_the_reconciler_is_not():
         "digest.yml", {**cfg, "ci": {k: v for k, v in cfg["ci"].items()
                                      if k != "digest_posts_on_schedule"}})
     assert "(true ||" in silent
+
+
+# --------------------------------------------------------------------------
+# versioning — v0.1.1 was tagged against a tree that still declared
+# version = "0.1.0" (a `pip show qops` in a consumer never learns which
+# substrate it has). The tag is the act ADR-0023 rests on; this is the check
+# that a tag cut before the version is bumped would have failed.
+# --------------------------------------------------------------------------
+
+def _declared_version() -> str:
+    text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    assert m, "pyproject.toml has no [project] version"
+    return m.group(1)
+
+
+def test_declared_version_is_not_already_tagged():
+    version = _declared_version()
+    tags = subprocess.run(["git", "tag", "-l", "v*"], cwd=REPO,
+                          capture_output=True, text=True).stdout.split()
+    tagged_versions = {t[1:] for t in tags if t.startswith("v")}
+    if version not in tagged_versions:
+        return
+    # version already has a tag - fine only if HEAD IS that tag (i.e. we are
+    # not mid-edit on a tree that reuses a shipped version number).
+    exact = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                           cwd=REPO, capture_output=True, text=True)
+    assert exact.stdout.strip() == f"v{version}", (
+        f"version {version} is already tagged elsewhere; bump pyproject.toml "
+        f"before cutting a new tag (this is what v0.1.1 skipped)")
