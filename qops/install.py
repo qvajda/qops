@@ -421,7 +421,15 @@ def _test_targets(body: str) -> list[str]:
             targets[-1] = (targets[-1][0] + "::" + tok, m.end())
         else:
             targets.append((tok, m.end()))
-    return [t for t, _ in targets]
+    # Path-shaped only, deduplicated in first-seen order. `_NAMES_A_TEST` also
+    # matches a bare `test_x` written in running prose, and pytest reads a bare
+    # token as a path: it exits 4 with `file or directory not found` before a
+    # single test runs, which R8 read as the change failing its own proof.
+    # #27's PR failed on a sentence in its own plan. The loose half of the
+    # regex stays - it is what keeps a barren body out of `ready:auto` - but
+    # only a target pytest can resolve is worth spending a runner on.
+    return list(dict.fromkeys(t for t, _ in targets
+                              if "/" in t or "\\" in t))
 
 
 def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,

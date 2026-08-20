@@ -1567,6 +1567,22 @@ def test_r8_is_silent_without_a_pr_context(monkeypatch, capsys):
     assert "R8" not in capsys.readouterr().out
 
 
+def test_r8_only_runs_targets_pytest_can_resolve():
+    """`_NAMES_A_TEST` is deliberately loose and matches a bare `test_x` in
+    running prose. pytest reads a bare token as a *path*, exits 4 with `file or
+    directory not found` before running anything, and R8 read that as the
+    change failing its own proof — #27's PR failed on a sentence in its own
+    plan. Prose references are dropped; a node id is kept."""
+    body = ("It replaces `test_ready_auto_must_name_a_test` with a real proof.\n"
+            "Test: `tests/test_qops.py::test_r8_accepts_a_test_that_fails_"
+            "without_the_change`, and `tests/test_qops.py` overall.\n")
+    targets = install._test_targets(body)
+    assert "test_ready_auto_must_name_a_test" not in targets
+    assert all("/" in t or "\\" in t for t in targets), targets
+    assert "tests/test_qops.py::test_r8_accepts_a_test_that_fails_without_the_change" \
+        in targets
+
+
 def test_the_brief_says_which_tracker_it_read():
     """Two trackers from Phase 8 on. A session reading the wrong one is the
     dominant new failure mode, so the repo is named every time, not on demand
