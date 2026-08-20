@@ -1807,3 +1807,48 @@ def test_doctor_says_how_many_rows_the_invariants_read(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "invariants evaluated against 0 open rows" in out
     assert cfg["repo"] in out
+
+
+# --------------------------------------------------------------------------
+# #47 — the triager writes the gate. ADR-0026 made `gate:` decidable from the
+# row alone; the role was fenced out of every label because, when it was
+# drafted, none was. What must not move is the boundary ADR-0023 drew: the
+# grant is the owner's, and ADR-0026's authority column is his too.
+# --------------------------------------------------------------------------
+
+def test_the_triager_may_write_the_gate_and_never_the_grant():
+    role = _role("triager")
+    assert "you write `type:` and `gate:`" in role
+    for forbidden, why in (("never `ready:auto`", "the grant is the owner's"),
+                           ("never `no-auto`", "authority is the owner's"),
+                           ("never `state:`", "state:planned is the planner's")):
+        assert forbidden in role, why
+
+
+def test_the_triager_names_all_three_refusals():
+    """A refusal is a correct answer, and the three go to different places. The
+    measured run refused 8 of 33 and three of those were rows the re-triage had
+    labelled and should not have - refusing beat the ground truth."""
+    role = _role("triager")
+    for refusal in ("ambiguous", "oversized", "below the filing bar"):
+        assert refusal in role
+    assert "the planner splits a row you report" in role
+    assert "`gate:none` is not one of your answers" in role
+
+
+def test_the_triager_default_is_the_machine_not_the_owner():
+    """R3 inverted (ADR-0026). The role is where a triager actually reads it,
+    so the prose that produced the parking lot must not survive here either."""
+    role = _role("triager")
+    assert "when unsure, `gate:machine`" in role
+    assert "when unsure, `gate:taste`" not in role
+
+
+def test_the_loop_still_never_labels_even_though_the_role_now_may():
+    """Two documents disagreeing about what an agent may do is worse than
+    either rule. `triage-loop` is the LLM-free Actions job and its deliberate
+    limit is unchanged; the role is what gained the authority."""
+    loops = " ".join((REPO / "docs" / "reference" / "loops.md")
+                     .read_text(encoding="utf-8").lower().split())
+    assert "warns and does not label" in loops
+    assert "the loop still never labels, the role now may" in loops
