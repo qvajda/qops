@@ -20,3 +20,11 @@ work up, and it is the owner's to grant.
 
 When an issue's `type:` or `gate:` is genuinely ambiguous, leave it and list it.
 A guessed label reads exactly like a decided one, which is worse than a gap.
+
+**Refuse an oversized row the same way (ADR-0027).** A row is one sortie: one
+deliverable, one gate, one acceptance criterion. A row stating more than one
+outcome that could ship independently, or whose outcomes do not share a gate
+under ADR-0026, is not labellable — leave it, and report it as oversized rather
+than as ambiguous, because the two go to different places. **You do not split
+it.** Splitting writes an issue body, and you do not edit issue bodies; the
+planner splits a row you report.

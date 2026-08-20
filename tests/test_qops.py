@@ -1668,3 +1668,31 @@ def test_the_triage_rules_send_an_unsure_row_to_the_machine():
     assert "When unsure, `gate:taste`" not in rules
     for concern in ("Judgement", "Authority", "Verification reach"):
         assert concern in rules
+
+
+# --------------------------------------------------------------------------
+# ADR-0027 — one row is one sortie. The two mechanisms are split by role on
+# purpose: the triager refuses and reports, the planner splits. They must not
+# drift into one, because splitting writes an issue body and the triager is
+# fenced out of issue bodies.
+# --------------------------------------------------------------------------
+
+def _role(name: str) -> str:
+    """Role bodies are hard-wrapped prose, so a phrase spans lines. Normalise
+    whitespace before asserting on one - the assertion is about the rule being
+    in the role, not about where the wrap fell."""
+    text = (REPO / ".claude" / "agents" / f"{name}.md").read_text(encoding="utf-8")
+    return " ".join(text.lower().split())
+
+
+def test_the_triager_refuses_rather_than_guesses():
+    role = _role("triager")
+    assert "oversized" in role
+    assert "you do not edit issue bodies" in role
+    assert "you do not split it" in role
+
+
+def test_the_planner_splits_what_the_triager_refused():
+    role = _role("planner")
+    assert "oversized" in role
+    assert "the deliverable is the children" in role

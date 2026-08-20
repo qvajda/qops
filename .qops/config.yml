@@ -10,6 +10,7 @@
 
 project: qops
 repo: qvajda/qops
+prd: docs/prd/2026-08-20-eligibility-pipeline.md
 default_branch: master
 
 # The interpreter the hooks and the shims invoke. `python3` on the cron host is
