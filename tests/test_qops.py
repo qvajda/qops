@@ -2057,3 +2057,61 @@ def test_the_log_does_not_change_what_counts_as_a_failed_run():
     launch = src[src.index("def main("):]
     assert "produced_work(root, num)" in launch
     assert "rev-list" in src or "produced_work" in src
+
+
+# --------------------------------------------------------------------------
+# #55 — the planner writes the plan onto the row. 16 of 19 open rows sat at
+# state:triage because moving one to state:planned meant a person writing what
+# done looks like. The role already knew what a plan must carry and had nowhere
+# to put it: "a plan that lives only in a message is lost", its own words.
+# --------------------------------------------------------------------------
+
+def test_a_plan_is_machine_input_and_an_ask_is_one_page():
+    """Two shapes, asserted separately. The ask format must not leak into
+    plans - nobody reads them (ADR-0028 §3) - and must not be dropped from
+    `type:decision` rows, where the owner genuinely is the reader and where
+    both rows in the whole corpus that changed an outcome were asks."""
+    role = _role("planner")
+    assert "machine input" in role
+    assert "a spec a coder executes and a test checks" in role
+    assert "one page, and one page only" in role
+    assert "`type:decision`" in role
+
+
+def test_the_planner_appends_and_never_replaces():
+    """The filing is the licence (ADR-0028). Overwriting it destroys the
+    evidence of what the owner actually asked for, and #46's shape 1 needs the
+    original intact."""
+    role = _role("planner")
+    assert "append" in role
+    assert "never replace" in role
+
+
+def test_the_planner_writes_state_planned_and_neither_owner_flag():
+    role = _role("planner")
+    assert "state:planned" in role
+    assert "never `ready:auto`" in role
+    assert "never `no-auto`" in role
+
+
+def test_the_plan_must_clear_the_filing_bar_it_will_be_measured_by():
+    """The planner sets state:planned, and #42's bar fires the moment a row
+    leaves triage. A planner that writes a plan with no acceptance section
+    turns `doctor` red on the row it just planned."""
+    role = _role("planner")
+    assert "## acceptance" in role
+    assert "#42" in role or "filing bar" in role
+
+
+@pytest.mark.parametrize("role", ["planner", "triager", "coder", "reviewer",
+                                  "scribe", "interactor"])
+def test_no_agent_cites_a_file_that_does_not_exist(role):
+    """`CONTEXT.md` was cited twice in planner.md and has been CLAUDE.md since
+    the extraction. The doc-link check only scans `.py`, so a role could cite a
+    ghost indefinitely."""
+    import re as _re
+    body = (AGENT_DIR / f"{role}.md").read_text(encoding="utf-8")
+    for cited in _re.findall(r"`([A-Za-z0-9_./-]+\.md)`", body):
+        if cited.startswith("docs/") or cited.endswith("CLAUDE.md"):
+            assert (REPO / cited).exists(), f"{role}.md cites missing {cited}"
+        assert cited != "CONTEXT.md", f"{role}.md cites CONTEXT.md; it is CLAUDE.md"
