@@ -41,8 +41,15 @@ S4's job; automating the *judgement* is not wanted.
 **Trigger:** weekly, and on demand.
 **Does:** lists every open issue missing `type:` / `state:` / `gate:`.
 **Acceptance check:** the list is empty.
-**Deliberate limit:** it **warns and does not label.** A guessed label reads
-exactly like a decided one. `ready:auto` is never applied by any loop.
+**Deliberate limit:** the loop itself — the mechanical, LLM-free Actions job —
+**warns and does not label.** It has no judgement to guess with. That limit
+was, until #47, read as also fencing the `triager` role out of every label;
+ADR-0026 made `gate:` decidable from the row alone, so a session-invoked
+triager now writes `gate:` and `type:` and reports what it refused
+(`.claude/agents/triager.md`). Nothing invokes the triager unattended — that
+is `triage-loop`'s own limit, unchanged — so the two statements no longer
+contradict: the loop still never labels, the role now may, when a session
+calls it. `ready:auto` and `no-auto` are never applied by either.
 
 ## groom-loop
 

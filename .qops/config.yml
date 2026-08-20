@@ -96,7 +96,7 @@ agents:
     effort: low
     tools: [Read, Edit, Write, Bash]
   triager:
-    model: haiku
+    model: sonnet
     effort: low
     tools: [Bash, Read, Grep]
   interactor:
