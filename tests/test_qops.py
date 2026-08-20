@@ -6,6 +6,7 @@ assertion here.
 """
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -594,6 +595,76 @@ def test_doctor_detects_drift(tmp_path):
 
 def test_the_repo_itself_is_installed_and_undrifted():
     assert install.drift(REPO, qconfig.load(REPO)) == []
+
+
+# --------------------------------------------------------------------------
+# a rendered workflow has to run in a repo shaped UNLIKE the one that rendered
+# it (ADR-0024)
+#
+# #1, #21 and the same hole still open in digest.yml's reconcile job were one
+# defect three times: each install step was calibrated against a single
+# consumer's shape, and each only surfaced when a repo of a different shape
+# rendered it. `tripwires` and `doc-links` are required checks, so in a
+# consuming repo this class does not degrade — it blocks every PR.
+# --------------------------------------------------------------------------
+
+# Every workflow with a job that runs Python. groom.yml and automerge.yml have
+# none: they are `gh` and `wc -l`, and adding a Python job to either is what
+# this list is here to notice.
+PYTHON_JOB_WORKFLOWS = ("test.yml", "gate.yml", "guard.yml", "digest.yml")
+
+
+@pytest.mark.parametrize("name", PYTHON_JOB_WORKFLOWS)
+def test_every_job_that_runs_python_uses_the_one_install_block(name):
+    """One block, no second way to install anything. Three copies is how the
+    three bugs happened, and a fourth copy is how the fourth one would."""
+    text = install.render_one(name, qconfig.load(REPO))
+    jobs = text.count("actions/setup-python")
+    assert jobs >= 1, f"{name} is in PYTHON_JOB_WORKFLOWS and sets up no Python"
+    block = install.INSTALL_DEPS.replace("\n", "\n" + install._RUN_INDENT)
+    assert text.count(block) == jobs, \
+        f"{name}: {jobs} Python job(s), {text.count(block)} carrying the block"
+    assert text.count("pip install") == jobs * install.INSTALL_DEPS.count("pip install"), \
+        f"{name} installs something outside INSTALL_DEPS"
+
+
+# shape -> (the files that declare its dependencies, the install it must reach)
+REPO_SHAPES = {
+    "requirements": ({"requirements.txt": "-e .\n",
+                      "requirements-dev.txt": "pytest\n"},
+                     "install -r requirements.txt"),
+    "pyproject": ({"pyproject.toml": "[project]\nname = 'x'\n"},
+                  "install -e ."),
+    "neither": ({}, "install pyyaml"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(REPO_SHAPES))
+def test_the_install_block_reaches_qops_in_every_repo_shape(tmp_path, shape):
+    """The property nothing asserted before ADR-0024.
+
+    Executed, not pattern-matched: #1 was a branch that read correctly and
+    never fired. `python` and `pip` are shell functions that log their argv, so
+    nothing is installed and no network is touched — what is under test is
+    which branch the block takes in a tree of each shape.
+    """
+    sh = shutil.which("bash")
+    if sh is None:                  # the Windows cron host; ADR-0009
+        pytest.skip("no bash here — guard.yml's ubuntu runner is the gate")
+    files, expected = REPO_SHAPES[shape]
+    repo = tmp_path / shape
+    (repo / "qops").mkdir(parents=True)     # the vendored shape's package
+    for fname, body in files.items():
+        (repo / fname).write_text(body, encoding="utf-8")
+
+    script = ('python() { echo "python $*" >> pip.log; }\n'
+              'pip() { echo "pip $*" >> pip.log; }\n' + install.INSTALL_DEPS)
+    run = subprocess.run([sh, "-c", script], cwd=repo, capture_output=True,
+                         text=True)
+    assert run.returncode == 0, run.stderr
+    log = (repo / "pip.log").read_text(encoding="utf-8")
+    assert expected in log, \
+        f"a {shape}-shaped repo never reaches `{expected}`:\n{log}"
 
 
 # --------------------------------------------------------------------------
