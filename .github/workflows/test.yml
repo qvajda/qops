@@ -7,6 +7,10 @@ on:
   # tested twice and a PR costs twice the wall clock it needs to.
   push:
     branches: ['master']
+    # A tag is the one commit where "the declared version agrees with the tag"
+    # is a real question, so it is the one commit the suite must run on to ask
+    # it (#40). Asking it anywhere else is red on every post-release tree.
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -19,6 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Without this the checkout carries no tags, `git describe` finds
+          # none, and the version check above passes by having nothing to look
+          # at — vacuous exactly where it was supposed to run (#40).
+          fetch-tags: true
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

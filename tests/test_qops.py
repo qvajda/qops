@@ -1621,20 +1621,36 @@ def _declared_version() -> str:
     return m.group(1)
 
 
-def test_declared_version_is_not_already_tagged():
-    version = _declared_version()
-    tags = subprocess.run(["git", "tag", "-l", "v*"], cwd=REPO,
-                          capture_output=True, text=True).stdout.split()
-    tagged_versions = {t[1:] for t in tags if t.startswith("v")}
-    if version not in tagged_versions:
-        return
-    # version already has a tag - fine only if HEAD IS that tag (i.e. we are
-    # not mid-edit on a tree that reuses a shipped version number).
+def test_the_tag_agrees_with_the_declared_version():
+    """Asked at the tag, which is the only place it is a real question (#40).
+
+    The first shape asked it on every commit — "the declared version is not
+    already tagged" — which is red on every post-release tree until someone
+    bumps, on every branch, blocking PRs `gate` was never aimed at. And it was
+    vacuous in CI, where `actions/checkout` fetches no tags, so it fired
+    exactly where it was wrong and never where it was right.
+
+    Cutting a tag is the act ADR-0023 rests on, and it is when the two must
+    agree. Off a tag there is nothing to check, so this is silent.
+    """
     exact = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
                            cwd=REPO, capture_output=True, text=True)
-    assert exact.stdout.strip() == f"v{version}", (
-        f"version {version} is already tagged elsewhere; bump pyproject.toml "
-        f"before cutting a new tag (this is what v0.1.1 skipped)")
+    tag = exact.stdout.strip()
+    if not tag.startswith("v"):
+        return                      # not a tagged commit: no question to ask
+    assert tag == f"v{_declared_version()}", (
+        f"HEAD is tagged {tag} against a tree declaring "
+        f"{_declared_version()}; bump pyproject.toml before cutting the tag "
+        f"(this is what v0.1.1 skipped)")
+
+
+def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
+    """The half of #40 that made the check vacuous. A workflow that never runs
+    on a tag, or runs without fetching tags, cannot ask the question above —
+    and a green step that produced no observable change did not happen."""
+    rendered = install.render_one("test.yml", qconfig.load(REPO))
+    assert "tags:" in rendered, "test.yml never runs on a tag push"
+    assert "fetch-tags: true" in rendered, "checkout fetches no tags"
 
 
 # --------------------------------------------------------------------------
