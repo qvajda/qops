@@ -297,6 +297,37 @@ def undeclared_labels(cfg: dict) -> list[str]:
 _NAMES_A_TEST = re.compile(r"tests?[/\\][\w./\\-]*\.py|\btest_\w+")
 
 
+# ADR-0028's filing bar. `ready:auto` is mechanical on `origin:owner`, so there
+# is no grant-time check left and the body is the last thing between the owner's
+# direction and an unattended commit to master. Rows write the section three
+# ways (`## Acceptance`, `**Acceptance:**`, a bare `Acceptance:` line), so the
+# marker is matched loosely and the *content* is what is actually asserted - a
+# heading with nothing under it states no outcome.
+_ACCEPTANCE = re.compile(r"^\s*(?:#{1,6}\s*|\*{1,2})?acceptance\b[:*\s]*", re.I)
+
+
+def states_an_outcome(body: str) -> bool:
+    """An acceptance marker with something after it: on its own line, or on the
+    next non-blank line that is not itself a heading.
+
+    The judgement half - whether the stated outcome is a *good* one - is not
+    here. That is the reviewer gate's, the same split R8 already makes between
+    naming a test and the test proving anything.
+    """
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        m = _ACCEPTANCE.match(line)
+        if not m:
+            continue
+        if line[m.end():].strip():
+            return True
+        for nxt in lines[i + 1:]:
+            if not nxt.strip():
+                continue
+            return not nxt.lstrip().startswith("#")
+    return False
+
+
 def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
     """`validate.require_on_open` and finding 1, asserted against a list of
     issues. Pure, so it is driven off a fixture and never off the tracker."""
@@ -338,6 +369,17 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
             if not _NAMES_A_TEST.search(issue["body"]):
                 problems.append(f"#{num}: `ready:auto` and its plan names no "
                                 f"test file — nothing can prove it done (R8)")
+        # ADR-0028: the bar is on *leaving* triage, not on filing. A row the
+        # owner filed in one line must be allowed to sit in triage - a control
+        # that refuses the filing itself has moved the toil, not removed it.
+        # `body` absent means the caller cannot answer, same as R8 above.
+        state = next((n for n in names if n.startswith("state:")), None)
+        if (state not in (None, "state:triage")
+                and issue.get("body") is not None
+                and not states_an_outcome(issue["body"])):
+            problems.append(f"#{num}: {state} and the body states no outcome — "
+                            f"nothing downstream can tell what done looks like "
+                            f"(ADR-0028)")
     return problems
 
 

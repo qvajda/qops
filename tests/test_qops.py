@@ -1696,3 +1696,64 @@ def test_the_planner_splits_what_the_triager_refused():
     role = _role("planner")
     assert "oversized" in role
     assert "the deliverable is the children" in role
+
+
+# --------------------------------------------------------------------------
+# ADR-0028 — the filing bar. With `ready:auto` mechanical on `origin:owner`
+# there is no grant-time left, so the row's body is the last thing between the
+# owner's direction and an unattended commit. R8 already checks that a row
+# names a test; nothing checked that it says what done looks like.
+# --------------------------------------------------------------------------
+
+_BAR_LABELS = [{"name": "type:code"}, {"name": "state:planned"},
+               {"name": "gate:machine"}]
+
+
+def test_doctor_refuses_a_row_with_no_stated_outcome():
+    """The pair is executed, not pattern-matched. ADR-0024's lesson: #1 was a
+    branch that read correctly and never ran, and a test that greps the rule
+    would have passed against it."""
+    cfg = qconfig.load(REPO)
+    barren = install.issue_invariants(
+        [{"number": 1, "labels": _BAR_LABELS,
+          "body": "the registration keeps drifting, someone should look"}], cfg)
+    assert any("#1" in p and "states no outcome" in p for p in barren)
+
+    stated = install.issue_invariants(
+        [{"number": 2, "labels": _BAR_LABELS,
+          "body": "It drifts.\n\n## Acceptance\n\n- `qops doctor` exits 1.\n"}], cfg)
+    assert stated == []
+
+
+def test_the_filing_bar_does_not_fire_in_triage():
+    """A row the owner filed in one line must be allowed to exist. The bar is a
+    gate on *leaving* triage, not on filing - ADR-0028 puts the last control on
+    the filing, and a control that refuses the filing itself has moved the toil
+    rather than removed it (CLAUDE.md:81)."""
+    cfg = qconfig.load(REPO)
+    triage = [{"name": "type:code"}, {"name": "state:triage"},
+              {"name": "gate:machine"}]
+    assert install.issue_invariants(
+        [{"number": 3, "labels": triage, "body": "the button is dead"}], cfg) == []
+
+
+def test_the_filing_bar_reads_an_acceptance_line_not_only_a_heading():
+    """Real rows write it three ways. The bar is the machine half - is there a
+    stated outcome at all - and judging whether the outcome is a *good* one is
+    the reviewer gate's, the same split R8 already makes."""
+    cfg = qconfig.load(REPO)
+    for body in ("## Acceptance\n- it exits 1\n",
+                 "**Acceptance:** `qops doctor` exits 1\n",
+                 "Acceptance: tests/test_qops.py passes."):
+        assert install.issue_invariants(
+            [{"number": 4, "labels": _BAR_LABELS, "body": body}], cfg) == [], body
+    # the heading alone, with nothing under it, is not a stated outcome
+    assert any("states no outcome" in p for p in install.issue_invariants(
+        [{"number": 5, "labels": _BAR_LABELS, "body": "## Acceptance\n\n"}], cfg))
+
+
+def test_the_filing_bar_cannot_answer_without_a_body():
+    """Same convention R8's check already uses: a caller that passed no body has
+    not granted a pass, the rule simply does not fire."""
+    cfg = qconfig.load(REPO)
+    assert install.issue_invariants([{"number": 6, "labels": _BAR_LABELS}], cfg) == []
