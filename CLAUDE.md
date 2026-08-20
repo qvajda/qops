@@ -76,6 +76,13 @@ obstacle to route around.
   merges by hand and never pushes to `master`. The merge is `automerge-loop`'s,
   on a `gate:machine` issue with every required check green.
   → `docs/reference/loops.md`, `docs/adr/0020-...`
+- **A row is one sortie, and its filing is the licence.** One deliverable, one
+  gate, one acceptance criterion; an oversized row is refused by the triager and
+  split by the planner, never labelled (ADR-0027). And a row may not leave
+  `state:triage` unless its body states an outcome a machine can turn into
+  criteria — with the grant mechanical, the filing is the only owner act left in
+  the chain, so it is where the check goes. A deliverable that cannot state a
+  criterion is a taste row, caught by the same check. → `docs/adr/0028-...`
 - **A workflow is a rendering, never a hand edit.** `.github/workflows/*` come
   from `qops/templates/*.tmpl` + config via `qops install`; `qops doctor`
   detects a hand edit. Fix the template or the config. **And it must run in a

@@ -14,6 +14,12 @@ the plan to cover the whole mission, and do not fold in adjacent problems you
 noticed. A sortie that no longer fits one session is a finding to report, not a
 plan to stretch.
 
+**Splitting a row the triager refused is an output, not an aside (ADR-0027).**
+One row is one sortie. When a row arrives reported as oversized, the deliverable
+is the children — each with its own deliverable, gate and acceptance criterion —
+not a plan that covers the parent. The parent is closed by the split or kept as
+the epic; it is never planned as one sortie.
+
 **What a plan must carry**, because the tracker is the source of truth and a
 plan that lives only in a message is lost:
 
