@@ -8,10 +8,14 @@ tripwire list live in config, and the workflow is a rendering of them.
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from . import reconcile
 
 TEMPLATES = Path(__file__).parent / "templates"
 WORKFLOWS = ("test.yml", "gate.yml", "guard.yml", "digest.yml", "groom.yml",
@@ -401,6 +405,126 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
     return problems
 
 
+def _test_targets(body: str) -> list[str]:
+    """The pytest node ids `_NAMES_A_TEST` finds in an issue body.
+
+    The regex matches a file (`tests/test_x.py`) and a bare function
+    (`test_x`) as two separate tokens even when the body writes them as one
+    node id (`tests/test_x.py::test_x`) — reusing the regex rather than
+    writing a second one that understands `::`. Stitch adjacent matches back
+    together here instead.
+    """
+    targets = []
+    for m in re.finditer(_NAMES_A_TEST, body):
+        tok = m.group()
+        if targets and body[targets[-1][1]:m.start()] == "::":
+            targets[-1] = (targets[-1][0] + "::" + tok, m.end())
+        else:
+            targets.append((tok, m.end()))
+    # Path-shaped only, deduplicated in first-seen order. `_NAMES_A_TEST` also
+    # matches a bare `test_x` written in running prose, and pytest reads a bare
+    # token as a path: it exits 4 with `file or directory not found` before a
+    # single test runs, which R8 read as the change failing its own proof.
+    # #27's PR failed on a sentence in its own plan. The loose half of the
+    # regex stays - it is what keeps a barren body out of `ready:auto` - but
+    # only a target pytest can resolve is worth spending a runner on.
+    return list(dict.fromkeys(t for t, _ in targets
+                              if "/" in t or "\\" in t))
+
+
+def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
+             head_ref: str | None = None) -> list[str]:
+    """ADR-0023's R8, made a proof rather than a filename regex.
+
+    `_NAMES_A_TEST` (label time) only asks that the body names a test file —
+    gameable by a named test with an empty body. This runs the named test(s)
+    twice: once at HEAD, once at the PR's merge base with only the named test
+    files carried forward. A test that passes at the merge base too proves
+    nothing about the change, which is exactly the hollow case this exists
+    to catch (finding, #27).
+
+    Driven off `issues` and a git tree, never off the tracker directly, so a
+    test can build both with a temporary repo. `base_ref`/`head_ref` default
+    to the PR context GitHub sets (`GITHUB_BASE_REF`/`GITHUB_HEAD_REF`); no
+    PR context means nothing to prove, and this is silent, even under
+    `strict()` — R8 is a `ready:auto` rule, not a general invariant.
+    """
+    base_ref = base_ref if base_ref is not None else os.environ.get("GITHUB_BASE_REF")
+    head_ref = head_ref if head_ref is not None else os.environ.get("GITHUB_HEAD_REF")
+    if not base_ref or not head_ref:
+        return []
+    num = reconcile.issue_number(head_ref)
+    if num is None:
+        return []
+    issue = next((i for i in issues if str(i.get("number")) == num), None)
+    if issue is None:
+        return []
+    if "ready:auto" not in {l["name"] for l in issue.get("labels", [])}:
+        return []
+    targets = _test_targets(issue.get("body") or "")
+    if not targets:
+        return []
+
+    root = Path(root)
+
+    last: list[str] = []
+
+    def run(cwd: Path) -> int:
+        # The output is kept, not discarded. "the test it names fails at HEAD"
+        # with nothing after it is unactionable from a CI log, and a run that
+        # only reproduces on the runner is exactly when it is needed.
+        out = subprocess.run([sys.executable, "-m", "pytest", "-q", *targets],
+                             cwd=cwd, capture_output=True, text=True,
+                             timeout=120)
+        last[:] = (out.stdout + out.stderr).strip().splitlines()[-15:]
+        return out.returncode
+
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", f"origin/{base_ref}", "HEAD"], cwd=root,
+            capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"doctor: skipping R8 proof for #{num} — could not find the "
+              f"merge base ({exc})")
+        return [f"#{num}: R8 proof did not run — {exc}"] if strict() else []
+
+    head_rc = run(root)
+    if head_rc == 5:
+        return [f"#{num}: {targets} resolves to no test at HEAD — R8 cannot "
+                f"prove it (ADR-0023)"]
+    if head_rc != 0:
+        print("\n".join(last))
+        return [f"#{num}: the test it names fails at HEAD — its own change "
+                f"does not pass R8's proof (ADR-0023)"]
+
+    with tempfile.TemporaryDirectory() as base_dir:
+        try:
+            subprocess.run(["git", "worktree", "add", "--detach", base_dir,
+                            merge_base], cwd=root, capture_output=True,
+                           text=True, timeout=30, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"doctor: skipping R8 proof for #{num} — could not check "
+                  f"out the merge base ({exc})")
+            return [f"#{num}: R8 proof did not run — {exc}"] if strict() else []
+        try:
+            test_dir = next((t.split("::")[0].replace("\\", "/").split("/")[0]
+                             for t in targets if "/" in t or "\\" in t),
+                            "tests")
+            src, dst = root / test_dir, Path(base_dir) / test_dir
+            if src.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)
+                shutil.copytree(src, dst)
+            base_rc = run(Path(base_dir))
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", base_dir],
+                           cwd=root, capture_output=True, text=True, timeout=30)
+
+    if base_rc == 0:
+        return [f"#{num}: the test it names passes without its change — R8 "
+                f"proves nothing (ADR-0023)"]
+    return []
+
+
 def open_issues(cfg: dict) -> list[dict] | None:
     """The tracker's open issues, or None with a printed reason.
 
@@ -457,6 +581,7 @@ def doctor(root: Path, cfg: dict) -> list[str]:
         print(f"doctor: invariants evaluated against {len(issues)} open rows "
               f"on {cfg.get('repo')}")
         problems += issue_invariants(issues, cfg)
+        problems += r8_proof(root, issues)
     elif strict():
         # The reason is already printed by open_issues(), one line up. What was
         # missing is that the skip left no state behind: the step passed, and
