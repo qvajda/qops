@@ -2115,3 +2115,8 @@ def test_no_agent_cites_a_file_that_does_not_exist(role):
         if cited.startswith("docs/") or cited.endswith("CLAUDE.md"):
             assert (REPO / cited).exists(), f"{role}.md cites missing {cited}"
         assert cited != "CONTEXT.md", f"{role}.md cites CONTEXT.md; it is CLAUDE.md"
+
+
+def test_gitattributes_declares_text_auto():
+    text = (REPO / ".gitattributes").read_text(encoding="utf-8")
+    assert "* text=auto" in text
