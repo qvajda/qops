@@ -307,12 +307,20 @@ def main(argv: list[str]) -> int:
         print(f"pickup-loop: could not claim #{num}, not launching: "
               f"{claim.stderr.strip()}", file=sys.stderr)
         return 1
-    ledger.append(root, "pickup", {"issue": num})
-    rc = subprocess.run(launch_argv(launch_prompt(num)),
-                        cwd=root, env=launch_env()).returncode
+    log = run_log_path(root, num)
+    ledger.append(root, "pickup", {"issue": num, "log": str(log)})
+    print(f"pickup-loop: run log {log}")
+    # Straight to the file rather than captured in memory, so the account
+    # survives a run that is killed rather than one that returns.
+    with log.open("w", encoding="utf-8", errors="replace") as fh:
+        rc = subprocess.run(launch_argv(launch_prompt(num)), cwd=root,
+                            env=launch_env(), stdout=fh,
+                            stderr=subprocess.STDOUT).returncode
+    # produced_work stays the thing that decides. Capturing output must not
+    # become it: an empty branch scoring as success is how #57 and #71 died.
     if rc or not produced_work(root, num):
         why = f"exit {rc}" if rc else "no commit and no PR"
-        release(root, num, why)
+        release(root, num, why, log)
         # Counted after the release, so this run is included in the count.
         if struck_out(root, num):
             strike_out(root, num, strikes(root, num), why)
@@ -382,18 +390,40 @@ def produced_work(root: Path, num: str) -> bool:
     return bool(json.loads(prs or "[]"))
 
 
-def release(root: Path, num: str, why: str) -> None:
+def run_log_path(root: Path, num: str) -> Path:
+    """Where a launched run's output goes: `.qops/runs/<issue>-<utc>.log`.
+
+    `subprocess.run(...)` used to pass the launch's stdout straight to the
+    scheduled task's console, which Task Scheduler discards. So the most
+    expensive part of a run was the part with no record, and diagnosing #47
+    meant reading raw session transcripts out of ~/.claude/projects by hand.
+
+    Ignored by git, and that is a control rather than hygiene: this repo is
+    public (ADR-0022) and the file is whatever the session printed.
+    """
+    d = Path(root) / ".qops" / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return d / f"{num}-{stamp}.log"
+
+
+def release(root: Path, num: str, why: str, log: Path | None = None) -> None:
     """The claim is not a one-way door. A failed run puts the sortie back where
-    the next fire can reach it and says why (CLAUDE.md, GL-46)."""
+    the next fire can reach it and says why (CLAUDE.md, GL-46).
+
+    `why` names the symptom. `log` is where the account is - without it the
+    next reader repeats #47's diagnosis by hand (#50)."""
     subprocess.run(["gh", "issue", "edit", num,
                     "--remove-label", "state:building",
                     "--add-label", "state:planned"],
                    cwd=root, capture_output=True, text=True)
+    where = f" The run log is `{log}`." if log else ""
     subprocess.run(["gh", "issue", "comment", num, "--body",
                     f"pickup-loop: unattended run produced nothing ({why}). "
-                    f"Claim released, back to `state:planned`."],
+                    f"Claim released, back to `state:planned`.{where}"],
                    cwd=root, capture_output=True, text=True)
-    ledger.append(root, "pickup_release", {"issue": num, "why": why})
+    ledger.append(root, "pickup_release",
+                  {"issue": num, "why": why, "log": str(log) if log else None})
     print(f"pickup-loop: released #{num} ({why}).", file=sys.stderr)
 
 

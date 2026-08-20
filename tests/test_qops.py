@@ -2008,3 +2008,52 @@ class _Ok:
     returncode = 0
     stdout = ""
     stderr = ""
+
+
+# --------------------------------------------------------------------------
+# #50 — a launched run leaves a readable account. When #47 failed four times
+# the substrate had recorded only "produced nothing (no commit and no PR)",
+# which names the symptom. The cause (#48) was recoverable only from raw
+# Claude Code transcripts in ~/.claude/projects, and only because the ledger
+# happens to record session_id. CLAUDE.md: a swallowed exception must leave a
+# state change behind - the release was the state change, and the account was
+# the missing half.
+# --------------------------------------------------------------------------
+
+def test_a_launched_run_leaves_a_readable_log_the_release_names(monkeypatch, tmp_path):
+    (tmp_path / ".qops").mkdir()
+    log = qops_pickup.run_log_path(tmp_path, "47")
+    assert log.parent == tmp_path / ".qops" / "runs"
+    assert log.name.startswith("47-") and log.suffix == ".log"
+
+    calls = []
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: calls.append(a[0]) or _Ok())
+    monkeypatch.setattr(qops_pickup, "strikes", lambda *a, **k: 1)
+    qops_pickup.release(tmp_path, "47", "no commit and no PR", log)
+    body = " ".join(" ".join(c) for c in calls)
+    assert log.name in body, "the release must name where the account is"
+
+
+def test_the_run_log_directory_is_ignored_by_git():
+    """This repo is public (ADR-0022) and the log is a transcript of an
+    unattended session. `.gitignore` enumerates `.qops/` paths one by one, so a
+    new directory under it is tracked by default - the failure mode is a
+    transcript published, and a secret in a public repo is rotated first.
+
+    Asserted by asking git, not by grepping .gitignore: the pattern can be
+    present and not match."""
+    probe = "'.qops/runs/47-20260820T170000Z.log'".strip("'")
+    out = subprocess.run(["git", "check-ignore", "-q", probe],
+                         cwd=REPO, capture_output=True, text=True)
+    assert out.returncode == 0, f"{probe} is not ignored — it would be committed"
+
+
+def test_the_log_does_not_change_what_counts_as_a_failed_run():
+    """Capturing output must not become the thing that decides. `produced_work`
+    counting commits ahead of the default branch is what stands behind #122,
+    and an empty branch scoring as success is how two sorties died silently."""
+    src = (REPO / "scripts" / "qops_pickup.py").read_text(encoding="utf-8")
+    launch = src[src.index("def main("):]
+    assert "produced_work(root, num)" in launch
+    assert "rev-list" in src or "produced_work" in src
