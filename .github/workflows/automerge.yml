@@ -133,12 +133,15 @@ jobs:
     # terminal state and stops carrying `ready:auto` — the claim `pickup-loop`
     # took is released on success, not only on failure.
     #
-    # It labels; it does NOT close. A merge is not a judgement, and on a
-    # `gate:taste` sortie the owner's read is the only judgement there is.
-    # Closing stays the owner's.
+    # It always labels. On `gate:taste` it stops there: a merge is not a
+    # judgement, and the owner's read is the only judgement there is - closing
+    # stays theirs. On `gate:machine` it also closes (ADR-0025): the gate
+    # already judged this row the same way it judged the merge, so there is no
+    # taste read left to give and no owner action to wait on.
     #
-    # Unconditional on the gate: whoever merged it, by hand or by the job
-    # above, the code is on master and the row is not in flight.
+    # Unconditional label step, on the gate: whoever merged it, by hand or by
+    # the job above, the code is on master and the row is not in
+    # flight.
     if: >-
       github.event.action == 'closed'
       && github.event.pull_request.merged == true
@@ -151,6 +154,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ github.event.pull_request.head.ref }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           n=$(printf '%s' "$REF" | sed -nE 's|^[a-z]+/([0-9]+)-.*|\1|p')
           # `no-issue/` branches carry no sortie and have nothing to advance.
@@ -163,3 +167,12 @@ jobs:
             --remove-label state:triage --remove-label state:planned \
             --remove-label state:building --remove-label state:gate \
             --remove-label state:review --remove-label state:blocked
+          labels=$(gh issue view "$n" --repo qvajda/qops --json labels -q '.labels[].name')
+          case "$labels" in
+            *gate:machine*)
+              case "$labels" in
+                *no-auto*) echo "::notice::#$n carries no-auto - not closing" ;;
+                *) gh issue close "$n" --repo qvajda/qops --comment \
+                     "Closed by \`automerge-loop\`: \`gate:machine\`, PR #$PR merged - nothing left to judge (ADR-0025)." ;;
+              esac ;;
+          esac

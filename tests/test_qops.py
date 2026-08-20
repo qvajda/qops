@@ -760,10 +760,15 @@ def test_a_merged_pr_advances_its_issue_off_the_claim():
     assert "--remove-label state:building" in advance
 
 
-def test_advance_labels_but_never_closes_the_issue():
-    """A merged PR means the code landed, not that the sortie is judged. On
-    `gate:taste` work the owner's read is the only judgement there is."""
-    assert "gh issue close" not in _automerge_text()
+def test_advance_closes_only_behind_a_gate_machine_check():
+    """ADR-0025: a merge means the code landed, and on `gate:taste` work that
+    is not the sortie being judged — the owner's read is the only judgement
+    there is, so the close there stays theirs. On `gate:machine` there is no
+    judgement left to give, so `advance` closes it, gated on the label."""
+    text = _automerge_text()
+    assert "gh issue close" in text
+    assert "*gate:machine*" in text
+    assert "*no-auto*" in text
 
 
 def test_advance_does_not_depend_on_the_agent_writing_closes():
@@ -1106,6 +1111,8 @@ class FakeGh:
                 if a == "--remove-label":
                     names.discard(args[i + 1])
             self.issues[num]["labels"] = [{"name": n} for n in sorted(names)]
+        if args[1] == "close":
+            self.issues[num]["state"] = "CLOSED"
         return ""
 
 
@@ -1116,9 +1123,11 @@ def _building(num="59"):
 
 
 def test_reconcile_advances_a_merged_sortie_whose_row_is_still_in_flight():
+    """`_building()` is `gate:machine`, so the row is both advanced and closed
+    (ADR-0025) — the label transition is asserted regardless."""
     gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], _building())
     report = reconcilemod.reconcile("o/r", run=gh)
-    assert report["advanced"] == [("59", "148")]
+    assert report["closed"] == [("59", "148")]
     names = {l["name"] for l in gh.issues["59"]["labels"]}
     assert "state:done" in names
     assert "ready:auto" not in names and "state:building" not in names
@@ -1126,22 +1135,61 @@ def test_reconcile_advances_a_merged_sortie_whose_row_is_still_in_flight():
 
 def test_reconcile_is_idempotent():
     """It runs against rows `advance` already handled correctly — a human-token
-    merge still fires `advance` (PR #146). Twice must be once."""
+    merge still fires `advance` (PR #146). Twice must be once. `_building()` is
+    `gate:machine`, so the first run both advances and closes it; the second
+    run finds it already closed and does nothing further."""
     gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], _building())
     reconcilemod.reconcile("o/r", run=gh)
-    edits = len([c for c in gh.calls if c[:2] == ["issue", "edit"]])
+    edits = len([c for c in gh.calls
+                 if c[:2] in (["issue", "edit"], ["issue", "close"])])
     second = reconcilemod.reconcile("o/r", run=gh)
-    assert second["advanced"] == []
-    assert second["skipped"] == [("59", "already state:done")]
-    assert len([c for c in gh.calls if c[:2] == ["issue", "edit"]]) == edits
+    assert second["advanced"] == [] and second["closed"] == []
+    assert second["skipped"] == [("59", "issue already closed")]
+    assert len([c for c in gh.calls
+                if c[:2] in (["issue", "edit"], ["issue", "close"])]) == edits
 
 
-def test_reconcile_labels_and_never_closes():
-    """ADR-0020's limit, same as `advance`: a merge means the code landed, not
-    that the sortie is judged. Closing stays the owner's."""
+def test_reconcile_closes_a_gate_machine_row_the_gate_already_judged():
+    """ADR-0025: a `gate:machine` merge leaves nothing left to judge, so
+    closing it is not a recurring owner action."""
     gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], _building())
-    reconcilemod.reconcile("o/r", run=gh)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["advanced"] == [] and report["closed"] == [("59", "148")]
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert closes and closes[0][2] == "59"
+
+
+def test_reconcile_never_closes_a_gate_taste_row():
+    """ADR-0020's limit, unchanged for `gate:taste`: a merge means the code
+    landed, not that the sortie is judged. Closing that one stays the owner's."""
+    issues = {"59": {"state": "OPEN", "labels": [{"name": "state:building"},
+                                                 {"name": "ready:auto"},
+                                                 {"name": "gate:taste"}]}}
+    gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], issues)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["advanced"] == [("59", "148")] and report["closed"] == []
     assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
+
+
+def test_reconcile_heals_a_row_advance_already_labelled_but_never_closed():
+    """The backstop half: a row that already carries `state:done` and
+    `gate:machine` but is still open (e.g. #21/#23 — a hand merge advance also
+    caught, from before ADR-0025) gets closed on the next reconcile run, not
+    left to an owner to notice."""
+    issues = {"59": {"state": "OPEN", "labels": [{"name": "state:done"},
+                                                 {"name": "gate:machine"}]}}
+    gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], issues)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["closed"] == [("59", "148")]
+
+
+def test_reconcile_no_auto_vetoes_the_close_same_as_the_merge():
+    issues = {"59": {"state": "OPEN", "labels": [{"name": "state:done"},
+                                                 {"name": "gate:machine"},
+                                                 {"name": "no-auto"}]}}
+    gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], issues)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["closed"] == [] and report["skipped"] == [("59", "already state:done")]
 
 
 def test_reconcile_skips_a_branch_that_names_no_issue():
@@ -1169,7 +1217,8 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path):
     assert comments and "could not advance" in comments[0][-1]
 
     def fake(repo, limit=50, run=None):
-        return {"advanced": [], "skipped": [], "failed": [("59", "gh boom")]}
+        return {"advanced": [], "closed": [], "skipped": [],
+                "failed": [("59", "gh boom")]}
 
     saved, reconcilemod.reconcile = reconcilemod.reconcile, fake
     try:

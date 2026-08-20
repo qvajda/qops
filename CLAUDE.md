@@ -78,6 +78,12 @@ obstacle to route around.
 - **The critic of a decision is a test.** An instruction in a prompt is a
   preference, not a control — if a decision says something must never happen, an
   assertion says so too, in code, next to the decision.
+- **Recurring owner toil is not an implementation.** If closing a gap needs a
+  human hand on a keyboard *every time* the gap recurs, the design is not
+  finished — a defect this substrate can detect is a defect this substrate
+  closes. An owner action is legitimate only where it is a *decision*: a taste
+  judgement, a grant, an irreversible act — never a fact already derivable
+  from state already on the tracker. → `docs/adr/0025-...`
 
 ## Conventions
 
