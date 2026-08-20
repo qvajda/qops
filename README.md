@@ -96,6 +96,14 @@ The ADRs numbered below 0013 that appear in `docs/adr/` are the source repo's,
 kept at their original numbers so that citations in the code keep resolving. The
 gaps are that repo's pipeline decisions, and they did not travel.
 
+## Versioning
+
+`pyproject.toml`'s `version` is what a consumer pins against, via a tag. `v0.1.1`
+was tagged against a tree that still declared `version = "0.1.0"` — a silent
+mislabel, caught only when a consumer's `pip show qops` reported a version the
+tag didn't match. `tests/test_qops.py` now asserts the declared version was
+bumped before a tag can be cut against it.
+
 ## Licence
 
 MIT. See `LICENSE`, and `docs/adr/0022-the-substrate-is-public.md` for why this

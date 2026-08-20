@@ -10,10 +10,21 @@ Two contracts, both asserted in tests/test_qops.py:
 import re
 import subprocess
 import sys
+from importlib import metadata as _metadata
 from pathlib import Path
 
 TOKEN_CAP = 400
 BYTES_PER_TOKEN = 4          # PRD §2.1's own divisor, so the numbers compare
+
+
+def qops_version() -> str:
+    """The installed substrate's version — what `pip show qops` would report,
+    read the same way, so a session can tell a stale pin from the brief it
+    already reads (v0.1.1 shipped mislabelled; nothing surfaced that fact)."""
+    try:
+        return _metadata.version("qops")
+    except _metadata.PackageNotFoundError:
+        return "dev"
 
 
 def tokens(text: str) -> int:
@@ -127,7 +138,7 @@ def render_from(state: dict, cfg: dict) -> str:
     if state.get("worktrees", 0) >= cfg.get("max_worktrees", 99):
         lines.append(f"{state['worktrees']} worktrees live — at the cap.")
 
-    head = f"qops | `{state.get('branch','?')}`"
+    head = f"qops {qops_version()} | `{state.get('branch','?')}`"
     if state.get("ahead"):
         head += f" | {state['ahead']} unpushed"
     if state.get("issue"):
