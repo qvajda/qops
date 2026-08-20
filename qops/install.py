@@ -459,10 +459,17 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
 
     root = Path(root)
 
+    last: list[str] = []
+
     def run(cwd: Path) -> int:
-        return subprocess.run([sys.executable, "-m", "pytest", "-q", *targets],
-                              cwd=cwd, capture_output=True, text=True,
-                              timeout=120).returncode
+        # The output is kept, not discarded. "the test it names fails at HEAD"
+        # with nothing after it is unactionable from a CI log, and a run that
+        # only reproduces on the runner is exactly when it is needed.
+        out = subprocess.run([sys.executable, "-m", "pytest", "-q", *targets],
+                             cwd=cwd, capture_output=True, text=True,
+                             timeout=120)
+        last[:] = (out.stdout + out.stderr).strip().splitlines()[-15:]
+        return out.returncode
 
     try:
         merge_base = subprocess.run(
@@ -478,6 +485,8 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
         return [f"#{num}: {targets} resolves to no test at HEAD — R8 cannot "
                 f"prove it (ADR-0023)"]
     if head_rc != 0:
+        print("
+".join(last))
         return [f"#{num}: the test it names fails at HEAD — its own change "
                 f"does not pass R8's proof (ADR-0023)"]
 
