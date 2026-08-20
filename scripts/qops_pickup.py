@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -167,6 +168,82 @@ def report_unlaunchable(root: Path, num: str, paths: list[str]) -> None:
     ledger.append(root, "pickup_skip", {"issue": num, "paths": paths})
 
 
+# Three consecutive failed runs on one row and the picker stops taking it.
+#
+# The Loop Doctor's finding 1 made the claim the no-progress stop: claim before
+# launching, so an hourly fire cannot re-pick the same sortie forever. #122
+# then made a failed run release that claim, so a row is never stuck at
+# state:building where no later fire can reach it. Both are right, and together
+# they mean a row that fails DETERMINISTICALLY is picked every hour forever -
+# #47 burned four sessions an hour apart and nothing counted (#49).
+STRIKES = 3
+
+# A ledger grows forever, and an enablement six weeks ago is not this week's
+# evidence. Releases older than this do not count toward a strike-out.
+STRIKE_WINDOW_DAYS = 14
+
+
+def strikes(root: Path, num: str, now: str | None = None) -> int:
+    """Consecutive failed runs on this row, most recent last.
+
+    Consecutive, not cumulative: a `pickup` with no `pickup_release` after it
+    is a run that worked, and it resets the count. The off-by-one here fails
+    open - it keeps burning sessions - so the interleaved case is the one the
+    tests lean on. A `pickup_skip` (#48) is not a strike: nothing was spent and
+    no session ever attempted the row.
+    """
+    cutoff = (datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
+              ) - timedelta(days=STRIKE_WINDOW_DAYS)
+    count, open_attempt = 0, False
+    for rec in ledger.read(root):
+        if str(rec.get("issue")) != str(num):
+            continue
+        try:
+            if datetime.fromisoformat(rec["ts"]) < cutoff:
+                continue
+        except (KeyError, ValueError):
+            continue
+        if rec.get("event") == "pickup":
+            if open_attempt:      # the previous claim never released: it worked
+                count = 0
+            open_attempt = True
+        elif rec.get("event") == "pickup_release":
+            count += 1
+            open_attempt = False
+    return count
+
+
+def struck_out(root: Path, num: str, now: str | None = None) -> bool:
+    return strikes(root, num, now) >= STRIKES
+
+
+def strike_out(root: Path, num: str, count: int, why: str) -> None:
+    """Stop picking this row, and say on it that a machine wrote an owner flag.
+
+    `no-auto` already means "the owner is handling this one" and already vetoes
+    the pickup, the merge, the close and the relabel, so it is the right flag
+    and not a new one. It is still a widening: every other `no-auto` in this
+    substrate is the owner's. It is defensible only because the alternative is
+    an unbounded spend, and a widening done quietly is worse than the spend.
+    """
+    subprocess.run(["gh", "issue", "comment", num, "--body",
+                    f"pickup-loop: **{count} consecutive unattended runs "
+                    f"failed** on this row, the last one with `{why}`. No "
+                    f"further attempts - `no-auto` applied so the queue moves "
+                    f"on.\n\nThis flag is normally the **owner's** alone. A "
+                    f"loop wrote it here because the alternative is a session "
+                    f"an hour, indefinitely, on a row that has already refused "
+                    f"three (#49). Remove `no-auto` to hand it back to the "
+                    f"loop once the cause is understood; the run logs are the "
+                    f"place to start."],
+                   cwd=root, capture_output=True, text=True)
+    subprocess.run(["gh", "issue", "edit", num, "--add-label", "no-auto"],
+                   cwd=root, capture_output=True, text=True)
+    ledger.append(root, "pickup_struck_out", {"issue": num, "strikes": count})
+    print(f"pickup-loop: #{num} struck out after {count} failed runs.",
+          file=sys.stderr)
+
+
 def first_launchable(root: Path, picks: list[dict]) -> dict | None:
     """The least-recently-updated row the launch can actually work.
 
@@ -176,10 +253,17 @@ def first_launchable(root: Path, picks: list[dict]) -> dict | None:
     table keeps apart.
     """
     for issue in sorted(picks, key=lambda i: i["updatedAt"]):
+        num = str(issue["number"])
+        # A row already struck out is skipped in silence: strike_out() said it
+        # once on the row and applied `no-auto`, so this only fires in the gap
+        # before that label lands, or if it was removed by hand.
+        if struck_out(root, num):
+            print(f"pickup-loop: skipping #{num} - struck out after "
+                  f"{strikes(root, num)} failed runs (#49).")
+            continue
         paths = unwritable(issue.get("body") or "")
         if not paths:
             return issue
-        num = str(issue["number"])
         print(f"pickup-loop: skipping #{num} - the launch cannot write "
               f"{', '.join(paths)}.")
         report_unlaunchable(root, num, paths)
@@ -227,7 +311,11 @@ def main(argv: list[str]) -> int:
     rc = subprocess.run(launch_argv(launch_prompt(num)),
                         cwd=root, env=launch_env()).returncode
     if rc or not produced_work(root, num):
-        release(root, num, f"exit {rc}" if rc else "no commit and no PR")
+        why = f"exit {rc}" if rc else "no commit and no PR"
+        release(root, num, why)
+        # Counted after the release, so this run is included in the count.
+        if struck_out(root, num):
+            strike_out(root, num, strikes(root, num), why)
         return rc or 1
     return 0
 
