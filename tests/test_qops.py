@@ -1914,3 +1914,97 @@ def test_every_row_unlaunchable_is_not_reported_as_an_idle_queue(monkeypatch, tm
     monkeypatch.setattr(qops_pickup, "report_unlaunchable", lambda *a, **k: None)
     assert qops_pickup.first_launchable(tmp_path, rows) is None
     assert "cannot write" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# #49 — three strikes stop the pickup. Two correct mechanisms cancelled out:
+# the Loop Doctor's finding 1 made the claim the no-progress stop, and #122
+# made a failed run release that claim so a row is never stuck. Together a
+# deterministically failing row is picked every hour forever - #47 burned four
+# sessions an hour apart, and nothing counted.
+# --------------------------------------------------------------------------
+
+def _ledger(tmp_path, *events):
+    d = tmp_path / ".qops"
+    d.mkdir(exist_ok=True)
+    with (d / "ledger.jsonl").open("w", encoding="utf-8") as fh:
+        for i, (event, num) in enumerate(events):
+            fh.write(json.dumps({"ts": f"2026-08-20T{i:02d}:00:00+00:00",
+                                 "event": event, "issue": str(num)}) + "\n")
+    return tmp_path
+
+
+def test_three_consecutive_failed_runs_stop_the_pickup(tmp_path):
+    two = _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
+                  ("pickup", 47), ("pickup_release", 47))
+    assert qops_pickup.strikes(two, "47") == 2
+    assert not qops_pickup.struck_out(two, "47")
+
+    three = _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
+                    ("pickup", 47), ("pickup_release", 47),
+                    ("pickup", 47), ("pickup_release", 47))
+    assert qops_pickup.strikes(three, "47") == 3
+    assert qops_pickup.struck_out(three, "47")
+
+
+def test_a_successful_run_resets_the_count(tmp_path):
+    """Consecutive, not cumulative. The off-by-one here fails open - it keeps
+    burning sessions - so the interleaved case is the one that matters."""
+    root = _ledger(tmp_path,
+                   ("pickup", 47), ("pickup_release", 47),
+                   ("pickup", 47), ("pickup_release", 47),
+                   ("pickup", 47),                      # no release: it worked
+                   ("pickup", 47), ("pickup_release", 47))
+    assert qops_pickup.strikes(root, "47") == 1
+    assert not qops_pickup.struck_out(root, "47")
+
+
+def test_strikes_are_counted_per_row(tmp_path):
+    root = _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
+                   ("pickup", 33), ("pickup_release", 33),
+                   ("pickup", 47), ("pickup_release", 47))
+    assert qops_pickup.strikes(root, "47") == 2
+    assert qops_pickup.strikes(root, "33") == 1
+
+
+def test_a_skip_is_not_a_strike(tmp_path):
+    """#48 skips a row before the claim and spends nothing. Counting that as a
+    failure would apply no-auto to a row no session ever attempted."""
+    root = _ledger(tmp_path, ("pickup_skip", 13), ("pickup_skip", 13),
+                   ("pickup_skip", 13))
+    assert qops_pickup.strikes(root, "13") == 0
+
+
+def test_the_strike_count_is_windowed(tmp_path):
+    """A ledger grows forever and an enablement six weeks ago is not this
+    week's evidence. Releases outside the window do not count."""
+    d = tmp_path / ".qops"
+    d.mkdir(exist_ok=True)
+    old, new = "2026-06-01T00:00:00+00:00", "2026-08-20T00:00:00+00:00"
+    with (d / "ledger.jsonl").open("w", encoding="utf-8") as fh:
+        for ts in (old, old, old):
+            fh.write(json.dumps({"ts": ts, "event": "pickup_release",
+                                 "issue": "47"}) + "\n")
+        fh.write(json.dumps({"ts": new, "event": "pickup_release",
+                             "issue": "47"}) + "\n")
+    assert qops_pickup.strikes(tmp_path, "47", now="2026-08-20T12:00:00+00:00") == 1
+
+
+def test_striking_out_is_loud_and_says_it_is_a_widening(monkeypatch, tmp_path):
+    """A machine writing no-auto is a real widening: every other no-auto in
+    this substrate is the owner's. It is defensible only because the
+    alternative is an unbounded spend, and it must say so on the row."""
+    calls = []
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: calls.append(a[0]) or _Ok())
+    qops_pickup.strike_out(tmp_path, "47", 3, "no commit and no PR")
+    flat = " ".join(" ".join(c) for c in calls)
+    assert "no-auto" in flat
+    assert "3" in flat and "no commit and no PR" in flat
+    assert "owner" in flat.lower()
+
+
+class _Ok:
+    returncode = 0
+    stdout = ""
+    stderr = ""
