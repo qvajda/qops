@@ -1325,16 +1325,28 @@ def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     assert any("#3" in p and "gate:none" in p for p in problems)
 
 
-def test_ready_auto_outside_state_planned_is_reported():
-    """Finding 1: pickup-loop's eligible() requires state:planned, so the flag
-    is inert and invisible anywhere else — it reads as a filled queue."""
+def test_ready_auto_is_reported_only_where_it_is_stranded():
+    """Finding 1 said `ready:auto` outside `state:planned` is inert, and that
+    over-reached: `state:building` is the flag doing its job. pickup writes
+    `state:building` at launch and only `automerge` clears it, *after* the
+    merge — so reporting it made `gate` red, held the PR, and the label was
+    never cleared. Every picked-up row bricked itself (#60). The flag is
+    stranded only where nothing downstream advances it."""
     cfg = qconfig.load(REPO)
-    issues = [{"number": 136, "labels": [{"name": "type:code"},
-                                         {"name": "state:triage"},
-                                         {"name": "gate:machine"},
-                                         {"name": "ready:auto"}]}]
-    assert any("#136" in p and "ready:auto" in p
-               for p in install.issue_invariants(issues, cfg))
+
+    def problems(state):
+        return install.issue_invariants(
+            [{"number": 136, "labels": [{"name": "type:code"},
+                                        {"name": state},
+                                        {"name": "gate:machine"},
+                                        {"name": "ready:auto"}]}], cfg)
+
+    for stranded in ("state:triage", "state:blocked"):
+        assert any("#136" in p and "ready:auto" in p
+                   for p in problems(stranded)), stranded
+    for in_flight in ("state:planned", "state:building", "state:gate",
+                      "state:review", "state:done"):
+        assert not any("ready:auto" in p for p in problems(in_flight)), in_flight
 
 
 def test_doctor_does_not_require_the_network(capsys):
