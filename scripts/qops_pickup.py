@@ -32,6 +32,7 @@ and a blanket bypass (`--dangerously-skip-permissions`) is never passed.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -74,7 +75,7 @@ def candidates(root: Path) -> list[dict] | None:
     """
     out = subprocess.run(
         ["gh", "issue", "list", "--state", "open", "--limit", "100",
-         "--json", "number,title,labels,updatedAt"],
+         "--json", "number,title,labels,updatedAt,body"],
         cwd=root, capture_output=True, text=True)
     if out.returncode:
         print(out.stderr.strip(), file=sys.stderr)
@@ -114,6 +115,77 @@ def repo_root(argv: list[str]) -> Path:
     return root
 
 
+# Paths the launch may not write, whatever the row says. Not a repo rule and
+# not a config key: `--permission-mode acceptEdits` (#122) grants file edits
+# and NOT edits to the files that configure Claude Code itself, which is the
+# harness protecting an agent from rewriting its own role. That protection is
+# right and is not what should widen - an unattended agent that may edit its
+# own role, hooks or permission list has no controls left. What was missing is
+# that eligible() could not see it, so #47 launched four times and died four
+# times on the same tool result.
+UNWRITABLE = (".claude/",)
+
+# Only the `Expected to touch:` half of the Files section, and only the paths
+# it backticks. Every specced row in this repo names `.claude/` under *Must not
+# touch* - reading the wrong half would make the entire backlog unlaunchable,
+# which is the one failure mode of this check that empties the queue silently.
+_EXPECTED = re.compile(r"^[ \t]*Expected to touch:(?P<rest>.*)$", re.M | re.I)
+_PATH = re.compile(r"`([^`]+)`")
+
+
+def unwritable(body: str) -> list[str]:
+    """The paths a row expects to touch that the launch may not write."""
+    m = _EXPECTED.search(body or "")
+    if not m:
+        return []                      # no Files section is #42's question
+    return [p for p in _PATH.findall(m.group("rest"))
+            # removeprefix, not lstrip: lstrip strips *characters*, so
+            # ".claude/x" lost its dot and matched nothing.
+            if any(p.removeprefix("./").startswith(u) for u in UNWRITABLE)]
+
+
+def report_unlaunchable(root: Path, num: str, paths: list[str]) -> None:
+    """Say it on the row, once. Skipping in silence would read as an idle
+    queue, and repeating it hourly would be noise the owner learns to ignore.
+    """
+    marker = "pickup-loop: this row cannot be worked unattended"
+    seen = subprocess.run(["gh", "issue", "view", num, "--json", "comments",
+                           "--jq", ".comments[].body"],
+                          cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if marker in (seen.stdout or ""):
+        return
+    subprocess.run(
+        ["gh", "issue", "comment", num, "--body",
+         f"{marker}. Its `Expected to touch:` names "
+         + ", ".join(f"`{p}`" for p in paths)
+         + ", and the launch runs under `--permission-mode acceptEdits`, which "
+           "does not grant writes to the files that configure Claude Code "
+           "itself. Skipped before the claim, so no session was spent and the "
+           "row is untouched. Work it in a session, or split the part that "
+           "needs no such write (#48)."],
+        cwd=root, capture_output=True, text=True)
+    ledger.append(root, "pickup_skip", {"issue": num, "paths": paths})
+
+
+def first_launchable(root: Path, picks: list[dict]) -> dict | None:
+    """The least-recently-updated row the launch can actually work.
+
+    A skipped row is not an idle queue: `nothing eligible` means the backlog
+    was read and nothing qualified, and printing that sentence for a backlog
+    whose every row was skipped would collapse two states loops.md's reading
+    table keeps apart.
+    """
+    for issue in sorted(picks, key=lambda i: i["updatedAt"]):
+        paths = unwritable(issue.get("body") or "")
+        if not paths:
+            return issue
+        num = str(issue["number"])
+        print(f"pickup-loop: skipping #{num} - the launch cannot write "
+              f"{', '.join(paths)}.")
+        report_unlaunchable(root, num, paths)
+    return None
+
+
 def main(argv: list[str]) -> int:
     root = repo_root(argv)
     cfg = qconfig.load(root)
@@ -130,7 +202,11 @@ def main(argv: list[str]) -> int:
     if not picks:
         print("pickup-loop: nothing eligible (state:planned + ready:auto + a real gate).")
         return 0
-    issue = sorted(picks, key=lambda i: i["updatedAt"])[0]
+    issue = first_launchable(root, picks)
+    if issue is None:
+        print("pickup-loop: every eligible row names a path the launch may not "
+              "write - nothing was picked, and this is NOT an idle queue (#48).")
+        return 0
     print(f"pickup-loop: #{issue['number']} {issue['title']}")
     if "--launch" not in argv:
         print("pickup-loop: dry run, not launching. Pass --launch to start an agent.")

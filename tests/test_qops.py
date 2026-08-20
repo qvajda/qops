@@ -1852,3 +1852,65 @@ def test_the_loop_still_never_labels_even_though_the_role_now_may():
                      .read_text(encoding="utf-8").lower().split())
     assert "warns and does not label" in loops
     assert "the loop still never labels, the role now may" in loops
+
+
+# --------------------------------------------------------------------------
+# #48 — a row the launch may not write is never claimed. Four unattended runs
+# on #47 (2026-08-20 13:00-16:00 UTC) each died on the same tool result: the
+# harness refuses writes to files that configure Claude Code itself, and
+# `--permission-mode acceptEdits` does not cover them. eligible() cannot see
+# that, so the row passed every check, launched, and failed identically.
+# The grant is NOT what should widen - an unattended agent that may rewrite
+# its own role has no controls left.
+# --------------------------------------------------------------------------
+
+_FILES_OK = "## Files\n\nExpected to touch: `qops/install.py`, `tests/test_qops.py`\n"
+_FILES_ROLE = ("## Files\n\nExpected to touch: `.claude/agents/triager.md`, "
+               "`tests/test_qops.py`\n")
+_FILES_PROSE = ("## Files\n\nExpected to touch: `qops/install.py`\n"
+                "Must not touch: `.claude/settings.json`, `qops/templates/`\n")
+
+
+def test_a_row_the_launch_may_not_write_is_never_claimed():
+    """The whole point is to spend nothing. A row naming an unwritable path is
+    reported and skipped *before* the claim, so it never reaches state:building
+    and never burns a session."""
+    assert qops_pickup.unwritable(_FILES_ROLE) == [".claude/agents/triager.md"]
+    assert qops_pickup.unwritable(_FILES_OK) == []
+
+
+def test_must_not_touch_is_not_expected_to_touch():
+    """The fragile case, and the one that would silently empty the queue: every
+    specced row in this repo names `.claude/` under *Must not touch*. Reading
+    the wrong half would make every row unlaunchable."""
+    assert qops_pickup.unwritable(_FILES_PROSE) == []
+
+
+def test_a_row_with_no_files_section_is_launchable():
+    """Filing a row with no Files section is a filing-bar question (#42), not
+    this check's. Silence here must not read as a refusal."""
+    assert qops_pickup.unwritable("just a body") == []
+
+
+def test_the_picker_skips_to_the_next_row_rather_than_stopping(monkeypatch, tmp_path):
+    """A skipped row is not an idle queue. The run must go on to pick the next
+    eligible sortie, and say which row it passed over and why."""
+    rows = [{"number": 47, "title": "role", "updatedAt": "2026-08-20T01:00:00Z",
+             "body": _FILES_ROLE, "labels": []},
+            {"number": 33, "title": "gitattributes", "updatedAt": "2026-08-20T02:00:00Z",
+             "body": _FILES_OK, "labels": []}]
+    monkeypatch.setattr(qops_pickup, "candidates", lambda _root: rows)
+    monkeypatch.setattr(qops_pickup, "report_unlaunchable", lambda *a, **k: None)
+    picked = qops_pickup.first_launchable(tmp_path, rows)
+    assert picked["number"] == 33
+
+
+def test_every_row_unlaunchable_is_not_reported_as_an_idle_queue(monkeypatch, tmp_path, capsys):
+    """`nothing eligible` means the backlog was read and nothing qualified.
+    A backlog whose every row was skipped is a different state and the log must
+    not print the same sentence for both (loops.md's reading table)."""
+    rows = [{"number": 47, "title": "role", "updatedAt": "2026-08-20T01:00:00Z",
+             "body": _FILES_ROLE, "labels": []}]
+    monkeypatch.setattr(qops_pickup, "report_unlaunchable", lambda *a, **k: None)
+    assert qops_pickup.first_launchable(tmp_path, rows) is None
+    assert "cannot write" in capsys.readouterr().out
