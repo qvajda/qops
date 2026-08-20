@@ -485,8 +485,7 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
         return [f"#{num}: {targets} resolves to no test at HEAD — R8 cannot "
                 f"prove it (ADR-0023)"]
     if head_rc != 0:
-        print("
-".join(last))
+        print("\n".join(last))
         return [f"#{num}: the test it names fails at HEAD — its own change "
                 f"does not pass R8's proof (ADR-0023)"]
 
