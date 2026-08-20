@@ -66,6 +66,23 @@ retroactively repair #12: that issue is `gate:taste` and its `state:done` was
 wrong on the facts (only part of its scope shipped), which this ADR does not
 touch — see #12's own correction, a label fix, not a close.
 
+## Amended 2026-08-20, same day: `no-auto` also vetoes the relabel
+
+Landing the above surfaced a second bug immediately: `qops reconcile`,
+re-run after this PR merged, relabelled #12 back to `state:done` — a row
+corrected by hand minutes earlier to `state:planned`, because PR #32 (which
+still names #12 in its branch) closed only part of #12's scope. `reconcile`
+and `advance` read "the branch's PR is merged" as "this issue is done," which
+is only true for a correctly-sized sortie. `no-auto` already means "the owner
+is handling this one"; it now vetoes the relabel-to-`state:done` too, checked
+before either mechanism touches the row, not only before it would close one.
+
+This does not fix the general case — a multi-part issue with no `no-auto` on
+it will keep flipping to `state:done` on every merged PR that names it, for
+as long as that PR stays inside `reconcile`'s merged-PR window. The general
+fix (an issue should be sized as one sortie, or the branch should not be
+allowed to imply full closure of a multi-part one) is not taken here.
+
 ## Consequences
 
 - `qops/reconcile.py::reconcile()` gains a `closed` bucket alongside

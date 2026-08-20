@@ -1189,7 +1189,23 @@ def test_reconcile_no_auto_vetoes_the_close_same_as_the_merge():
                                                  {"name": "no-auto"}]}}
     gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], issues)
     report = reconcilemod.reconcile("o/r", run=gh)
-    assert report["closed"] == [] and report["skipped"] == [("59", "already state:done")]
+    assert report["closed"] == [] and report["skipped"] == [("59", "no-auto")]
+    assert not [c for c in gh.calls if c[:2] in (["issue", "close"], ["issue", "edit"])]
+
+
+def test_reconcile_no_auto_vetoes_re_advancing_a_row_too():
+    """#12: a merged PR against this issue's branch number relabelled
+    `state:done` over a deliberate owner correction back to `state:planned`,
+    because the PR only closed part of the issue's scope. `no-auto` now stops
+    reconcile from touching the row at all, not just from closing it."""
+    issues = {"59": {"state": "OPEN", "labels": [{"name": "state:planned"},
+                                                 {"name": "gate:taste"},
+                                                 {"name": "no-auto"}]}}
+    gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], issues)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["advanced"] == [] and report["skipped"] == [("59", "no-auto")]
+    assert not [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert {l["name"] for l in gh.issues["59"]["labels"]} == {"state:planned", "gate:taste", "no-auto"}
 
 
 def test_reconcile_skips_a_branch_that_names_no_issue():

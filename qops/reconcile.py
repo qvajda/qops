@@ -94,6 +94,15 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
             if data.get("state") == "CLOSED":
                 report["skipped"].append((issue, "issue already closed"))
                 continue
+            if "no-auto" in labels:
+                # #12: a PR merged against this issue's branch number does not
+                # mean this issue's full scope shipped - a partial fix (#32)
+                # got re-labelled state:done on the next reconcile run,
+                # clobbering a deliberate correction back to state:planned.
+                # no-auto already means "the owner is handling this one"; it
+                # now vetoes the relabel too, not just the merge.
+                report["skipped"].append((issue, "no-auto"))
+                continue
             if DONE in labels:
                 if _closeable(labels):
                     run(["issue", "close", issue, "--repo", repo, "--comment",
