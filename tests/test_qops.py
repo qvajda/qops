@@ -1952,6 +1952,12 @@ def test_doctor_says_how_many_rows_the_invariants_read(monkeypatch, capsys):
     an evaluated backlog and a skipped one do not print the same thing."""
     cfg = qconfig.load(REPO)
     monkeypatch.setattr(install, "open_issues", lambda _cfg: [])
+    # The count is the tracker-wide one, so ask it off a PR. On a PR the scope
+    # is one row and the line says so instead (#63) — asserted next door in
+    # `test_doctor_judges_only_the_prs_own_row`. This test used to pass locally
+    # and fail in CI, where the runner sets both refs.
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
     install.doctor(REPO, cfg)
     out = capsys.readouterr().out
     assert "invariants evaluated against 0 open rows" in out

@@ -589,9 +589,9 @@ def _rows_in_scope(issues: list[dict]) -> tuple[list[dict], str]:
     num = reconcile.issue_number(head_ref)
     if num is None:
         return [], f"no row — `{head_ref}` names none (0 of {len(issues)} open)"
-    return ([i for i in issues if str(i.get("number")) == num],
-            f"row #{num} alone, the row `{head_ref}` names "
-            f"(1 of {len(issues)} open)")
+    mine = [i for i in issues if str(i.get("number")) == num]
+    return mine, (f"row #{num} alone, the row `{head_ref}` names "
+                  f"({len(mine)} of {len(issues)} open)")
 
 
 def doctor(root: Path, cfg: dict) -> list[str]:
