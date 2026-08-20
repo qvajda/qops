@@ -12,7 +12,7 @@ is `pickup-loop`, and it is off.
 | `review-loop` | a session, on request — `/code-review` | per PR | yes, owner-initiated | reports; may not commit |
 | `triage-loop` | Actions — `groom.yml` label-hygiene job | weekly + on demand | none | warns; may not label |
 | `groom-loop` | Actions — `groom.yml` hot-path job | on any `CLAUDE.md` change, weekly | none | fails the build |
-| `pickup-loop` | Windows scheduled task `qops-pickup-loop`, **disabled** | hourly when enabled | yes | branch + commit + PR; merges only via `automerge-loop` |
+| `pickup-loop` | one Windows scheduled task per repo root, each **disabled** | hourly when enabled | yes | branch + commit + PR; merges only via `automerge-loop` |
 | `automerge-loop` | Actions — `automerge.yml`, plus the `reconcile` job in `digest.yml` | every PR event, plus daily | none | turns on native auto-merge for a `gate:machine` PR; may not merge a `gate:taste` one; labels a merged sortie `state:done`, may not close it |
 
 ## gate-loop
@@ -63,6 +63,58 @@ fails before CI sees it.
 `blocked` flag, then starts a session on it.
 **Acceptance check:** it branches, commits, opens a PR and stops there. It
 never merges by hand, never activates a listing, never pushes to `master`.
+
+### Registration — the task names its root
+
+One task per repo root, **registered disabled**, and it is the only part of
+qops with no installer: the definition lives on the cron host and nowhere the
+repo can see it, which is why it is written down here. A code change already
+invalidated it once (#12, and the source repo's #176) — the picker stopped
+rooting off `__file__`, the registered task set no WorkingDirectory, and
+nothing noticed because the task was off.
+
+PowerShell, per root, substituting the root's `.qops/config.yml` `project:`
+into the name:
+
+```powershell
+$root = "<absolute path to the repo root>"
+$name = "qops-pickup-loop-<project>"
+$action = New-ScheduledTaskAction -Execute "py.exe" `
+  -Argument "-3 `"$root\scripts\qops_pickup.py`" --root `"$root`" --launch" `
+  -WorkingDirectory $root
+$trigger = New-ScheduledTaskTrigger -Once -At 07:23 `
+  -RepetitionInterval (New-TimeSpan -Hours 1)
+Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Force
+Disable-ScheduledTask -TaskName $name        # registering never enables
+```
+
+- **`--root` is the point.** `find_root()` walks up from the working directory
+  and returns that directory when it finds nothing, so a task with no root and
+  no WorkingDirectory reads whatever tree the scheduler started it in. With two
+  roots on one host that is the wrong backlog or no backlog, and the picker
+  exits 0 either way. `repo_root()` now refuses a root holding no
+  `.qops/config.yml` and names where the root came from.
+- **`Register-ScheduledTask`, not `schtasks /create`** — `schtasks` cannot set a
+  WorkingDirectory, which is how the empty one got there.
+- **Registering never enables.** ADR-0009's cost argument rests on the expensive
+  loop being off unless the owner turned it on; an installer that helpfully
+  starts it is a bigger defect than the one being fixed (#12).
+- **Still hand-registered, still hardcoding an interpreter.** `py.exe` above
+  resolves through PATH rather than baking an absolute Python path, but the
+  name is still machine-global and nothing checks the registration against what
+  the config would render. That is #12's remaining scope.
+
+**Reading the log: an idle queue and a broken picker both exit 0.** Every run
+names the root and the tracker it read before it says anything else, so:
+
+| Log | Meaning |
+|---|---|
+| `root <path>, tracker <owner/name>` then `nothing eligible` | healthy and idle — it read the right backlog and nothing qualified |
+| `root <path>` naming the **wrong** repo, then `nothing eligible` | wrong task definition; the root came from the working directory, not `--root` |
+| `<path> is not a qops root` | the root could not be resolved at all — exit 1, not a quiet 0 |
+| `could not read the backlog … UNKNOWN` | `gh` failed (auth, network, rate limit) — exit 1. Never printed as `nothing eligible` |
+| `nothing eligible` on a repo whose labels were never created | the query itself returns empty. `scripts/qops_import.py --labels` is what a fresh repo runs first |
+
 **Observed end to end in THIS repo, 2026-08-19 — criterion 8.** #5: launched
 11:47:57Z, claimed `state:planned` -> `state:building` 11:48:14Z, branched
 `fix/5-state-review-label-swallowed` (ADR-0019's shape, a commit type and not a

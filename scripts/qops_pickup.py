@@ -1,7 +1,16 @@
 """pickup-loop — pick the next sortie an unattended agent may start.
 
-Default OFF. Registered as a disabled Windows scheduled task (`qops-pickup-loop`)
-so that turning it on is one `schtasks /change /enable` and not a build.
+Default OFF. Registered as a disabled Windows scheduled task, one per repo root,
+so that turning it on is one `schtasks /change /enable` and not a build. The
+registration is a machine fact the repo cannot see - `docs/reference/loops.md`
+carries the exact command, because a machine fact recorded nowhere is one a code
+change can invalidate silently, and one did.
+
+**The task names its root; it never derives one.** `--root <path>` plus a
+matching WorkingDirectory. Both are refused-if-wrong rather than guessed at
+(`repo_root` below): with two roots on one cron host, a picker that resolves its
+root from wherever the scheduler started it either reads the wrong backlog or
+reads nothing, and exits 0 doing it.
 
 Eligibility is deliberately narrow, and every condition is the owner's to grant:
 
@@ -54,14 +63,22 @@ def eligible(issue: dict) -> bool:
     return "gate:none" not in labels and any(l.startswith("gate:") for l in labels)
 
 
-def candidates(root: Path) -> list[dict]:
+def candidates(root: Path) -> list[dict] | None:
+    """The eligible issues, or None when the backlog could not be read.
+
+    The distinction is the whole hazard: an empty list is an idle queue and a
+    failed query is a broken picker, the picker exits 0 on both, and until this
+    returned None they printed the same line. A repo with no labels makes the
+    query itself return empty, which is the same shape one level down
+    (`scripts/qops_import.py --labels` is what a fresh repo runs first).
+    """
     out = subprocess.run(
         ["gh", "issue", "list", "--state", "open", "--limit", "100",
          "--json", "number,title,labels,updatedAt"],
         cwd=root, capture_output=True, text=True)
     if out.returncode:
         print(out.stderr.strip(), file=sys.stderr)
-        return []
+        return None
     return [i for i in json.loads(out.stdout or "[]") if eligible(i)]
 
 
@@ -72,16 +89,44 @@ def repo_root(argv: list[str]) -> Path:
     site-packages, not the repo whose backlog is being picked. One scheduled
     task per consuming repo passes `--root`; a hand run in a checkout needs
     nothing (P8.1 leak 3).
+
+    **A resolved root that holds no config is refused, and it says where the
+    root came from.** The registered task's WorkingDirectory was empty, so the
+    walk up from cwd started wherever the scheduler happened to launch the
+    process - and `find_root()` returns cwd when it finds nothing. There are
+    two roots on this host now, so the two silent outcomes of that are the
+    wrong repo's backlog, or a query against a directory that is not a repo at
+    all. The task names its root; it does not derive one.
     """
     if "--root" in argv:
-        return Path(argv[argv.index("--root") + 1]).resolve()
-    return qconfig.find_root()
+        i = argv.index("--root") + 1
+        if i >= len(argv):
+            raise SystemExit("pickup-loop: --root takes a path")
+        root, how = Path(argv[i]).resolve(), "--root"
+    else:
+        root, how = qconfig.find_root(), "the walk up from the working directory"
+    if not qconfig.path(root).exists():
+        raise SystemExit(
+            f"pickup-loop: {root} is not a qops root - {qconfig.path(root)} "
+            f"does not exist. That root came from {how}. A scheduled task must "
+            f"pass --root: with no WorkingDirectory set it starts wherever the "
+            f"scheduler puts it.")
+    return root
 
 
 def main(argv: list[str]) -> int:
     root = repo_root(argv)
     cfg = qconfig.load(root)
+    # Named on every run, eligible or not. A log line that says which root and
+    # which tracker were read is what separates a healthy idle queue from a
+    # picker pointed at the wrong place; both of those exit 0.
+    print(f"pickup-loop: root {root}, tracker {cfg.get('repo', '(none in config)')}")
     picks = candidates(root)
+    if picks is None:
+        print("pickup-loop: could not read the backlog - nothing was picked and "
+              "the queue state is UNKNOWN, which is not the same as empty.",
+              file=sys.stderr)
+        return 1
     if not picks:
         print("pickup-loop: nothing eligible (state:planned + ready:auto + a real gate).")
         return 0
