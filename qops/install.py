@@ -567,6 +567,33 @@ def strict() -> bool:
     return os.environ.get("QOPS_STRICT") == "1"
 
 
+def _rows_in_scope(issues: list[dict]) -> tuple[list[dict], str]:
+    """The rows this `doctor` run may report on, and a phrase naming which.
+
+    On a PR that is the row the branch names, and nothing else. `gate` is a
+    required status check, so a tracker-wide sweep there means one bad row
+    anywhere fails every open PR at once - PR #58, a gitattributes chore, sat
+    red on an unrelated row's labels, and an unattended sortie cannot make the
+    tracker edit that would unblock it (#63). `r8_proof` already scopes this
+    way; the label invariants were the half that never did.
+
+    Off a PR - a laptop run, the daily reconcile job - the sweep is the whole
+    tracker, unchanged. The sweep is moved off the merge path, not dropped.
+
+    A branch naming no row (`no-issue/...`) judges no row: there is nothing on
+    the tracker the PR is answerable to, and the daily job still sees every row.
+    """
+    head_ref = os.environ.get("GITHUB_HEAD_REF")
+    if not os.environ.get("GITHUB_BASE_REF") or not head_ref:
+        return issues, f"{len(issues)} open rows"
+    num = reconcile.issue_number(head_ref)
+    if num is None:
+        return [], f"no row — `{head_ref}` names none (0 of {len(issues)} open)"
+    mine = [i for i in issues if str(i.get("number")) == num]
+    return mine, (f"row #{num} alone, the row `{head_ref}` names "
+                  f"({len(mine)} of {len(issues)} open)")
+
+
 def doctor(root: Path, cfg: dict) -> list[str]:
     problems = drift(root, cfg)
     problems += skill_drift(root, cfg)
@@ -574,13 +601,15 @@ def doctor(root: Path, cfg: dict) -> list[str]:
     problems += undeclared_labels(cfg)
     issues = open_issues(cfg)
     if issues is not None:
+        judged, scope = _rows_in_scope(issues)
         # Positive evidence, not the absence of the skip line. "verify by
         # measurement, not by status code" (CLAUDE.md): a gate log that only
         # says `doctor: clean` cannot distinguish an evaluated backlog from a
-        # skipped one, which is exactly how #44 hid.
-        print(f"doctor: invariants evaluated against {len(issues)} open rows "
+        # skipped one, which is exactly how #44 hid. It names the scope for the
+        # same reason - the two runs are not the same claim (#63).
+        print(f"doctor: invariants evaluated against {scope} "
               f"on {cfg.get('repo')}")
-        problems += issue_invariants(issues, cfg)
+        problems += issue_invariants(judged, cfg)
         problems += r8_proof(root, issues)
     elif strict():
         # The reason is already printed by open_issues(), one line up. What was
