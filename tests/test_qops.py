@@ -1567,6 +1567,44 @@ def test_r8_is_silent_without_a_pr_context(monkeypatch, capsys):
     assert "R8" not in capsys.readouterr().out
 
 
+def _two_bad_rows():
+    """Two rows carrying the same problem, no body — so `issue_invariants`
+    reports both and neither drags `r8_proof` into running a real pytest."""
+    bad = [{"name": "type:code"}, {"name": "state:triage"},
+           {"name": "gate:machine"}, {"name": "ready:auto"}]
+    return [{"number": 100, "labels": bad}, {"number": 200, "labels": bad}]
+
+
+def test_doctor_judges_only_the_prs_own_row(monkeypatch, capsys):
+    """`gate` is a required check and the invariants swept all 21 open rows, so
+    one bad row anywhere failed every open PR at once — PR #58, a gitattributes
+    chore, sat red on #33's labels, and an unattended sortie cannot make the
+    tracker edit that would unblock it (#63). `r8_proof` already reads the row
+    the branch names; the label invariants now make the same move."""
+    cfg = qconfig.load(REPO)
+    monkeypatch.setattr(install, "open_issues", lambda _cfg: _two_bad_rows())
+
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "fix/100-a-branch-naming-its-row")
+    problems = install.doctor(REPO, cfg)
+    assert any("#100" in p for p in problems)
+    assert not any("#200" in p for p in problems)
+    assert "row #100" in capsys.readouterr().out
+
+    monkeypatch.delenv("GITHUB_BASE_REF")
+    monkeypatch.delenv("GITHUB_HEAD_REF")
+    problems = install.doctor(REPO, cfg)
+    assert any("#100" in p for p in problems)
+    assert any("#200" in p for p in problems)
+
+
+def test_the_daily_job_still_sweeps_the_whole_tracker():
+    """Scoping `gate` to one row only moves the sweep off the merge path — it
+    must still land somewhere a bad row is visible and blocks nothing (#63)."""
+    rendered = install.render_one("digest.yml", qconfig.load(REPO))
+    assert "python -m qops doctor" in rendered
+
+
 def test_r8_only_runs_targets_pytest_can_resolve():
     """`_NAMES_A_TEST` is deliberately loose and matches a bare `test_x` in
     running prose. pytest reads a bare token as a *path*, exits 4 with `file or

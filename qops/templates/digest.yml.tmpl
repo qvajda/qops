@@ -46,6 +46,16 @@ jobs:
           {{install_deps}}
       - name: every merged sortie's row reaches state:done
         run: python -m qops reconcile
+      # The tracker-wide sweep. `gate` judges the PR's own row and nothing else
+      # (#63), because a required check that reads all 21 open rows means one
+      # bad row anywhere fails every open PR. The sweep still has to land
+      # somewhere, and here it is: after the reconcile that repairs what it
+      # can, on a job that blocks no merge. Red here is someone's morning, not
+      # a stuck queue.
+      - name: the whole tracker still answers the invariants
+        env:
+          QOPS_STRICT: '1'
+        run: python -m qops doctor
 
   digest:
     # The digest renders the rows the job above just repaired.
