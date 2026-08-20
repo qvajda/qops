@@ -86,7 +86,10 @@ that provides qops in each of three declared repo shapes.*
 `permissions.allow` and `permissions.deny` entry from `.claude/settings.json`.
 That is per-machine state in `~/.claude.json`, outside both repos and outside
 every rendering — no template change reaches it, and it is `gate:taste` for
-exactly that reason. Same *family* as #1 and #21 (an assumption calibrated
+exactly that reason. **Corrected by ADR-0026:** that is *verification reach*,
+not judgement, and the two had only one label between them when this was
+written. #19 is `gate:machine` — its detectable half is a `doctor` warning —
+with a `type:manual` remedy. Same *family* as #1 and #21 (an assumption calibrated
 against one machine, degrading quietly), different *mechanism*, and it stays
 open with #7 and #12.
 

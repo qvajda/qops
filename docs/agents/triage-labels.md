@@ -36,7 +36,7 @@ file, not this one.
 
 ## The triage rules
 
-R1–R7 were written for the 2026-08-17 sweep and lived in that sweep's plan
+R1–R8 were written for the 2026-08-17 sweep and lived in that sweep's plan
 document, which is a session artefact. They are the substrate's rules, not that
 session's, so they live here now and they travel with it.
 
@@ -44,10 +44,10 @@ session's, so they live here now and they travel with it.
 |---|---|
 | R1 | Close what is finished. A `state:done` issue that is still open is a lie in the queue. |
 | R2 | Every open issue gets exactly one `type:`, one `state:`, one `gate:`. No exceptions, no `gate:none` survivors. |
-| R3 | `gate:machine` = the finish line is checkable by tests or CI. `gate:taste` = the finish line is a judgement call (visual, commercial, brand, legal). **When unsure, `gate:taste`** — a wrong `machine` label produces an autonomous sortie that ships a taste decision. |
-| R4 | `type:research` and `type:decision` are `gate:taste` by construction: their output is a finding for the owner, not a passing test. |
+| R3 | **`gate:taste` if and only if the owner's preference is an *input* the work cannot proceed without — the row's deliverable *is* a choice only they can make. Everything else is `gate:machine`.** The triager's question, answerable from the row alone: *if the owner never answers, can this row be finished at all?* **When unsure, `gate:machine`** — an unsure row is not a taste row, it is an underspecified one, and the answer to that is a stated criterion, not a label that parks it (ADR-0026). |
+| R4 | `type:decision` is `gate:taste` by construction: its deliverable is a choice. **`type:research` is not.** A research row's deliverable is a *finding*, and a finding is not a preference — its finish line is "the finding is written where the row says". Where reading it is itself a choice, that is a separate `type:decision` row (ADR-0026). |
 | R5 | `type:manual` never gets `ready:auto`, whatever its gate. If an issue is scriptable, retype it to `type:code` instead of relabelling around it. |
-| R6 | No `ready:auto` on anything whose completion path calls an endpoint the project forbids without an explicit go-ahead — the sortie cannot finish unattended by definition. |
+| R6 | **`no-auto` on anything whose completion path calls an endpoint the project forbids, spends, publishes, grants or acts in the owner's name.** That is *authority*, not judgement, so the flag carries it and the gate says nothing about it — a row may be `gate:machine` + `no-auto` (ADR-0026). |
 | R7 | `ready:auto` requires `state:planned`. Triage alone cannot fill the auto queue. |
 | R8 | **`ready:auto` requires a named test.** An issue is auto-eligible only if a test file it touches proves it done, and the issue says which one. |
 
@@ -61,8 +61,35 @@ the checkable half: a `ready:auto` issue whose body names no test file is a
 problem. The judgement half — whether the named test actually proves the thing —
 stays the owner's, like every other `ready:auto` grant.
 
-**R3 is worth re-reading in a substrate repo.** Substrate work is unusually
+## The three concerns the gate used to carry (ADR-0026)
+
+`gate:taste` was doing three unrelated jobs at once, which is why it read as
+arbitrary. They are separate, each has its own carrier already in the taxonomy,
+and **each is decidable by the triager from the row alone**:
+
+| Concern | The question | Carrier |
+|---|---|---|
+| **Judgement** | Is the deliverable *itself* the owner's preference? | `gate:taste` / `gate:machine` (R3, R4) |
+| **Authority** | Is the *act* the owner's to take — spending, publishing, granting, activating, anything in his name? | `no-auto` (R6) |
+| **Verification reach** | Can CI observe the finish line, or must a human hand? | `type:manual` vs `type:code` (R5) |
+
+Authority is not taste. A row may be `gate:machine` + `no-auto`: the finish line
+is checkable and the act is still the owner's. A row may be `gate:machine` +
+`type:manual`: the criterion is stated, and a human is the only instrument that
+can read it — `qhoto_printshop`#139, where the owner's tap was a measurement and
+not a judgement.
+
+**Inverting R3's default is safe because `gate:machine` confers no autonomy.**
+`scripts/qops_pickup.py::eligible` requires `state:planned` **and** `ready:auto`
+and no `no-auto`; `ready:auto` is the owner's alone (ADR-0023) and needs a test
+that proves the work done (R8). A mislabelled `gate:machine` row with no plan
+and no grant sits exactly where a `gate:taste` row sits — in the backlog. That
+claim is the one a future change could quietly invalidate, so
+`test_gate_machine_alone_confers_no_autonomy` asserts it: relax `eligible()` and
+R3's default fails in the same commit.
+
+**Still worth re-reading in a substrate repo.** Substrate work is unusually
 machine-gateable — local code, a real test suite, no vendor endpoint — so R6
-excludes almost nothing and `gate:machine` is cheap to apply. It is also
-expensive to be wrong about: a bad autonomous change to the substrate governs
-every project that consumes it.
+excludes almost nothing. It is also expensive to be wrong about: a bad
+autonomous change to the substrate governs every project that consumes it. That
+cost is held by `ready:auto` and R8, which is where it belongs.

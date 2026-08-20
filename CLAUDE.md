@@ -65,6 +65,13 @@ obstacle to route around.
   `origin:agent` issues nothing but the owner may ever write `ready:auto`; an
   agent may only propose it, and the owner grants by batch approval, never by
   a lone agent's confidence. → `docs/adr/0023-...`
+- **`gate:` answers judgement, `no-auto` answers authority, `type:manual`
+  answers reach.** A row is `gate:taste` only when the owner's preference is an
+  *input* the work cannot proceed without — its deliverable *is* a choice only
+  they can make. Everything else is `gate:machine`, **including when unsure**:
+  an unsure row is underspecified, not tasteful. The act being the owner's to
+  take (spend, publish, grant, activate) is `no-auto`, never the gate.
+  → `docs/adr/0026-...`
 - **An unattended sortie branches, commits, opens a PR, and stops.** It never
   merges by hand and never pushes to `master`. The merge is `automerge-loop`'s,
   on a `gate:machine` issue with every required check green.
