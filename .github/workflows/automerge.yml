@@ -159,6 +159,15 @@ jobs:
           n=$(printf '%s' "$REF" | sed -nE 's|^[a-z]+/([0-9]+)-.*|\1|p')
           # `no-issue/` branches carry no sortie and have nothing to advance.
           [ -n "$n" ] || { echo "::notice::branch carries no issue number"; exit 0; }
+          labels=$(gh issue view "$n" --repo qvajda/qops --json labels -q '.labels[].name')
+          # #12: a branch's issue number does not mean that issue's full scope
+          # shipped - a partial fix relabelled `state:done` clobbers a
+          # deliberate owner correction. `no-auto` already means "the owner is
+          # handling this one"; it now vetoes the relabel too, not just the
+          # merge.
+          case "$labels" in
+            *no-auto*) echo "::notice::#$n carries no-auto - not advancing"; exit 0 ;;
+          esac
           # Removing a label the issue does not carry is a no-op, so the whole
           # state: family goes in one call rather than a read-then-write.
           gh issue edit "$n" --repo qvajda/qops \
@@ -167,12 +176,8 @@ jobs:
             --remove-label state:triage --remove-label state:planned \
             --remove-label state:building --remove-label state:gate \
             --remove-label state:review --remove-label state:blocked
-          labels=$(gh issue view "$n" --repo qvajda/qops --json labels -q '.labels[].name')
           case "$labels" in
             *gate:machine*)
-              case "$labels" in
-                *no-auto*) echo "::notice::#$n carries no-auto - not closing" ;;
-                *) gh issue close "$n" --repo qvajda/qops --comment \
-                     "Closed by \`automerge-loop\`: \`gate:machine\`, PR #$PR merged - nothing left to judge (ADR-0025)." ;;
-              esac ;;
+              gh issue close "$n" --repo qvajda/qops --comment \
+                "Closed by \`automerge-loop\`: \`gate:machine\`, PR #$PR merged - nothing left to judge (ADR-0025)." ;;
           esac
