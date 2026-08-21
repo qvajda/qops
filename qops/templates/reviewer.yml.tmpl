@@ -1,0 +1,63 @@
+# RENDERED BY `qops install` from qops/templates/reviewer.yml.tmpl + .qops/config.yml
+# Do not hand-edit: `qops doctor` fails on drift.
+#
+# The semantic reader (ADR-0028 §4, #80). Every other required check is
+# mechanical, so without this nothing between a filing and {{default_branch}}
+# reads for meaning.
+#
+# **This job calls no model and needs no secret.** CI cannot use the Claude
+# subscription, so a reviewer that ran the model here would be a metered API
+# key and a second cost line that grows with the loop. The verdict is produced
+# on the cron host instead (`scripts/qops_pickup.py --review`) and posted as a
+# PR comment carrying the head SHA; this job reads that comment and exits on
+# it. A comment, not a commit status: `.claude/settings.json` denies `gh api
+# -X` against repo settings by a taken decision (ADR-0016/0020).
+#
+# It ships REPORTING ONLY. Adding `reviewer` to the branch's required contexts
+# is a separate owner act, taken after a week of real verdicts rather than on
+# the strength of it having been built. That is deliberate: this is a language
+# model in a check that will run under `enforce_admins: true`, where a
+# systematic misjudgement blocks every PR - including the one that would fix
+# it - and the only exit is the owner editing protection settings by hand.
+#
+# Every non-verdict outcome is green and says so (`qops/review.py`), including
+# the one the split adds: a host that is asleep has posted no verdict, and that
+# is a fail-open rather than a PR that waits forever.
+name: reviewer
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reviewer:
+    runs-on: {{runs_on}}
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The PR's head SHA, never `github.sha` - on a `pull_request` event that
+      # is the ephemeral merge commit, which no verdict will ever name. A
+      # verdict is keyed on the commit it read, so that a verdict on an older
+      # commit cannot authorise whatever was pushed after it.
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '{{python_version}}'
+          cache: pip
+      - name: install
+        # One block for every rendered job that runs Python, rendered from
+        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # into three separate failures in repos shaped unlike this one.
+        run: |
+          {{install_deps}}
+      - name: does the diff serve the row's stated outcome
+        run: python -m qops review

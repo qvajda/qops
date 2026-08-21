@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from qops import config as qconfig  # noqa: E402
+from qops import review as reviewmod  # noqa: E402
 from qops import guard, install, ledger, metrics, brief as briefmod  # noqa: E402
 
 
@@ -570,11 +571,11 @@ def test_main_rejects_unrecognised_flag(tmp_path, capsys):
 # install / doctor — rendered workflows, and drift is detectable
 # --------------------------------------------------------------------------
 
-def test_install_renders_the_six_workflows(tmp_path):
+def test_install_renders_the_seven_workflows(tmp_path):
     written = install.render_all(tmp_path, qconfig.load(REPO))
     names = {Path(p).name for p in written}
     assert names == {"test.yml", "gate.yml", "guard.yml", "digest.yml",
-                     "groom.yml", "automerge.yml"}
+                     "groom.yml", "automerge.yml", "reviewer.yml"}
     import re
     for p in written:
         # `${{ secrets.X }}` is GitHub's own syntax and stays; qops placeholders
@@ -2224,6 +2225,277 @@ def test_doctor_refuses_a_row_with_no_stated_outcome():
         [{"number": 2, "labels": _BAR_LABELS,
           "body": "It drifts.\n\n## Acceptance\n\n- `qops doctor` exits 1.\n"}], cfg)
     assert stated == []
+
+
+# --------------------------------------------------------------------------
+# #80 / ADR-0028 §4 — the reviewer's verdict. The required checks on master
+# are all mechanical, so nothing between a filing and master reads for meaning.
+# This is the reader. It is also a language model wired into a required check
+# under `enforce_admins: true`, so its fail-open path is what bounds the blast
+# radius of an outage: a wrong fail-closed costs one bad merge, a wrong
+# fail-open costs a repo nobody can merge to and only the owner can unstick.
+# --------------------------------------------------------------------------
+
+# What `master` requires today. Written here rather than queried, because the
+# assertion is about this repo's rollout decision and a test that asks GitHub
+# would go green the moment someone flips the switch by hand.
+_REQUIRED_CONTEXTS = ("test", "gate", "tripwires", "doc-links")
+
+_DIFF = "diff --git a/x.py b/x.py\n+def x(): return 1\n"
+_ROW = "## Acceptance\n- `x()` returns 1.\n"
+_SHA = "1111111111111111111111111111111111111111"
+_OLD = "2222222222222222222222222222222222222222"
+
+
+def _verdict_comment(sha, text):
+    return f"{reviewmod.marker(sha)}\n\n{text}"
+
+
+def _pr_context(monkeypatch, number="7", sha=_SHA):
+    """A test that wants a PR context sets one, explicitly (#65). conftest
+    clears these, so nothing here depends on where the suite is run."""
+    monkeypatch.setenv("PR_NUMBER", number)
+    monkeypatch.setenv("PR_HEAD_SHA", sha)
+
+
+def test_the_reviewer_reads_a_verdict_and_nothing_else():
+    """Strict parse. Anything that is not one of the two verdicts is *not* a
+    verdict, and a lenient parser would turn a rambling answer into a merge
+    decision."""
+    assert reviewmod.verdict("VERDICT: serves\nbecause x") == "serves"
+    assert reviewmod.verdict("VERDICT: does-not-serve\nno test") == "does-not-serve"
+    for junk in ("", "I think it probably serves the goal", "VERDICT: maybe",
+                 "serves", "VERDICT:", None):
+        assert reviewmod.verdict(junk) is None, junk
+
+
+def test_a_verdict_is_keyed_on_the_commit_it_read():
+    """The load-bearing half of the split. A verdict on an older commit would
+    authorise whatever was pushed after it — a reviewer approving code it never
+    read — so a verdict for another SHA is no verdict at all."""
+    old = _verdict_comment(_OLD, "VERDICT: serves\nfine")
+    assert reviewmod.latest_verdict([old], _SHA) is None
+    assert reviewmod.latest_verdict([old], _OLD) == "serves"
+    # Newest wins: the host re-reviews after a push, and the later comment is
+    # the one that read the current diff.
+    both = [_verdict_comment(_SHA, "VERDICT: does-not-serve\nno test"),
+            _verdict_comment(_SHA, "VERDICT: serves\ntest added")]
+    assert reviewmod.latest_verdict(both, _SHA) == "serves"
+    # A comment that merely talks about the reviewer is not a verdict.
+    assert reviewmod.latest_verdict(["VERDICT: serves, I reckon"], _SHA) is None
+
+
+@pytest.mark.parametrize("why,number,sha,cfg,bodies", [
+    ("no PR context", None, None, {"repo": "o/r"}, []),
+    ("config names no `repo`", "7", _SHA, {}, []),
+    ("could not read the PR's comments", "7", _SHA, {"repo": "o/r"}, RuntimeError),
+    ("no verdict posted", "7", _SHA, {"repo": "o/r"},
+     [_verdict_comment(_OLD, "VERDICT: does-not-serve\nstale")]),
+    ("gave up", "7", _SHA, {"repo": "o/r"},
+     [_verdict_comment(_SHA, "I think so?")]),
+])
+def test_the_reviewer_fails_open_without_a_verdict(monkeypatch, capsys, tmp_path,
+                                                   why, number, sha, cfg, bodies):
+    """Every path that is not a verdict is green AND says why. A silent
+    fail-open is indistinguishable from a real pass, which is a required check
+    that reads nothing while looking like it read.
+
+    The row this rebuild adds is the fourth: the verdict is produced on the
+    cron host, so a sleeping host means no comment — and that has to be a
+    fail-open, not a PR that waits forever under `enforce_admins: true`."""
+    if number:
+        _pr_context(monkeypatch, number, sha)
+    if bodies is RuntimeError:
+        monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: (
+            _ for _ in ()).throw(RuntimeError("gh pr view failed")))
+    else:
+        monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: bodies)
+    assert reviewmod.main([], tmp_path, cfg) == 0
+    out = capsys.readouterr().out
+    assert "fail-open" in out and why in out, out
+
+
+def test_the_reviewer_fails_closed_on_a_verdict(monkeypatch, capsys, tmp_path):
+    """Only a verdict is a rejection, and it says what it judged."""
+    _pr_context(monkeypatch)
+    monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: [
+        _verdict_comment(_SHA, "VERDICT: does-not-serve\nno test added")])
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 1
+    assert "does NOT serve" in capsys.readouterr().out
+
+    monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: [
+        _verdict_comment(_SHA, "VERDICT: serves\nok")])
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 0
+
+
+def _host_pass(monkeypatch, prs, answer, seen=()):
+    """The host side wired to fakes: `produce` is the only thing that talks to
+    a model, and it never runs in CI."""
+    calls = []
+    monkeypatch.setattr(reviewmod, "open_prs", lambda *a, **k: prs)
+    monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: list(seen))
+    monkeypatch.setattr(reviewmod, "pr_diff", lambda *a, **k: _DIFF)
+    monkeypatch.setattr(reviewmod, "row_body", lambda *a, **k: _ROW)
+    monkeypatch.setattr(reviewmod, "ask", lambda *a, **k: answer)
+    monkeypatch.setattr(reviewmod, "_gh",
+                        lambda root, *args, **k: calls.append(args) or "")
+    return calls
+
+
+def test_the_host_posts_the_verdict_as_a_comment_carrying_the_head_sha(
+        monkeypatch, tmp_path):
+    """`gh pr comment`, a plain verb — never a commit status. `gh api -X`
+    against repo settings is denied by a taken decision (ADR-0016/0020) and a
+    reviewer that POSTed a status would be routing around it."""
+    prs = [{"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+            "isDraft": False}]
+    calls = _host_pass(monkeypatch, prs, "VERDICT: serves\nit does")
+    assert reviewmod.produce(tmp_path, {"repo": "o/r"}) == 0
+    assert len(calls) == 1, calls
+    assert calls[0][:2] == ("pr", "comment")
+    assert "-X" not in calls[0] and "api" not in calls[0]
+    body = calls[0][calls[0].index("--body") + 1]
+    assert reviewmod.marker(_SHA) in body and "VERDICT: serves" in body
+
+
+def test_the_host_does_not_review_the_same_commit_twice(monkeypatch, capsys,
+                                                        tmp_path):
+    """A pass runs on a schedule, so re-posting on every fire would be a
+    comment an hour on a PR nobody pushed to."""
+    prs = [{"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+            "isDraft": False}]
+    calls = _host_pass(monkeypatch, prs, "VERDICT: serves\nit does",
+                       seen=[_verdict_comment(_SHA, "VERDICT: serves\nit does")])
+    assert reviewmod.produce(tmp_path, {"repo": "o/r"}) == 0
+    assert calls == []
+    # And it still says what it saw: a pass that prints nothing reads the same
+    # whether there was nothing to judge or nothing was reachable.
+    assert "1 ready PR(s) on o/r" in capsys.readouterr().out
+
+
+def test_the_host_reports_a_pr_it_could_not_judge_and_still_fails_the_pass(
+        monkeypatch, capsys, tmp_path):
+    """A swallowed per-item exception leaves a state change behind and the run
+    still fails once, after the loop. An unparseable answer is not posted as a
+    verdict: a rambling answer must not become a merge decision."""
+    prs = [{"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+            "isDraft": False},
+           {"number": 8, "headRefName": "sweep", "headRefOid": _OLD,
+            "isDraft": False}]
+    calls = _host_pass(monkeypatch, prs, "no verdict here")
+    assert reviewmod.produce(tmp_path, {"repo": "o/r"}) == 1
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "carried no verdict" in out and "names no row" in out
+    # The state change: one ledger row per failed attempt, per commit.
+    events = [e for e in ledger.read(tmp_path)
+              if e["event"] == "review_unjudged"]
+    assert [(e["pr"], e["n"]) for e in events] == [("7", 1), ("8", 1)], events
+
+
+def test_a_pr_that_cannot_be_judged_is_not_retried_forever(monkeypatch, capsys,
+                                                           tmp_path):
+    """The loop this bounds: the pass is hourly and a PR can sit open for days
+    waiting on the owner, so a review that keeps failing would be one model
+    call an hour, forever, on a failure that will not fix itself. Three tries,
+    then the host says so on the PR and goes quiet."""
+    pr = {"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+          "isDraft": False}
+    asked, posted = [], []
+    for _ in range(reviewmod.MAX_ATTEMPTS + 2):
+        calls = _host_pass(monkeypatch, [pr], "no verdict here",
+                           seen=list(posted))
+        monkeypatch.setattr(reviewmod, "ask",
+                            lambda *a, **k: asked.append(1) or "no verdict here")
+        reviewmod.produce(tmp_path, {"repo": "o/r"})
+        for args in calls:                     # what the host said on the PR
+            posted.append(args[args.index("--body") + 1])
+
+    assert len(asked) == reviewmod.MAX_ATTEMPTS, asked   # then it stopped
+    assert len(posted) == 1 and "No verdict" in posted[0]
+    assert reviewmod.marker(_SHA) in posted[0]
+    assert "already judged" in capsys.readouterr().out
+
+    # CI reads that comment as a fail-open, and says which kind it is: the host
+    # gave up here, rather than being asleep.
+    _pr_context(monkeypatch)
+    monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: posted)
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 0
+    assert "gave up" in capsys.readouterr().out
+
+
+def test_giving_up_holds_even_if_the_host_could_not_say_so(monkeypatch, capsys,
+                                                           tmp_path):
+    """The ledger stops the asking, not the comment. A pass that trusted the
+    comment alone would run the model every hour forever on a PR where posting
+    is what is broken."""
+    pr = {"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+          "isDraft": False}
+    asked = []
+    for _ in range(reviewmod.MAX_ATTEMPTS + 2):
+        _host_pass(monkeypatch, [pr], "no verdict here")
+        monkeypatch.setattr(reviewmod, "ask",
+                            lambda *a, **k: asked.append(1) or "no verdict here")
+        monkeypatch.setattr(reviewmod, "_gh", lambda *a, **k: (
+            _ for _ in ()).throw(RuntimeError("gh pr comment failed")))
+        reviewmod.produce(tmp_path, {"repo": "o/r"})
+    assert len(asked) == reviewmod.MAX_ATTEMPTS, asked
+    assert "given up on" in capsys.readouterr().out
+
+
+def test_a_new_commit_gets_a_fresh_count(monkeypatch, tmp_path):
+    """Giving up is per commit, never per PR: a push is a new SHA, and the
+    reviewer has to read what was pushed."""
+    for _ in range(reviewmod.MAX_ATTEMPTS):
+        _host_pass(monkeypatch, [{"number": 7, "headRefName": "fix/1-x",
+                                  "headRefOid": _SHA, "isDraft": False}],
+                   "no verdict here")
+        reviewmod.produce(tmp_path, {"repo": "o/r"})
+    assert reviewmod.attempts(tmp_path, "7", _SHA) == reviewmod.MAX_ATTEMPTS
+    assert reviewmod.attempts(tmp_path, "7", _OLD) == 0
+
+
+def test_the_reviewer_workflow_calls_no_model_and_needs_no_secret():
+    """The whole point of the rebuild: CI cannot reach the subscription, so a
+    model call here would be a metered key and a second cost line that grows
+    with the loop. CI reads a comment."""
+    text = install.render_one("reviewer.yml", qconfig.load(REPO))
+    assert "python -m qops review" in text
+    assert "ANTHROPIC" not in text and "secrets." in text  # only GITHUB_TOKEN
+    assert "secrets.GITHUB_TOKEN" in text
+    assert "github.event.pull_request.head.sha" in text  # never `github.sha`
+    assert "ANTHROPIC" not in (REPO / "qops" / "review.py").read_text(
+        encoding="utf-8")
+    assert "reviewer.yml" in install.WORKFLOWS
+
+
+def test_the_reviewer_is_not_a_required_context_yet():
+    """It ships reporting-only: built, watched for a week, then added to the
+    required contexts with evidence rather than hope (#80's rollout, which is
+    why the row is `no-auto`)."""
+    assert "reviewer" not in _REQUIRED_CONTEXTS
+
+
+def test_the_verdict_pass_rides_the_registered_run(monkeypatch, tmp_path):
+    """A scheduled task registration is a hand-made machine fact the repo
+    cannot see (#12), so the verdict pass adds none: the run that is already
+    registered produces it, and the registered command line is unchanged."""
+    ran = []
+    monkeypatch.setattr(qops_pickup, "repo_root", lambda argv: tmp_path)
+    monkeypatch.setattr(qops_pickup, "_run", lambda argv, root: ran.append("pick") or 0)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: ran.append("review") or 0)
+    monkeypatch.setattr(qops_pickup.ledger, "append", lambda *a, **k: None)
+
+    assert qops_pickup.main(["--root", str(tmp_path), "--launch"]) == 0
+    assert ran == ["pick", "review"], ran   # after, so a new PR is judged now
+
+    ran.clear()
+    assert qops_pickup.main(["--review"]) == 0
+    assert ran == ["review"], ran           # alone: it picks nothing
+
+    ran.clear()
+    assert qops_pickup.main(["--root", str(tmp_path)]) == 0
+    assert ran == ["pick"], ran             # a dry run writes nothing anywhere
 
 
 def test_the_filing_bar_does_not_judge_a_finished_row():

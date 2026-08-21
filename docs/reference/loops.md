@@ -114,6 +114,36 @@ Disable-ScheduledTask -TaskName $name        # registering never enables
   name is still machine-global and nothing checks the registration against what
   the config would render. That is #12's remaining scope.
 
+### The reviewer's verdict rides this run (#80)
+
+A `--launch` run, after it has picked, judges every **ready** (non-draft) open
+PR whose head SHA has no verdict comment yet: it reads the row the branch names
+and `gh pr diff`, asks `claude -p` the one question ADR-0028 §4 states, and
+posts the answer as a PR comment carrying `<!-- qops-reviewer:<sha> -->`. CI's
+`reviewer.yml` then reads that comment and exits on it.
+
+- **Why here.** CI cannot reach the Claude subscription — credential resolution
+  ends at an interactive browser login or a short-lived token — so a reviewer in
+  CI is a metered API key and a second cost line that grows exactly as this loop
+  gets busier. The subscription is on this host.
+- **Why not a second task.** A registration is a hand-made machine fact the repo
+  cannot see, and #12 is the standing evidence of what that costs. The command
+  line above is unchanged; the verdict pass rides the run it already starts.
+- **A comment, never a commit status.** `gh api -X` against repo settings is
+  denied by a taken decision (ADR-0016/0020). `gh pr comment` is a plain verb.
+- **The SHA is load-bearing.** A verdict on an older commit would authorise
+  whatever was pushed after it. A verdict for another SHA is no verdict.
+- **Nothing here repeats.** One commit is judged at most once: the verdict
+  comment is the record, and a PR waiting days on the owner is read as judged,
+  not re-reviewed. A review that *fails* is retried at most `MAX_ATTEMPTS` (3)
+  passes for that commit — counted in the ledger, the way `pickup-loop` counts
+  strikes — then the host says so on the PR and goes quiet. A push is a new SHA
+  and a fresh count, which is the only way to get a new verdict.
+- **A sleeping host is a fail-open, not a hang.** No verdict for this SHA is
+  green *and says so*, which is what makes it safe for this check to become
+  required later. Turning it on is the owner's act, after a week of real
+  verdicts — the row is `no-auto` for that reason.
+
 **Reading the log: an idle queue and a broken picker both exit 0.** Every run
 names the root and the tracker it read before it says anything else, so:
 

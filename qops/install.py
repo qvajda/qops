@@ -19,7 +19,7 @@ from . import reconcile
 
 TEMPLATES = Path(__file__).parent / "templates"
 WORKFLOWS = ("test.yml", "gate.yml", "guard.yml", "digest.yml", "groom.yml",
-             "automerge.yml")
+             "automerge.yml", "reviewer.yml")
 
 _DOC_LINK = re.compile(r"docs/[A-Za-z0-9_./-]+\.md")
 

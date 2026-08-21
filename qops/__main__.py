@@ -14,7 +14,8 @@
 import sys
 from pathlib import Path
 
-from . import brief, close, config, guard, install, ledger, metrics, reconcile
+from . import (brief, close, config, guard, install, ledger, metrics,
+               reconcile, review)
 
 VERBS = {
     "brief": (brief.main, "session brief for SessionStart (<=400 tokens)"),
@@ -24,6 +25,7 @@ VERBS = {
     "close": (close.main, "close a sortie issue and label it state:done"),
     "install": (install.main, "render .github/workflows/ from the config"),
     "doctor": (install.doctor_main, "drift, broken doc links, hooks, hot-path cap"),
+    "review": (review.main, "does the PR's diff serve its row's stated outcome"),
     "metrics": (metrics.main, "S1/S2/S4/S9/S10; --state writes the state report"),
     "reconcile": (reconcile.main, "advance merged sorties whose row is not state:done"),
 }
