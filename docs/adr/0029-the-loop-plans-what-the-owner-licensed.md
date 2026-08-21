@@ -178,10 +178,14 @@ change collected during its first week and applied after it.
 
 ## Consequences
 
-- **#46 becomes load-bearing on this.** The filing bar cannot detect a
-  mislabelled taste row, because the planner's writing satisfies the bar it is
-  checked against. Unattended planning makes that writing arrive faster and more
-  often. #46 is no longer a tidy-up; it is a prerequisite for §1 being honest.
+- **#46 was load-bearing on this, and the owner declined to make it hold.**
+  The filing bar cannot detect a mislabelled taste row, because the planner's
+  writing satisfies the bar it is checked against. Unattended planning makes that
+  writing arrive faster and more often. This ADR first recorded #46 as a
+  prerequisite for §1 being honest; on 2026-08-21, presented with four shapes and
+  the measurement, the owner chose the fourth — **accept the rate**. See
+  "The rate, accepted" below. §1's prerequisite is therefore ADR-0028 §4's
+  reviewer alone, and the ordering in §1 stands unchanged.
 - ADR-0028's single-point risk — *"everything rests on the filing bar"* — is
   partly relieved by building §4's reviewer, and partly worsened by §1. The net
   is deliberately not claimed to be an improvement; it is a trade taken with the
@@ -191,6 +195,41 @@ change collected during its first week and applied after it.
 - The loop's idle condition becomes meaningful. Today an idle queue means nothing
   was planned. After this it means every row is blocked behind something a human
   must do — which is the state the owner asked for.
+
+## The rate, accepted
+
+The S2 measurement: 33 rows, blind, a sonnet triager against the 2026-08-20
+re-triage as ground truth. **Two rows mislabelled, both `taste` → `machine`** —
+the direction that ships a decision in the owner's name. 92% correct on the rows
+it answered, and no error in the safe direction.
+
+#46 offered four shapes for closing that. Two were verified during the #46
+decision session and are recorded here because a future session will otherwise
+re-derive them:
+
+- **Reading the filing through the API is possible but wrong.** GraphQL
+  `userContentEdits` does return prior bodies. But every edit is authored by the
+  owner's login — agents use his token — so "the last human revision" is not
+  implementable, and the shape collapses to "the first revision", which would
+  permanently fail a one-line row the owner later elaborates himself. ADR-0028
+  protects exactly that filing.
+- **The reviewer does not cover the gap.** #80 judges a diff against the row's
+  *stated outcome*. A taste row carrying machine-shaped criteria yields a diff
+  that serves them, and the check goes green; it never sees that the criteria
+  should not have been machine-authored. #80's scope excludes judging labels on
+  purpose. So "let the reviewer carry the semantic half" costs a wider #80, not
+  a cheaper #46.
+
+The owner chose to accept the rate rather than pay for either. That is ADR-0020's
+standing bet — the merge is reversible, `master` is protected, every step is on
+the tracker — and it is recorded here with the objection ADR-0025 already made
+against it: **reversibility has never covered a decision taken in the owner's
+name.** A mislabelled taste row is that kind of decision, and two of them are
+expected per hundred.
+
+What this buys: #82 stops waiting on a row nobody wants to build, and the design
+ships with one prerequisite instead of two. What it costs is stated above rather
+than discovered later. The `revisit-after` on this ADR is the check.
 
 ## The risk this design carries
 
