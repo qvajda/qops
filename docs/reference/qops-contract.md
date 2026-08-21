@@ -96,8 +96,13 @@ the rendered label is `<ns>:<value>`. `labels.flags` are verbatim strings.
 appear here**, asserted by `test_every_label_the_config_names_is_in_its_own_taxonomy`.
 
 `validate.require_on_open` — namespaces every open issue needs exactly one of.
-`origin` is one of them (ADR-0023): it is set by the path that filed the row and
-enforced at filing by the local guard, never inferred from the row afterwards.
+`origin` is one of them (ADR-0023, amended by ADR-0029): it names whose licence
+covers the row, not who typed it, and is enforced at filing by the local guard.
+Three values: `owner`, `agent`, and `pending` — filed when a session cannot
+honestly claim `owner` and a parent is intended. `pending` is derived to the
+parent's `origin:` by `qops reconcile`, from a native sub-issue link to an
+`origin:owner`/`origin:agent` parent — a tracker fact, never inferred from the
+body, the author, or a claim in the filing.
 `validate.forbid_at_import` — labels the importer refuses (`ready:auto`: auto
 eligibility is a control, and granting it at import bypasses the control).
 
