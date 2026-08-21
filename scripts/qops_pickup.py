@@ -40,11 +40,22 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-try:
-    from qops import config as qconfig, install, ledger
-except ModuleNotFoundError:      # not installed: running from a checkout
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from qops import config as qconfig, install, ledger
+# The substrate that ships with this root, ahead of whatever is installed on
+# the host. `python <root>/scripts/qops_pickup.py` puts *the script's
+# directory* on sys.path[0], not the repo root, so `import qops` reached past
+# the repo into site-packages - and every unattended run this week executed
+# this repo's scripts against a `0.1.0` library while the repo declared `0.2.0`
+# (#74). WorkingDirectory does not help: cwd is not sys.path[0] for a script.
+#
+# This used to be a `try/except ModuleNotFoundError` fallback, which could
+# never fire: a stale install is not a missing one, so the module imported and
+# the names did not. Unconditional, because a run operates on the root it named
+# and there is no second candidate worth preferring. On a root that pins qops
+# instead of vendoring it, the inserted path holds no `qops/` and the import
+# falls through to site-packages exactly as before.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from qops import config as qconfig, install, ledger  # noqa: E402
 
 # eligible(), unwritable() and UNWRITABLE live in qops/install.py (#71): doctor
 # needs the same predicates pickup-loop uses, and qops/ may not import from
