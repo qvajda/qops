@@ -2415,3 +2415,43 @@ def test_no_agent_cites_a_file_that_does_not_exist(role):
 def test_gitattributes_declares_text_auto():
     text = (REPO / ".gitattributes").read_text(encoding="utf-8")
     assert "* text=auto" in text
+
+
+# --------------------------------------------------------------------------
+# #71 — auto-eligible AND unlaunchable is the reportable state, not either
+# half alone. #57 passed every eligibility test and named .claude/agents/, and
+# the queue read empty for an hour with nothing saying why.
+# --------------------------------------------------------------------------
+
+_ROLE_FILES = "## Files\n\nExpected to touch: `.claude/agents/triager.md`\n"
+_OK_FILES = "## Files\n\nExpected to touch: `qops/install.py`\n"
+
+
+def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
+    auto_eligible_and_unwritable = {
+        "number": 57, "body": _ROLE_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "ready:auto"}],
+    }
+    unwritable_not_auto_eligible = {
+        # #13's shape: names no test, so eligible() is False by every route.
+        "number": 13, "body": _ROLE_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"}],
+    }
+    auto_eligible_and_writable = {
+        "number": 70, "body": _OK_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "ready:auto"}],
+    }
+    no_files_section = {
+        "number": 42, "body": "just a body",
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "ready:auto"}],
+    }
+    problems = install.unlaunchable_and_auto_eligible(
+        [auto_eligible_and_unwritable, unwritable_not_auto_eligible,
+         auto_eligible_and_writable, no_files_section])
+    assert len(problems) == 1
+    assert "#57" in problems[0]
+    assert ".claude/agents/triager.md" in problems[0]
+    assert not any("#13" in p or "#70" in p or "#42" in p for p in problems)

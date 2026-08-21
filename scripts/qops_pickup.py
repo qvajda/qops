@@ -35,7 +35,6 @@ and a blanket bypass (`--dangerously-skip-permissions`) is never passed.
 
 import json
 import os
-import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -47,7 +46,10 @@ except ModuleNotFoundError:      # not installed: running from a checkout
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from qops import config as qconfig, install, ledger
 
-BLOCKING_FLAGS = {"no-auto", "blocked"}
+# eligible(), unwritable() and UNWRITABLE live in qops/install.py (#71): doctor
+# needs the same predicates pickup-loop uses, and qops/ may not import from
+# scripts/, so the dependency runs the other way and this re-exports them.
+from qops.install import BLOCKING_FLAGS, UNWRITABLE, eligible, unwritable  # noqa: E402,F401
 
 # The coder role's tools (.claude/agents/coder.md), verbatim. A sortie branches,
 # edits, commits and opens a PR with these; anything wider is #123's question,
@@ -57,26 +59,6 @@ LAUNCH_TOOLS = "Read,Edit,Write,Grep,Glob,Bash"
 # Any flag that trades the guard for convenience. Asserted absent, not merely
 # omitted - the wrong fix for #122 was one of these.
 BLANKET_BYPASS = ("--dangerously-skip-permissions", "--dangerously-bypass-permissions")
-
-
-def eligible(issue: dict) -> bool:
-    """`ready:auto` is one route in; `origin:owner` naming a test is the other
-    (ADR-0023). The second route writes no label — the filing was the grant,
-    so it stays a predicate, never an edit. `gate:taste` never qualifies by
-    that route: judgement is exactly what a named test cannot substitute for.
-    """
-    labels = {l["name"] for l in issue.get("labels", [])}
-    if "state:planned" not in labels:
-        return False
-    if labels & BLOCKING_FLAGS:
-        return False
-    if "gate:none" in labels or not any(l.startswith("gate:") for l in labels):
-        return False
-    if "ready:auto" in labels:
-        return True
-    if "gate:taste" in labels or "origin:owner" not in labels:
-        return False
-    return bool(install._NAMES_A_TEST.search(issue.get("body") or ""))
 
 
 def candidates(root: Path) -> list[dict] | None:
@@ -128,35 +110,6 @@ def repo_root(argv: list[str]) -> Path:
             f"pass --root: with no WorkingDirectory set it starts wherever the "
             f"scheduler puts it.")
     return root
-
-
-# Paths the launch may not write, whatever the row says. Not a repo rule and
-# not a config key: `--permission-mode acceptEdits` (#122) grants file edits
-# and NOT edits to the files that configure Claude Code itself, which is the
-# harness protecting an agent from rewriting its own role. That protection is
-# right and is not what should widen - an unattended agent that may edit its
-# own role, hooks or permission list has no controls left. What was missing is
-# that eligible() could not see it, so #47 launched four times and died four
-# times on the same tool result.
-UNWRITABLE = (".claude/",)
-
-# Only the `Expected to touch:` half of the Files section, and only the paths
-# it backticks. Every specced row in this repo names `.claude/` under *Must not
-# touch* - reading the wrong half would make the entire backlog unlaunchable,
-# which is the one failure mode of this check that empties the queue silently.
-_EXPECTED = re.compile(r"^[ \t]*Expected to touch:(?P<rest>.*)$", re.M | re.I)
-_PATH = re.compile(r"`([^`]+)`")
-
-
-def unwritable(body: str) -> list[str]:
-    """The paths a row expects to touch that the launch may not write."""
-    m = _EXPECTED.search(body or "")
-    if not m:
-        return []                      # no Files section is #42's question
-    return [p for p in _PATH.findall(m.group("rest"))
-            # removeprefix, not lstrip: lstrip strips *characters*, so
-            # ".claude/x" lost its dot and matched nothing.
-            if any(p.removeprefix("./").startswith(u) for u in UNWRITABLE)]
 
 
 def report_unlaunchable(root: Path, num: str, paths: list[str]) -> None:

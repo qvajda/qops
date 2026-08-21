@@ -301,6 +301,60 @@ def undeclared_labels(cfg: dict) -> list[str]:
 # the thing that will judge it, not that the name resolves today.
 _NAMES_A_TEST = re.compile(r"tests?[/\\][\w./\\-]*\.py|\btest_\w+")
 
+# Any flag that vetoes pickup regardless of everything else (#48/#122).
+BLOCKING_FLAGS = {"no-auto", "blocked"}
+
+
+def eligible(issue: dict) -> bool:
+    """`ready:auto` is one route in; `origin:owner` naming a test is the other
+    (ADR-0023). The second route writes no label — the filing was the grant,
+    so it stays a predicate, never an edit. `gate:taste` never qualifies by
+    that route: judgement is exactly what a named test cannot substitute for.
+
+    Lives here, not in `scripts/qops_pickup.py`, so `doctor` (#71) can call
+    the same predicate `pickup-loop` uses without `qops/` importing from
+    `scripts/` — the dependency has to run the other way.
+    """
+    labels = {l["name"] for l in issue.get("labels", [])}
+    if "state:planned" not in labels:
+        return False
+    if labels & BLOCKING_FLAGS:
+        return False
+    if "gate:none" in labels or not any(l.startswith("gate:") for l in labels):
+        return False
+    if "ready:auto" in labels:
+        return True
+    if "gate:taste" in labels or "origin:owner" not in labels:
+        return False
+    return bool(_NAMES_A_TEST.search(issue.get("body") or ""))
+
+
+# Paths the launch may not write, whatever the row says. Not a repo rule and
+# not a config key: `--permission-mode acceptEdits` (#122) grants file edits
+# and NOT edits to the files that configure Claude Code itself, which is the
+# harness protecting an agent from rewriting its own role. That protection is
+# right and is not what should widen - an unattended agent that may edit its
+# own role, hooks or permission list has no controls left.
+UNWRITABLE = (".claude/",)
+
+# Only the `Expected to touch:` half of the Files section, and only the paths
+# it backticks. Every specced row in this repo names `.claude/` under *Must not
+# touch* - reading the wrong half would make the entire backlog unlaunchable,
+# which is the one failure mode of this check that empties the queue silently.
+_EXPECTED = re.compile(r"^[ \t]*Expected to touch:(?P<rest>.*)$", re.M | re.I)
+_PATH = re.compile(r"`([^`]+)`")
+
+
+def unwritable(body: str) -> list[str]:
+    """The paths a row expects to touch that the launch may not write."""
+    m = _EXPECTED.search(body or "")
+    if not m:
+        return []                      # no Files section is #42's question
+    return [p for p in _PATH.findall(m.group("rest"))
+            # removeprefix, not lstrip: lstrip strips *characters*, so
+            # ".claude/x" lost its dot and matched nothing.
+            if any(p.removeprefix("./").startswith(u) for u in UNWRITABLE)]
+
 # The states no part of the pipeline advances on its own: `state:triage` waits
 # on the planner, `state:blocked` on whatever blocks it. `ready:auto` sitting
 # on either is a promise nothing can keep. Every other state is the row moving
@@ -403,6 +457,23 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
                             f"nothing downstream can tell what done looks like "
                             f"(ADR-0028)")
     return problems
+
+
+def unlaunchable_and_auto_eligible(issues: list[dict]) -> list[str]:
+    """A row `pickup-loop` would pick and can never launch (#71).
+
+    `eligible()` and `unwritable()` are pickup-loop's own predicates: a row
+    is only worth reporting when *both* hold — auto-eligible alone is normal,
+    and unwritable alone is any row whose deliverable touches `.claude/` and
+    is not `ready:auto`, which is most of this backlog. Reporting either half
+    alone would either miss the contradiction (#57) or make the whole backlog
+    look broken (#167's failure for the status issue).
+    """
+    return [f"#{i['number']}: auto-eligible and the launch cannot write "
+            f"{', '.join(unwritable(i.get('body') or ''))} — pickup-loop "
+            f"will skip it forever (#71)"
+            for i in issues
+            if eligible(i) and unwritable(i.get("body") or "")]
 
 
 def _test_targets(body: str) -> list[str]:
@@ -610,6 +681,7 @@ def doctor(root: Path, cfg: dict) -> list[str]:
         print(f"doctor: invariants evaluated against {scope} "
               f"on {cfg.get('repo')}")
         problems += issue_invariants(judged, cfg)
+        problems += unlaunchable_and_auto_eligible(judged)
         problems += r8_proof(root, issues)
     elif strict():
         # The reason is already printed by open_issues(), one line up. What was
