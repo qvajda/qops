@@ -958,8 +958,13 @@ def test_the_picker_loads_the_substrate_from_the_root_it_names(tmp_path):
     out = subprocess.run([sys.executable, str(REPO / "scripts" / "qops_pickup.py"),
                           "--root", str(REPO)], capture_output=True, text=True,
                          encoding="utf-8", env=env, cwd=str(tmp_path), timeout=120)
-    assert out.returncode == 0, out.stderr
-    assert "pickup-loop: root" in out.stdout
+    # Not the exit code: reading the tracker needs `gh` and a token, which a
+    # CI `test` job has neither of, and that would make this assert the
+    # environment rather than the import (#65). The root line is printed after
+    # the imports resolve and before anything reaches the network, so it is
+    # exactly the evidence this row is about.
+    assert "ImportError" not in out.stderr, out.stderr
+    assert "pickup-loop: root" in out.stdout, out.stderr
 
 
 def test_launch_marks_the_session_unattended():
