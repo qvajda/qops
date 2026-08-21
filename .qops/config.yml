@@ -120,10 +120,11 @@ labels:
   state: [triage, planned, building, gate, review, blocked, done, cancelled]
   mission: [substrate, consumers, housekeeping]
   gate: [machine, taste, none]
-  # ADR-0023. Which path filed the row, set at filing and never inferred after
-  # the fact: it is the input to the `ready:auto` grant, so an owner-filed row
-  # and an agent-filed one take different routes to it.
-  origin: [owner, agent]
+  # ADR-0023, amended by ADR-0029: whose licence covers the row, not who typed
+  # it. `pending` is filed when a session cannot honestly claim `owner` and a
+  # parent is intended; `qops reconcile` derives it to the parent's `origin:`
+  # from a native sub-issue link, never from a claim.
+  origin: [owner, agent, pending]
   # Every label named anywhere in this file must appear here; `qops doctor`
   # asserts it. `qops:status` lived only under `ci:` in the source repo, so the
   # importer never created it and the daily digest failed for weeks (#136).
