@@ -60,6 +60,71 @@ def issue_number(branch: str) -> str | None:
     return m.group(1) if m else None
 
 
+# ADR-0029: `origin:` is derived from a native sub-issue link, never claimed.
+# A row files `origin:pending` when its session cannot honestly claim `owner`
+# and a parent is intended (guard.py:origin_refusal); this is what resolves it.
+
+
+def pending_issues(repo: str, limit: int, run=gh) -> list[str]:
+    out = run(["issue", "list", "--repo", repo, "--label", "origin:pending",
+               "--state", "open", "--limit", str(limit), "--json", "number"])
+    return [str(i["number"]) for i in json.loads(out or "[]")]
+
+
+def parent_origin(repo: str, issue: str, run=gh) -> str | None:
+    """The parent's `origin:` value, from the REST sub-issues `parent`
+    endpoint — a tracker fact, not prose. No link (404) or a parent that is
+    itself not yet `owner`/`agent` both mean "no licence to derive yet"."""
+    try:
+        parent = json.loads(run(["api", f"repos/{repo}/issues/{issue}/parent"]))
+    except Exception as exc:
+        # A row with no parent 404s, and that is an answer: no licence to
+        # derive yet. Anything else is not an answer, and returning None for it
+        # would report an outage as "no parent link" - a swallowed exception
+        # leaving a state change that says the wrong thing (CLAUDE.md).
+        if "404" in str(exc) or "Not Found" in str(exc):
+            return None
+        raise
+    labels = {l["name"] for l in parent.get("labels", [])}
+    for value in ("owner", "agent"):
+        if f"origin:{value}" in labels:
+            return value
+    return None
+
+
+def derive_origin(repo: str, limit: int = 50, run=gh) -> dict:
+    """Resolve every `origin:pending` row whose sub-issue link now names an
+    `origin:owner`/`origin:agent` parent. A row with no such link stays
+    `origin:pending` — briefly un-pickable is correct (ADR-0029).
+
+    It reports failures rather than raising them. This runs ahead of
+    `reconcile()` in `main()`, so an exception here would take the row-advance
+    backstop down with it — a transient `gh` error in the origin sweep would
+    stop merged rows reaching `state:done`, which is the one job this module
+    exists to do. Per-item, a status and a reason, and the run still fails once
+    after the loop (CLAUDE.md).
+    """
+    report = {"derived": [], "skipped": [], "failed": []}
+    try:
+        issues = pending_issues(repo, limit, run=run)
+    except Exception as exc:
+        report["failed"].append(("origin:pending", f"could not list: {exc}"))
+        return report
+    for issue in issues:
+        try:
+            origin = parent_origin(repo, issue, run=run)
+            if origin is None:
+                report["skipped"].append((issue,
+                                          "no origin:owner/agent parent link"))
+                continue
+            run(["issue", "edit", issue, "--repo", repo, "--add-label",
+                 f"origin:{origin}", "--remove-label", "origin:pending"])
+            report["derived"].append((issue, origin))
+        except Exception as exc:
+            report["failed"].append((issue, str(exc)))
+    return report
+
+
 def merged_prs(repo: str, limit: int, run=gh) -> list[dict]:
     out = run(["pr", "list", "--repo", repo, "--state", "merged",
                "--limit", str(limit), "--json", "number,headRefName"])
@@ -149,6 +214,13 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print("qops reconcile: .qops/config.yml names no `repo`", file=sys.stderr)
         return 2
     limit = int(argv[argv.index("--limit") + 1]) if "--limit" in argv else 50
+    origin_report = derive_origin(repo, limit=limit)
+    for issue, origin in origin_report["derived"]:
+        print(f"derived #{issue}: origin:{origin}")
+    for issue, why in origin_report["skipped"]:
+        print(f"origin skipped #{issue}: {why}")
+    for issue, why in origin_report["failed"]:
+        print(f"origin FAILED #{issue}: {why}", file=sys.stderr)
     report = reconcile(repo, limit=limit)
     for issue, pr in report["advanced"]:
         print(f"advanced #{issue}: PR #{pr} merged")
@@ -164,5 +236,7 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     if report["failed"]:
         for issue, why in report["failed"]:
             print(f"FAILED #{issue}: {why}", file=sys.stderr)
-        return 1
-    return 0
+    # Either sweep failing fails the run, once, after both have finished. The
+    # origin sweep must not stop the backstop, and must not pass silently
+    # either.
+    return 1 if report["failed"] or origin_report["failed"] else 0

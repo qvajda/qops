@@ -155,17 +155,23 @@ def origin_refusal(toks: list[str], ctx: dict) -> str | None:
     the control. Absence is refused too - it is the easy way around a check on
     the value, and it would leave `doctor` inferring after the fact, which is
     exactly what the ADR forbids.
+
+    ADR-0029: `origin:pending` is the honest claim for an unattended filing
+    that expects a parent link to derive it later — `qops reconcile` does the
+    deriving, from the link, never from this claim.
     """
-    honest = "origin:agent" if ctx.get("unattended") else "origin:owner"
+    honest = {"origin:agent", "origin:pending"} if ctx.get("unattended") \
+        else {"origin:owner"}
     for args in issue_filings(toks):
         claimed = {l for l in label_values(args) if l.startswith("origin:")}
-        if claimed == {honest}:
+        if len(claimed) == 1 and claimed <= honest:
             continue
+        choices = " or ".join(f"`{h}`" for h in sorted(honest))
         if not claimed:
             return (f"`gh issue create` states no `origin:` label. This session "
-                    f"files as `{honest}` — pass `--label {honest}` (ADR-0023).")
+                    f"can claim {choices} — pass `--label` (ADR-0023/0029).")
         return (f"this filing claims {', '.join(sorted(claimed))}; this session "
-                f"can only claim `{honest}` (ADR-0023). `origin:` is set by "
+                f"can only claim {choices} (ADR-0023/0029). `origin:` is set by "
                 f"which path filed the row, not chosen.")
     return None
 
