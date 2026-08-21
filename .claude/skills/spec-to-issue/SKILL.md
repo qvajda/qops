@@ -63,6 +63,10 @@ Exactly one `type:`, one `state:` and one `gate:`, from `.qops/config.yml`:
   until a real gate is chosen. **Do not use `gate:none` on a sortie you just
   specified** — if you cannot name the gate, the spec is not finished.
 - `mission:` — one, from the configured list.
+- `origin:` — `owner` when the owner is present in this session, `agent` when a
+  sortie filed it unattended. Not a judgement: the guard already knows which
+  session this is and refuses a filing that claims the other one (ADR-0023). It
+  is the input to the `ready:auto` grant, which is why it is not yours to pick.
 
 **Never apply `ready:auto`.** It means an unattended agent may start the work
 unsupervised, and it is the owner's alone to grant (ADR-0019, `loops.md`).
