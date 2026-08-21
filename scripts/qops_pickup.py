@@ -249,7 +249,26 @@ def first_launchable(root: Path, picks: list[dict]) -> dict | None:
 
 
 def main(argv: list[str]) -> int:
+    """The heartbeat is here, and it is the whole of #76.
+
+    Every silence the picker had already fixed assumes the process got far
+    enough to print. This one records that a run *finished* — whatever it
+    decided — so the absence of a recent record is readable as state by
+    `qops brief`. It cannot be written by a run that died at import, which is
+    exactly the property wanted: four dead runs on 2026-08-21 left nothing
+    anywhere, and the loop was as dead as a disabled task and said as much.
+
+    A failing run still counts as one that spoke: it returned, so it reported.
+    `repo_root()` raising is before this and stays silent here, because a root
+    that is not a qops root has nowhere to write a ledger.
+    """
     root = repo_root(argv)
+    rc = _run(argv, root)
+    ledger.append(root, "pickup_ran", {"rc": rc})
+    return rc
+
+
+def _run(argv: list[str], root: Path) -> int:
     cfg = qconfig.load(root)
     # Named on every run, eligible or not. A log line that says which root and
     # which tracker were read is what separates a healthy idle queue from a
