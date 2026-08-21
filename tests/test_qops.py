@@ -922,6 +922,77 @@ def test_guard_refuses_a_sandbox_escape_when_unattended():
     assert guard.check("Bash", payload, ctx, cfg) is None
 
 
+# --------------------------------------------------------------------------
+# ADR-0023 / #26 — `origin:` is set at filing, by which path filed it, never
+# inferred afterwards. It is the input to the grant: on `origin:owner` the
+# filing IS the grant, so an unattended session that could write `origin:owner`
+# could grant itself autonomy. The guard is where that is refused, because an
+# instruction in a prompt is a preference, not a control (CLAUDE.md).
+# --------------------------------------------------------------------------
+
+def _filing(labels: str) -> dict:
+    return {"command": f'gh issue create --title "x" --body "y" --label {labels}'}
+
+
+def test_the_origin_label_is_the_one_the_session_can_honestly_claim():
+    cfg = qconfig.load(REPO)
+    owner = {"branch": "master", "worktrees": 1, "unattended": False}
+    agent = {**owner, "unattended": True}
+
+    assert guard.check("Bash", _filing("type:code,state:triage,gate:machine,"
+                                       "origin:owner"), owner, cfg) is None
+    assert guard.check("Bash", _filing("type:code,state:triage,gate:machine,"
+                                       "origin:agent"), agent, cfg) is None
+
+    # The hole this exists for: an unattended run filing a row as the owner's.
+    refusal = guard.check("Bash", _filing("type:code,origin:owner"), agent, cfg)
+    assert refusal and "origin:agent" in refusal
+
+    # And the reverse, which is not an authority hole but is still a lie: it
+    # would send an owner-filed row down the batch-approval path.
+    refusal = guard.check("Bash", _filing("type:code,origin:agent"), owner, cfg)
+    assert refusal and "origin:owner" in refusal
+
+
+def test_a_filing_with_no_origin_is_refused():
+    """Absence is the easy way around a check on the value. Every filing states
+    one, so nothing reaches the tracker for `doctor` to infer about later."""
+    cfg = qconfig.load(REPO)
+    ctx = {"branch": "master", "worktrees": 1, "unattended": False}
+    refusal = guard.check("Bash", _filing("type:code,state:triage"), ctx, cfg)
+    assert refusal and "origin:" in refusal
+    # Repeated --label flags are the same filing as one comma-joined list.
+    ok = {"command": 'gh issue create --title "x" --label type:code '
+                     '--label origin:owner'}
+    assert guard.check("Bash", ok, ctx, cfg) is None
+
+
+def test_the_guard_leaves_everything_that_is_not_a_filing_alone():
+    """`gh issue edit`, `gh issue list`, a PR body quoting the label. The guard
+    reads argv and decides from the parse (ADR-0021), so a mention is not a
+    filing."""
+    cfg = qconfig.load(REPO)
+    ctx = {"branch": "master", "worktrees": 1, "unattended": True}
+    for cmd in ('gh issue edit 26 --add-label state:planned',
+                'gh issue list --label origin:owner',
+                'gh pr create --title "x" --body "sets origin:owner at filing"'):
+        assert guard.check("Bash", {"command": cmd}, ctx, cfg) is None
+
+
+def test_every_open_row_carries_an_origin():
+    """`validate.require_on_open` is where the presence check lives, the same
+    shape `gate:` already uses — the guard holds the filing, this holds the
+    tracker."""
+    cfg = qconfig.load(REPO)
+    assert "origin" in cfg["validate"]["require_on_open"]
+    assert cfg["labels"]["origin"] == ["owner", "agent"]
+    issues = [{"number": 1, "labels": [{"name": "type:code"},
+                                       {"name": "state:triage"},
+                                       {"name": "gate:machine"}]}]
+    assert any("#1" in p and "origin" in p
+               for p in install.issue_invariants(issues, cfg))
+
+
 def test_a_failed_run_releases_the_claim(monkeypatch, tmp_path):
     """The claim was a one-way door: a failed run left `state:building` and no
     later fire could reach the issue again (GL-46 — a swallowed failure must
@@ -1312,7 +1383,8 @@ def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     cfg = qconfig.load(REPO)
     issues = [
         {"number": 1, "labels": [{"name": "type:code"}, {"name": "state:planned"},
-                                 {"name": "gate:machine"}]},
+                                 {"name": "gate:machine"},
+                                 {"name": "origin:owner"}]},
         {"number": 2, "labels": [{"name": "type:code"}, {"name": "state:planned"},
                                  {"name": "state:building"},
                                  {"name": "gate:machine"}]},
@@ -1475,9 +1547,10 @@ def test_the_status_issue_is_exempt_from_the_issue_invariants():
     label = cfg["ci"]["status_issue_label"]
     assert install.issue_invariants(
         [{"number": 1, "labels": [{"name": label}]}], cfg) == []
-    # an ordinary issue carrying one label is still three problems
+    # an ordinary issue carrying one label is still missing every other
+    # namespace `validate.require_on_open` names
     assert len(install.issue_invariants(
-        [{"number": 2, "labels": [{"name": "type:code"}]}], cfg)) == 2
+        [{"number": 2, "labels": [{"name": "type:code"}]}], cfg)) ==         len(cfg["validate"]["require_on_open"]) - 1
 
 
 def test_ready_auto_must_name_a_test(capsys):
@@ -1487,7 +1560,8 @@ def test_ready_auto_must_name_a_test(capsys):
     existed only as launch-prompt prose, which by GL-53 is a preference."""
     cfg = qconfig.load(REPO)
     labels = [{"name": "type:code"}, {"name": "state:planned"},
-              {"name": "gate:machine"}, {"name": "ready:auto"}]
+              {"name": "gate:machine"}, {"name": "ready:auto"},
+              {"name": "origin:owner"}]
     vague = install.issue_invariants(
         [{"number": 1, "labels": labels, "body": "make the thing work"}], cfg)
     assert any("names no test" in p for p in vague)
@@ -1672,9 +1746,15 @@ def test_the_importer_taxonomy_parser_matches_the_yaml():
 
     cfg = qconfig.load(REPO)
     taxonomy = cfg["labels"]
+    # Every namespace the config declares, not a list repeated here — repeating
+    # it means the parser and its test drop the same one together, silently.
+    # `origin:` (#26) is what proved that: adding it to the config alone left a
+    # fresh repo unable to file at all, since `gh issue create --label` fails on
+    # a label the repo does not have.
     expected = set(taxonomy.get("flags", []))
-    for ns in ("type", "state", "mission", "gate"):
-        expected |= {f"{ns}:{v}" for v in taxonomy.get(ns, [])}
+    for ns, values in taxonomy.items():
+        if ns != "flags":
+            expected |= {f"{ns}:{v}" for v in values}
     labels, milestones = qops_import.load_taxonomy()
     assert labels == expected
     assert milestones == set(cfg["milestones"])
@@ -1855,7 +1935,7 @@ def test_the_planner_splits_what_the_triager_refused():
 # --------------------------------------------------------------------------
 
 _BAR_LABELS = [{"name": "type:code"}, {"name": "state:planned"},
-               {"name": "gate:machine"}]
+               {"name": "gate:machine"}, {"name": "origin:owner"}]
 
 
 def test_doctor_refuses_a_row_with_no_stated_outcome():
@@ -1881,7 +1961,7 @@ def test_the_filing_bar_does_not_fire_in_triage():
     rather than removed it (CLAUDE.md:81)."""
     cfg = qconfig.load(REPO)
     triage = [{"name": "type:code"}, {"name": "state:triage"},
-              {"name": "gate:machine"}]
+              {"name": "gate:machine"}, {"name": "origin:owner"}]
     assert install.issue_invariants(
         [{"number": 3, "labels": triage, "body": "the button is dead"}], cfg) == []
 

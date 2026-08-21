@@ -89,12 +89,15 @@ native, a lock entry outside the declared set, and a lock entry with no `ref`.
 
 ### Taxonomy
 
-`labels.type`, `labels.state`, `labels.mission`, `labels.gate` are namespaces —
+`labels.type`, `labels.state`, `labels.mission`, `labels.gate`, `labels.origin`
+are namespaces —
 the rendered label is `<ns>:<value>`. `labels.flags` are verbatim strings.
 `milestones` is a flat list. **Every label named anywhere else in this file must
 appear here**, asserted by `test_every_label_the_config_names_is_in_its_own_taxonomy`.
 
 `validate.require_on_open` — namespaces every open issue needs exactly one of.
+`origin` is one of them (ADR-0023): it is set by the path that filed the row and
+enforced at filing by the local guard, never inferred from the row afterwards.
 `validate.forbid_at_import` — labels the importer refuses (`ready:auto`: auto
 eligibility is a control, and granting it at import bypasses the control).
 

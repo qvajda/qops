@@ -111,6 +111,10 @@ labels:
   state: [triage, planned, building, gate, review, blocked, done, cancelled]
   mission: [substrate, consumers, housekeeping]
   gate: [machine, taste, none]
+  # ADR-0023. Which path filed the row, set at filing and never inferred after
+  # the fact: it is the input to the `ready:auto` grant, so an owner-filed row
+  # and an agent-filed one take different routes to it.
+  origin: [owner, agent]
   # Every label named anywhere in this file must appear here; `qops doctor`
   # asserts it. `qops:status` lived only under `ci:` in the source repo, so the
   # importer never created it and the daily digest failed for weeks (#136).
@@ -118,9 +122,9 @@ labels:
 
 milestones: [substrate, consumers, housekeeping]
 
-# Every OPEN issue must carry exactly one type:, one state: and one gate:.
-# gate:none is legal at import and blocks ready:auto until it is filled in when
-# the sortie is planned.
+# Every OPEN issue must carry exactly one type:, one state:, one gate: and one
+# origin:. gate:none is legal at import and blocks ready:auto until it is filled
+# in when the sortie is planned.
 validate:
-  require_on_open: [type, state, gate]
+  require_on_open: [type, state, gate, origin]
   forbid_at_import: [ready:auto]

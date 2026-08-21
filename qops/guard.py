@@ -111,6 +111,65 @@ def git_commands(toks: list[str]) -> list[tuple[str, list[str]]]:
     return found
 
 
+def issue_filings(toks: list[str]) -> list[list[str]]:
+    """The args of every `gh issue create` in these tokens.
+
+    Same parse as `git_commands`, same reason (ADR-0021): decide from a parse,
+    not from a regex over the string. `gh issue edit`, `gh issue list` and a
+    `--body` that merely mentions the label are not filings.
+    """
+    found = []
+    for i, t in enumerate(toks):
+        if t != "gh" or toks[i + 1:i + 3] != ["issue", "create"]:
+            continue
+        args = []
+        for a in toks[i + 3:]:
+            if a in _SEPARATORS:
+                break
+            args.append(a)
+        found.append(args)
+    return found
+
+
+def label_values(args: list[str]) -> set[str]:
+    """Every label a `gh` call passes, across repeated and comma-joined flags."""
+    out = set()
+    for i, a in enumerate(args):
+        value = None
+        if a in ("--label", "-l") and i + 1 < len(args):
+            value = args[i + 1]
+        elif a.startswith("--label="):
+            value = a.split("=", 1)[1]
+        if value:
+            out |= {v.strip() for v in value.split(",") if v.strip()}
+    return out
+
+
+def origin_refusal(toks: list[str], ctx: dict) -> str | None:
+    """A filing states the `origin:` its own session can honestly claim.
+
+    ADR-0023 makes `origin:` the input to the `ready:auto` grant: on an
+    `origin:owner` row the filing itself is the grant. So an unattended run
+    that could write `origin:owner` could grant itself autonomy, and the
+    prompt saying not to is a preference, not a control (CLAUDE.md). This is
+    the control. Absence is refused too - it is the easy way around a check on
+    the value, and it would leave `doctor` inferring after the fact, which is
+    exactly what the ADR forbids.
+    """
+    honest = "origin:agent" if ctx.get("unattended") else "origin:owner"
+    for args in issue_filings(toks):
+        claimed = {l for l in label_values(args) if l.startswith("origin:")}
+        if claimed == {honest}:
+            continue
+        if not claimed:
+            return (f"`gh issue create` states no `origin:` label. This session "
+                    f"files as `{honest}` — pass `--label {honest}` (ADR-0023).")
+        return (f"this filing claims {', '.join(sorted(claimed))}; this session "
+                f"can only claim `{honest}` (ADR-0023). `origin:` is set by "
+                f"which path filed the row, not chosen.")
+    return None
+
+
 def forces(args: list[str]) -> bool:
     """A `git push` forced, in any of its spellings."""
     return any(a == "-f" or a.startswith(_FORCE_FLAGS) for a in args)
@@ -218,7 +277,8 @@ def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
             return ("dangerouslyDisableSandbox is refused in an unattended run. "
                     "Report the blocked command on the issue instead.")
 
-        refusal = git_refusal(argv_tokens(cmd), ctx, cfg)
+        toks = argv_tokens(cmd)
+        refusal = git_refusal(toks, ctx, cfg) or origin_refusal(toks, ctx)
         if refusal:
             return refusal
 
