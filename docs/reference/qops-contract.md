@@ -119,7 +119,7 @@ malformed or refused.
 | `resume` | `--write`, `--quiet` | Prints `.qops/resume.md`; `--write` regenerates. | 0 |
 | `guard` | none = PreToolUse hook (payload on stdin); `scan` = the CI half | Hook: **2 blocks the call**. Scan: greps the tracked tree. | hook 0/2; scan 0/1 |
 | `close` | `<issue>…` `[--comment TEXT]` | Labels `state:done`, closes, writes the ledger. | 0/1; 2 if no issue given |
-| `install` | — | Renders all six workflows from the templates + config. | 0 |
+| `install` | — | Renders all seven workflows from the templates + config. | 0 |
 | `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, and the open-issue invariants. | 0/1 |
 | `metrics` | `--state`, `--json`, `--since D`, `--until D` | S1–S13; `--state` writes the state-report table. | 0/1 |
 | `reconcile` | `--limit N` | Advances the row of every merged sortie whose issue is not `state:done`. | 0/1; 2 if no `repo:` |
@@ -146,7 +146,7 @@ Two scripts sit outside the CLI, both rooted the same way:
    installed);
 3. a `skills:` block matching what is in `.claude/skills/`, with a
    `skills-lock.json` ref per external;
-4. the six workflows rendered — `qops install`;
+4. the seven workflows rendered — `qops install`;
 5. the label taxonomy created — `python scripts/qops_import.py --labels`.
 
 And two settings that are the repo owner's, not the package's, without which

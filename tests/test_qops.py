@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from qops import config as qconfig  # noqa: E402
+from qops import review as reviewmod  # noqa: E402
 from qops import guard, install, ledger, metrics, brief as briefmod  # noqa: E402
 
 
@@ -570,11 +571,11 @@ def test_main_rejects_unrecognised_flag(tmp_path, capsys):
 # install / doctor — rendered workflows, and drift is detectable
 # --------------------------------------------------------------------------
 
-def test_install_renders_the_six_workflows(tmp_path):
+def test_install_renders_the_seven_workflows(tmp_path):
     written = install.render_all(tmp_path, qconfig.load(REPO))
     names = {Path(p).name for p in written}
     assert names == {"test.yml", "gate.yml", "guard.yml", "digest.yml",
-                     "groom.yml", "automerge.yml"}
+                     "groom.yml", "automerge.yml", "reviewer.yml"}
     import re
     for p in written:
         # `${{ secrets.X }}` is GitHub's own syntax and stays; qops placeholders
@@ -2224,6 +2225,102 @@ def test_doctor_refuses_a_row_with_no_stated_outcome():
         [{"number": 2, "labels": _BAR_LABELS,
           "body": "It drifts.\n\n## Acceptance\n\n- `qops doctor` exits 1.\n"}], cfg)
     assert stated == []
+
+
+# --------------------------------------------------------------------------
+# #80 / ADR-0028 §4 — the reviewer's verdict. The required checks on master
+# are all mechanical, so nothing between a filing and master reads for meaning.
+# This is the reader. It is also a language model wired into a required check
+# under `enforce_admins: true`, so its fail-open path is what bounds the blast
+# radius of an outage: a wrong fail-closed costs one bad merge, a wrong
+# fail-open costs a repo nobody can merge to and only the owner can unstick.
+# --------------------------------------------------------------------------
+
+# What `master` requires today. Written here rather than queried, because the
+# assertion is about this repo's rollout decision and a test that asks GitHub
+# would go green the moment someone flips the switch by hand.
+_REQUIRED_CONTEXTS = ("test", "gate", "tripwires", "doc-links")
+
+_DIFF = "diff --git a/x.py b/x.py\n+def x(): return 1\n"
+_ROW = "## Acceptance\n- `x()` returns 1.\n"
+
+
+def test_the_reviewer_reads_a_verdict_and_nothing_else():
+    """Strict parse. Anything that is not one of the two verdicts is *not* a
+    verdict, and a lenient parser would turn a rambling answer into a merge
+    decision."""
+    assert reviewmod.verdict("VERDICT: serves\nbecause x") == "serves"
+    assert reviewmod.verdict("VERDICT: does-not-serve\nno test") == "does-not-serve"
+    for junk in ("", "I think it probably serves the goal", "VERDICT: maybe",
+                 "serves", "VERDICT:", None):
+        assert reviewmod.verdict(junk) is None, junk
+
+
+@pytest.mark.parametrize("why,setup", [
+    ("no PR context", {}),
+    ("branch names no row", {"GITHUB_BASE_REF": "master",
+                             "GITHUB_HEAD_REF": "no-issue/sweep"}),
+    ("no credential", {"GITHUB_BASE_REF": "master",
+                       "GITHUB_HEAD_REF": "fix/1-x"}),
+])
+def test_the_reviewer_fails_open_without_a_verdict(monkeypatch, capsys, why, setup,
+                                                   tmp_path):
+    """Every path that is not a verdict is green AND says why. A silent
+    fail-open is indistinguishable from a real pass, which is a required check
+    that reads nothing while looking like it read."""
+    for k, v in setup.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(reviewmod, "row_body", lambda *a, **k: _ROW)
+    monkeypatch.setattr(reviewmod, "diff", lambda *a, **k: _DIFF)
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 0
+    out = capsys.readouterr().out
+    assert "fail-open" in out and why in out, out
+
+
+def test_the_reviewer_fails_open_when_the_model_call_raises(monkeypatch, capsys,
+                                                            tmp_path):
+    """An outage is not a rejection. Under `enforce_admins: true` a red here
+    freezes every PR in the repo and only the owner can undo it."""
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "fix/1-x")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(reviewmod, "row_body", lambda *a, **k: _ROW)
+    monkeypatch.setattr(reviewmod, "diff", lambda *a, **k: _DIFF)
+    monkeypatch.setattr(reviewmod, "ask", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("429 rate limited")))
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 0
+    out = capsys.readouterr().out
+    assert "fail-open" in out and "429" in out
+
+
+def test_the_reviewer_fails_closed_on_a_verdict(monkeypatch, capsys, tmp_path):
+    """Only a verdict is a rejection, and it says what it judged."""
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "fix/1-x")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(reviewmod, "row_body", lambda *a, **k: _ROW)
+    monkeypatch.setattr(reviewmod, "diff", lambda *a, **k: _DIFF)
+    monkeypatch.setattr(reviewmod, "ask",
+                        lambda *a, **k: "VERDICT: does-not-serve\nno test added")
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 1
+    assert "no test added" in capsys.readouterr().out
+
+    monkeypatch.setattr(reviewmod, "ask", lambda *a, **k: "VERDICT: serves\nok")
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 0
+
+
+def test_the_reviewer_workflow_is_rendered_and_not_required_yet():
+    """It ships reporting-only: built, watched for a week, then added to the
+    required contexts with evidence rather than hope (#80's rollout)."""
+    text = install.render_one("reviewer.yml", qconfig.load(REPO))
+    assert "python -m qops review" in text
+    assert "ANTHROPIC_API_KEY" in text
+    assert "reviewer.yml" in install.WORKFLOWS
+    # It is not in the required contexts yet, and that is the rollout, not an
+    # oversight: a language model under `enforce_admins: true` gets a week of
+    # real verdicts read before it can block anything (#80).
+    assert "reviewer" not in _REQUIRED_CONTEXTS
 
 
 def test_the_filing_bar_does_not_judge_a_finished_row():

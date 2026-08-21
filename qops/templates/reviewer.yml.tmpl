@@ -1,0 +1,55 @@
+# RENDERED BY `qops install` from qops/templates/reviewer.yml.tmpl + .qops/config.yml
+# Do not hand-edit: `qops doctor` fails on drift.
+#
+# The semantic reader (ADR-0028 §4, #80). Every other required check is
+# mechanical, so without this nothing between a filing and {{default_branch}}
+# reads for meaning.
+#
+# It ships REPORTING ONLY. Adding `reviewer` to the branch's required contexts
+# is a separate owner act, taken after a week of real verdicts rather than on
+# the strength of it having been built. That is deliberate: this is a language
+# model in a check that will run under `enforce_admins: true`, where a
+# systematic misjudgement blocks every PR - including the one that would fix
+# it - and the only exit is the owner editing protection settings by hand,
+# since `.claude/settings.json` denies `gh api -X` against them (ADR-0016).
+#
+# Every non-verdict outcome is green and says so (`qops/review.py`). A fork's
+# PR carries no secret and will fail open on every outside contribution, which
+# is correct and is worth not being surprised by.
+name: reviewer
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reviewer:
+    runs-on: {{runs_on}}
+    permissions:
+      contents: read
+      issues: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      # Full history: the verdict is judged on `git diff origin/base...HEAD`,
+      # and a shallow checkout has no merge base to diff against.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '{{python_version}}'
+          cache: pip
+      - name: install
+        # One block for every rendered job that runs Python, rendered from
+        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # into three separate failures in repos shaped unlike this one.
+        run: |
+          {{install_deps}}
+      - name: does the diff serve the row's stated outcome
+        run: python -m qops review
