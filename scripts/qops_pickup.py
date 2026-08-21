@@ -14,11 +14,14 @@ reads nothing, and exits 0 doing it.
 
 Eligibility is deliberately narrow, and every condition is the owner's to grant:
 
-    state:planned  AND  ready:auto  AND  NOT no-auto  AND  gate: is not none
+    state:planned  AND  NOT no-auto  AND  gate: is not none
+    AND ( ready:auto  OR  ( origin:owner  AND  NOT gate:taste  AND  body names a test ) )
 
 `ready:auto` is never applied by the triager (see .claude/agents/triager.md) —
 only the owner grants it. `gate:none` blocks pickup because a sortie with no
-named gate has no definition of done.
+named gate has no definition of done. The second route (ADR-0023) is the
+owner's filing itself standing as the grant on an `origin:owner` row: no label
+is written, so there is nothing to clean up afterwards.
 
 `--launch` is what actually starts an agent. Without it this prints what it
 would have picked and exits 0, which is also how the scheduled task is proved
@@ -39,10 +42,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
-    from qops import config as qconfig, ledger
+    from qops import config as qconfig, install, ledger
 except ModuleNotFoundError:      # not installed: running from a checkout
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from qops import config as qconfig, ledger
+    from qops import config as qconfig, install, ledger
 
 BLOCKING_FLAGS = {"no-auto", "blocked"}
 
@@ -57,12 +60,23 @@ BLANKET_BYPASS = ("--dangerously-skip-permissions", "--dangerously-bypass-permis
 
 
 def eligible(issue: dict) -> bool:
+    """`ready:auto` is one route in; `origin:owner` naming a test is the other
+    (ADR-0023). The second route writes no label — the filing was the grant,
+    so it stays a predicate, never an edit. `gate:taste` never qualifies by
+    that route: judgement is exactly what a named test cannot substitute for.
+    """
     labels = {l["name"] for l in issue.get("labels", [])}
-    if "state:planned" not in labels or "ready:auto" not in labels:
+    if "state:planned" not in labels:
         return False
     if labels & BLOCKING_FLAGS:
         return False
-    return "gate:none" not in labels and any(l.startswith("gate:") for l in labels)
+    if "gate:none" in labels or not any(l.startswith("gate:") for l in labels):
+        return False
+    if "ready:auto" in labels:
+        return True
+    if "gate:taste" in labels or "origin:owner" not in labels:
+        return False
+    return bool(install._NAMES_A_TEST.search(issue.get("body") or ""))
 
 
 def candidates(root: Path) -> list[dict] | None:

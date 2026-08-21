@@ -65,9 +65,12 @@ fails before CI sees it.
 ## pickup-loop
 
 **Trigger:** hourly, **only when the task is enabled. It ships disabled.**
-**Does:** picks the least-recently-updated issue carrying `state:planned` **and**
-`ready:auto`, with a real gate (`gate:none` is not one) and no `no-auto` /
-`blocked` flag, then starts a session on it.
+**Does:** picks the least-recently-updated issue carrying `state:planned`, a
+real gate (`gate:none` is not one) and no `no-auto` / `blocked` flag, then
+starts a session on it. Two routes make a row eligible (ADR-0023): it carries
+`ready:auto` (the owner's explicit grant, the only route for an `origin:agent`
+row), **or** it is `origin:owner` with a body naming a test and no `gate:taste`
+— the filing itself is the grant there, so no label is written.
 **Acceptance check:** it branches, commits, opens a PR and stops there. It
 never merges by hand, never activates a listing, never pushes to `master`.
 
