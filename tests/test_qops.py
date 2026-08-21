@@ -6,6 +6,7 @@ assertion here.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -934,6 +935,36 @@ def test_launch_never_passes_a_blanket_bypass():
     for flag in qops_pickup.BLANKET_BYPASS:
         assert flag not in argv
     assert not any(a.startswith("--dangerously") for a in argv)
+
+
+def test_the_picker_loads_the_substrate_from_the_root_it_names(tmp_path):
+    """Running `python <root>/scripts/qops_pickup.py` puts *the script's
+    directory* on `sys.path[0]`, not the repo root, so `import qops` reached
+    past the repo into site-packages. Every unattended run this week executed
+    the repo's `scripts/` against a stale installed library, and it only
+    surfaced when #71 moved a name (#74). CI cannot see it: `INSTALL_DEPS`
+    installs editable, so package and repo are one tree there.
+
+    A subprocess, because the defect exists only in how the process starts.
+    """
+    shadow = tmp_path / "shadow"
+    (shadow / "qops").mkdir(parents=True)
+    (shadow / "qops" / "__init__.py").write_text("", encoding="utf-8")
+    # A stale substrate is not a missing one: the module imports, the names
+    # are gone. That is exactly the shape the old ModuleNotFoundError guard
+    # could not catch.
+    (shadow / "qops" / "install.py").write_text("", encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(shadow)}
+    out = subprocess.run([sys.executable, str(REPO / "scripts" / "qops_pickup.py"),
+                          "--root", str(REPO)], capture_output=True, text=True,
+                         encoding="utf-8", env=env, cwd=str(tmp_path), timeout=120)
+    # Not the exit code: reading the tracker needs `gh` and a token, which a
+    # CI `test` job has neither of, and that would make this assert the
+    # environment rather than the import (#65). The root line is printed after
+    # the imports resolve and before anything reaches the network, so it is
+    # exactly the evidence this row is about.
+    assert "ImportError" not in out.stderr, out.stderr
+    assert "pickup-loop: root" in out.stdout, out.stderr
 
 
 def test_launch_marks_the_session_unattended():
