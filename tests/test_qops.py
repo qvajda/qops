@@ -1122,12 +1122,77 @@ def test_every_open_row_carries_an_origin():
     tracker."""
     cfg = qconfig.load(REPO)
     assert "origin" in cfg["validate"]["require_on_open"]
-    assert cfg["labels"]["origin"] == ["owner", "agent"]
+    assert cfg["labels"]["origin"] == ["owner", "agent", "pending"]
     issues = [{"number": 1, "labels": [{"name": "type:code"},
                                        {"name": "state:triage"},
                                        {"name": "gate:machine"}]}]
     assert any("#1" in p and "origin" in p
                for p in install.issue_invariants(issues, cfg))
+
+
+# --------------------------------------------------------------------------
+# ADR-0029 — `origin:` means whose licence covers the row, not who typed it.
+# `origin:pending` is the honest claim for an unattended filing that expects a
+# parent link; `qops reconcile` derives it from that link, never from prose.
+# --------------------------------------------------------------------------
+
+def test_an_unattended_filing_may_claim_origin_pending():
+    cfg = qconfig.load(REPO)
+    agent = {"branch": "master", "worktrees": 1, "unattended": True}
+    assert guard.check("Bash", _filing("type:code,origin:pending"),
+                        agent, cfg) is None
+    # Still refused: origin:owner cannot be self-granted, link or no link.
+    refusal = guard.check("Bash", _filing("type:code,origin:owner"), agent, cfg)
+    assert refusal and "origin:pending" in refusal
+
+
+def test_origin_is_derived_from_the_link_and_never_claimed():
+    """`derive_origin` reads a native sub-issue `parent` link — a tracker
+    fact — never the body, the author, or the row's own claim."""
+    parents = {"10": {"labels": [{"name": "origin:owner"}]},
+               "11": {"labels": [{"name": "origin:agent"}]}}
+
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 10}, {"number": 11}, {"number": 12}])
+        if args[0] == "api":
+            num = args[1].rsplit("/", 2)[1]
+            if num in parents:
+                return json.dumps(parents[num])
+            raise RuntimeError("404 - no parent link")
+        if args[:2] == ["issue", "edit"]:
+            return ""
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.derive_origin("o/r", run=run)
+    assert ("10", "owner") in report["derived"]
+    assert ("11", "agent") in report["derived"]
+    # #12 links to nothing: stays origin:pending, not inferred.
+    assert any(i == "12" for i, _ in report["skipped"])
+
+
+def test_a_pending_origin_derives_to_the_agent_parents_licence_not_owner():
+    """Inheritance carries the licence the parent actually has (ADR-0029) —
+    an origin:agent parent does not upgrade the child to origin:owner."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 20}])
+        if args[0] == "api":
+            return json.dumps({"labels": [{"name": "origin:agent"}]})
+        return ""
+
+    report = reconcilemod.derive_origin("o/r", run=run)
+    assert report["derived"] == [("20", "agent")]
+
+
+def test_origin_pending_is_never_auto_eligible():
+    """`eligible()`'s second route requires `origin:owner`; `origin:pending`
+    is neither that nor `ready:auto`, so a freshly filed child is briefly
+    un-pickable, which ADR-0029 calls correct."""
+    issue = {"number": 1, "body": "tests/test_x.py",
+             "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                        {"name": "origin:pending"}]}
+    assert install.eligible(issue) is False
 
 
 def test_a_failed_run_releases_the_claim(monkeypatch, tmp_path):
@@ -1445,11 +1510,48 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path):
         return {"advanced": [], "closed": [], "skipped": [],
                 "failed": [("59", "gh boom")]}
 
+    # `main()` runs the origin sweep before the backstop (ADR-0029), and this
+    # test's subject is the backstop's exit code — so both are stubbed. Stubbing
+    # only one let the other reach the real `gh`, which is how #87 first failed
+    # in CI: a token-less runner, not a logic error.
+    def no_origin(repo, limit=50, run=None):
+        return {"derived": [], "skipped": [], "failed": []}
+
     saved, reconcilemod.reconcile = reconcilemod.reconcile, fake
+    saved_origin, reconcilemod.derive_origin = reconcilemod.derive_origin, no_origin
     try:
         assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
     finally:
         reconcilemod.reconcile = saved
+        reconcilemod.derive_origin = saved_origin
+
+
+def test_a_failing_origin_sweep_does_not_take_the_backstop_down():
+    """`derive_origin()` runs ahead of `reconcile()` in `main()`. Raising there
+    would stop merged rows reaching `state:done` — the one job this module
+    exists to do — on a transient `gh` error in an unrelated sweep. So it
+    reports per item and the run fails once, after both (CLAUDE.md)."""
+    def boom(args):
+        raise RuntimeError("gh boom")
+
+    report = reconcilemod.derive_origin("o/r", run=boom)
+    assert report["derived"] == [] and report["failed"], report
+    # A row that fails mid-sweep does not abort the rows after it.
+    calls = {"n": 0}
+
+    def one_bad(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 1}, {"number": 2}])
+        if args[0] == "api":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("gh boom")
+            return json.dumps({"labels": [{"name": "origin:owner"}]})
+        return ""
+
+    report = reconcilemod.derive_origin("o/r", run=one_bad)
+    assert [i for i, _ in report["failed"]] == ["1"]
+    assert [i for i, _ in report["derived"]] == ["2"]
 
 
 def test_reconcile_reads_the_issue_from_the_branch_not_from_closes():
