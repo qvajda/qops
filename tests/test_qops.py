@@ -1510,11 +1510,48 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path):
         return {"advanced": [], "closed": [], "skipped": [],
                 "failed": [("59", "gh boom")]}
 
+    # `main()` runs the origin sweep before the backstop (ADR-0029), and this
+    # test's subject is the backstop's exit code — so both are stubbed. Stubbing
+    # only one let the other reach the real `gh`, which is how #87 first failed
+    # in CI: a token-less runner, not a logic error.
+    def no_origin(repo, limit=50, run=None):
+        return {"derived": [], "skipped": [], "failed": []}
+
     saved, reconcilemod.reconcile = reconcilemod.reconcile, fake
+    saved_origin, reconcilemod.derive_origin = reconcilemod.derive_origin, no_origin
     try:
         assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
     finally:
         reconcilemod.reconcile = saved
+        reconcilemod.derive_origin = saved_origin
+
+
+def test_a_failing_origin_sweep_does_not_take_the_backstop_down():
+    """`derive_origin()` runs ahead of `reconcile()` in `main()`. Raising there
+    would stop merged rows reaching `state:done` — the one job this module
+    exists to do — on a transient `gh` error in an unrelated sweep. So it
+    reports per item and the run fails once, after both (CLAUDE.md)."""
+    def boom(args):
+        raise RuntimeError("gh boom")
+
+    report = reconcilemod.derive_origin("o/r", run=boom)
+    assert report["derived"] == [] and report["failed"], report
+    # A row that fails mid-sweep does not abort the rows after it.
+    calls = {"n": 0}
+
+    def one_bad(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 1}, {"number": 2}])
+        if args[0] == "api":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("gh boom")
+            return json.dumps({"labels": [{"name": "origin:owner"}]})
+        return ""
+
+    report = reconcilemod.derive_origin("o/r", run=one_bad)
+    assert [i for i, _ in report["failed"]] == ["1"]
+    assert [i for i, _ in report["derived"]] == ["2"]
 
 
 def test_reconcile_reads_the_issue_from_the_branch_not_from_closes():
