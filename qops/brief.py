@@ -10,8 +10,11 @@ Two contracts, both asserted in tests/test_qops.py:
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from importlib import metadata as _metadata
 from pathlib import Path
+
+from . import ledger
 
 TOKEN_CAP = 400
 BYTES_PER_TOKEN = 4          # PRD §2.1's own divisor, so the numbers compare
@@ -98,6 +101,34 @@ def _labels(root: Path, issue) -> list[str]:
     return out.stdout.split() if out.returncode == 0 else []
 
 
+def picker_silence(root: Path, cfg: dict) -> str | None:
+    """One line when `pickup-loop` has not completed a run in a while.
+
+    Read as state, never as a reaction to an event. The failures this exists
+    for are the ones no in-process handler can report — the task returned 1 at
+    09:00, 10:00, 11:00 and 12:00 on 2026-08-21 because the script raised at
+    import, and every silence the picker had already fixed (`candidates()`
+    returning None, #48, #49, #50) assumes it got far enough to print (#76).
+
+    A repo whose loop has never run says nothing: it ships disabled, and a line
+    the reader learns to skip is worse than no line (#167). One report however
+    many runs died, because a state read cannot count them and does not need to.
+    """
+    runs = [r for r in ledger.read(root) if r.get("event") == "pickup_ran"]
+    if not runs:
+        return None
+    try:
+        last = datetime.fromisoformat(runs[-1]["ts"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+    if hours < cfg.get("pickup_max_silence_hours", 3):
+        return None
+    return (f"**pickup-loop: no completed run in {hours:.0f}h** "
+            f"(last {runs[-1]['ts']}). A run that dies before it prints says "
+            f"nothing else — check the task's last result.")
+
+
 def collect(root: Path, cfg: dict) -> dict:
     dirty = _porcelain(root)
     worktrees = max(len(_git(root, "worktree", "list").splitlines()) - 1, 0)
@@ -112,7 +143,8 @@ def collect(root: Path, cfg: dict) -> dict:
         resume = "\n".join(body[-3:])
     return {"branch": branch, "dirty": dirty, "worktrees": worktrees,
             "ahead": int(ahead or 0), "issue": issue, "resume": resume,
-            "labels": _labels(root, issue), "pointers": _pointers(root)}
+            "labels": _labels(root, issue), "pointers": _pointers(root),
+            "picker": picker_silence(root, cfg)}
 
 
 # Where a session looks things up, if the repo has them. Order is the order
@@ -133,6 +165,10 @@ def render_from(state: dict, cfg: dict) -> str:
         shown = ", ".join(dirty[:6]) + (" ..." if len(dirty) > 6 else "")
         lines.append(f"**Dirty tree - {len(dirty)} path(s): {shown}.** "
                      f"Commit, stash or ignore before starting new work.")
+    # Above the fold, with the dirty tree: a dead loop is the same class of
+    # thing — the session's assumptions are wrong before it starts.
+    if state.get("picker"):
+        lines.append(state["picker"])
     if state.get("branch") in cfg.get("protected_branches", []):
         lines.append(f"On `{state['branch']}` (protected). Branch before committing.")
     if state.get("worktrees", 0) >= cfg.get("max_worktrees", 99):

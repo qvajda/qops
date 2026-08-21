@@ -59,6 +59,15 @@ claude_md_max_lines: 150
 # resolve.
 doc_link_roots: [qops, scripts, tests]
 
+# How long the brief stays quiet about `pickup-loop` before it says the loop has
+# not completed a run. Read as state, not as a schedule: the picker records a
+# heartbeat when a run finishes, and the absence of a recent one is the report.
+# That is the only shape that catches a run which died before it could speak —
+# a bad interpreter, a missing root, an import that raises (#76). A repo whose
+# loop has never run is silent, because it ships disabled and never nagging
+# about it is the point.
+pickup_max_silence_hours: 3
+
 # --- CI --------------------------------------------------------------------
 ci:
   python_version: '3.12'

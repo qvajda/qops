@@ -937,6 +937,71 @@ def test_launch_never_passes_a_blanket_bypass():
     assert not any(a.startswith("--dangerously") for a in argv)
 
 
+def _ledger_with(tmp_path, *records) -> Path:
+    root = tmp_path / "root"
+    (root / ".qops").mkdir(parents=True)
+    (root / ".qops" / "ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return root
+
+
+def _ago(hours: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc)
+            - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def test_a_picker_that_dies_before_it_prints_leaves_a_record(tmp_path):
+    """The task returned 1 at 09:00, 10:00, 11:00 and 12:00 on 2026-08-21 and
+    nothing anywhere said so (#76). Every silence the picker had already fixed
+    — `candidates()` returning None, #48, #49, #50 — assumes the process got
+    far enough to print. A run that dies at import leaves the loop exactly as
+    dead as a disabled task, and says exactly as much.
+
+    So the evidence is a heartbeat, read as state: a completed run records one,
+    and the absence of a recent one is the report. It covers the failures no
+    in-process handler can — a bad interpreter, a missing root, an import that
+    raises — because it does not depend on the run surviving to speak.
+    """
+    cfg = qconfig.load(REPO)
+    hours = cfg["pickup_max_silence_hours"]
+
+    fresh = _ledger_with(tmp_path / "a", {"ts": _ago(hours / 2),
+                                          "event": "pickup_ran"})
+    assert briefmod.picker_silence(fresh, cfg) is None
+
+    stale = _ledger_with(tmp_path / "b", {"ts": _ago(hours * 2),
+                                          "event": "pickup_ran"})
+    said = briefmod.picker_silence(stale, cfg)
+    assert said and "pickup-loop" in said
+
+    # Never enabled is not a failure. A loop that has never run is silent on
+    # purpose (it ships disabled), and nagging about it would train the reader
+    # to skip the line — #167's failure, and the one thing this must not do.
+    never = _ledger_with(tmp_path / "c", {"ts": _ago(99), "event": "session_start"})
+    assert briefmod.picker_silence(never, cfg) is None
+
+    # One report, however many runs failed: it is a state read, so four dead
+    # runs and one dead run say the same thing once.
+    many = _ledger_with(tmp_path / "d", {"ts": _ago(hours * 3),
+                                         "event": "pickup_ran"},
+                        {"ts": _ago(hours * 2), "event": "session_start"},
+                        {"ts": _ago(hours), "event": "session_start"})
+    said_many = briefmod.picker_silence(many, cfg)
+    assert said_many and "\n" not in said_many
+
+    # And it reaches the brief, which is where a session finds out.
+    state = briefmod.collect(stale, cfg)
+    assert "pickup-loop" in briefmod.render_from(state, cfg)
+
+
+def test_a_completed_picker_run_records_its_heartbeat():
+    """The other half: nothing clears the report but a run that finished, and
+    no human edit is involved in clearing it."""
+    src = (REPO / "scripts" / "qops_pickup.py").read_text(encoding="utf-8")
+    assert 'ledger.append(root, "pickup_ran"' in src
+
+
 def test_the_picker_loads_the_substrate_from_the_root_it_names(tmp_path):
     """Running `python <root>/scripts/qops_pickup.py` puts *the script's
     directory* on `sys.path[0]`, not the repo root, so `import qops` reached
