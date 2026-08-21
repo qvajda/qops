@@ -2358,7 +2358,8 @@ def test_the_host_posts_the_verdict_as_a_comment_carrying_the_head_sha(
     assert reviewmod.marker(_SHA) in body and "VERDICT: serves" in body
 
 
-def test_the_host_does_not_review_the_same_commit_twice(monkeypatch, tmp_path):
+def test_the_host_does_not_review_the_same_commit_twice(monkeypatch, capsys,
+                                                        tmp_path):
     """A pass runs on a schedule, so re-posting on every fire would be a
     comment an hour on a PR nobody pushed to."""
     prs = [{"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
@@ -2367,6 +2368,9 @@ def test_the_host_does_not_review_the_same_commit_twice(monkeypatch, tmp_path):
                        seen=[_verdict_comment(_SHA, "VERDICT: serves\nit does")])
     assert reviewmod.produce(tmp_path, {"repo": "o/r"}) == 0
     assert calls == []
+    # And it still says what it saw: a pass that prints nothing reads the same
+    # whether there was nothing to judge or nothing was reachable.
+    assert "1 ready PR(s) on o/r" in capsys.readouterr().out
 
 
 def test_the_host_reports_a_pr_it_could_not_judge_and_still_fails_the_pass(

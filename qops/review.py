@@ -175,6 +175,10 @@ def produce(root: Path, cfg: dict) -> int:
     except Exception as exc:
         print(f"reviewer: could not list the open PRs ({exc}).")
         return 1
+    # Named on every pass, judged or not. A pass that says nothing at all reads
+    # the same whether there was nothing to judge or nothing was reachable —
+    # the distinction `pickup-loop` already prints its root and tracker for.
+    print(f"reviewer: {len(prs)} ready PR(s) on {repo}.")
     failed = 0
     for pr in prs:
         num, sha = str(pr["number"]), pr["headRefOid"]
