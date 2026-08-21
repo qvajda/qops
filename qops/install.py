@@ -372,6 +372,17 @@ STRANDED_STATES = {"state:triage", "state:blocked"}
 _ACCEPTANCE = re.compile(r"^\s*(?:#{1,6}\s*|\*{1,2})?acceptance\b[:*\s]*", re.I)
 
 
+# The states the filing bar does not judge. `state:triage` because a row the
+# owner filed in one line must be allowed to sit there (#42). The terminal two
+# because the bar exists so *downstream* can tell what done looks like, and
+# nothing is downstream of done - a decision row goes `triage -> done` with no
+# build in between, so it never meets a planner that would have written an
+# acceptance section, and a `gate:taste` row cannot state a machine criterion
+# by its own nature. #46 resolved that way and turned the gate red on the PR
+# recording the decision (#89). `None` is a caller that cannot answer.
+_BAR_EXEMPT = (None, "state:triage", "state:done", "state:cancelled")
+
+
 def states_an_outcome(body: str) -> bool:
     """An acceptance marker with something after it: on its own line, or on the
     next non-blank line that is not itself a heading.
@@ -450,7 +461,7 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
         # that refuses the filing itself has moved the toil, not removed it.
         # `body` absent means the caller cannot answer, same as R8 above.
         state = next((n for n in names if n.startswith("state:")), None)
-        if (state not in (None, "state:triage")
+        if (state not in _BAR_EXEMPT
                 and issue.get("body") is not None
                 and not states_an_outcome(issue["body"])):
             problems.append(f"#{num}: {state} and the body states no outcome — "

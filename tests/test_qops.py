@@ -2124,6 +2124,33 @@ def test_doctor_refuses_a_row_with_no_stated_outcome():
     assert stated == []
 
 
+def test_the_filing_bar_does_not_judge_a_finished_row():
+    """The bar exists so *downstream* can tell what done looks like, and
+    nothing is downstream of done. A decision row goes `triage -> done` with no
+    build in between, so it never passes a planner that would have written an
+    acceptance section — and a `gate:taste` row cannot state a machine
+    criterion by its own nature (ADR-0028 §2). #46 resolved that way and turned
+    the gate red on the PR that recorded the decision (#89)."""
+    cfg = qconfig.load(REPO)
+
+    def problems(state):
+        return install.issue_invariants(
+            [{"number": 46, "labels": [{"name": "type:decision"},
+                                       {"name": state},
+                                       {"name": "gate:taste"},
+                                       {"name": "origin:owner"}],
+              "body": "Four shapes, none taken. Recommendation: shape 1."}], cfg)
+
+    for terminal in ("state:done", "state:cancelled"):
+        assert not any("states no outcome" in p
+                       for p in problems(terminal)), terminal
+    # And the states a row can still be worked in are untouched. Without this
+    # the fix quietly guts ADR-0028 §1 rather than narrowing it.
+    for workable in ("state:planned", "state:building"):
+        assert any("states no outcome" in p
+                   for p in problems(workable)), workable
+
+
 def test_the_filing_bar_does_not_fire_in_triage():
     """A row the owner filed in one line must be allowed to exist. The bar is a
     gate on *leaving* triage, not on filing - ADR-0028 puts the last control on
