@@ -689,6 +689,33 @@ def test_automerge_keeps_every_adr_0020_condition(condition):
     assert condition in _automerge_text()
 
 
+def test_the_reconciler_runs_where_a_bot_merge_can_reach_it():
+    """A `GITHUB_TOKEN` merge starts no workflow run, so `advance` never fires
+    on the auto-merge path — diagnosed and mitigated in #150 by making
+    `reconcile` a state-reading backstop rather than an event listener. The
+    backstop then ran only on `digest_cron`, so a shipped row stayed
+    `state:building` for up to 24h and `metrics` S9 counted it as in flight the
+    whole time (#66).
+
+    The assertion is on the *trigger*, not on the step: a job that no event
+    starts is exactly what this row is about, and a step-level check would pass
+    for the job that was already dead.
+    """
+    text = _automerge_text()
+    assert "python -m qops reconcile" in text
+    job = text.split("\n  reconcile:", 1)
+    assert len(job) == 2, "automerge.yml has no `reconcile` job"
+    # Up to the next top-level job key, or the end of file if it is the last.
+    body = re.split(r"\n  \w+:\n", job[1], maxsplit=1)[0]
+    # It must not inherit `enable`'s gates: those exclude `closed`, and a
+    # reconcile that only runs on the events `enable` accepts still never sees
+    # the state a merge left behind.
+    assert "action != 'closed'" not in body
+    assert "issues: write" in body
+    # A fork's token cannot write issues, and its PR is a taste decision.
+    assert "head.repo.full_name == github.repository" in body
+
+
 def test_automerge_reads_the_gate_from_the_issue_not_the_pr():
     """The first cut read `github.event.pull_request.labels` and could never
     fire: nothing labels a PR, and issues are the source of truth. The issue
