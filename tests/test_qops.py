@@ -1032,6 +1032,20 @@ def test_the_picker_loads_the_substrate_from_the_root_it_names(tmp_path):
     assert "pickup-loop: root" in out.stdout, out.stderr
 
 
+def test_the_suite_does_not_read_the_runners_env():
+    """The fixture is in force, asserted from inside a test rather than by
+    reading `conftest.py` — the failure this closes is a test believing the
+    environment is clean when it is not (#65)."""
+    from conftest import RUNNER_ENV
+    assert not [n for n in RUNNER_ENV if n in os.environ]
+    # And the whole set is covered: every name the suite branches on.
+    src = (REPO / "tests" / "test_qops.py").read_text(encoding="utf-8")
+    for name in ("GITHUB_BASE_REF", "GITHUB_HEAD_REF", "QOPS_STRICT",
+                 "QOPS_UNATTENDED"):
+        if f'"{name}"' in src:
+            assert name in RUNNER_ENV, name
+
+
 def test_launch_marks_the_session_unattended():
     assert qops_pickup.launch_env()["QOPS_UNATTENDED"] == "1"
 
@@ -2188,12 +2202,10 @@ def test_doctor_says_how_many_rows_the_invariants_read(monkeypatch, capsys):
     an evaluated backlog and a skipped one do not print the same thing."""
     cfg = qconfig.load(REPO)
     monkeypatch.setattr(install, "open_issues", lambda _cfg: [])
-    # The count is the tracker-wide one, so ask it off a PR. On a PR the scope
-    # is one row and the line says so instead (#63) — asserted next door in
-    # `test_doctor_judges_only_the_prs_own_row`. This test used to pass locally
-    # and fail in CI, where the runner sets both refs.
-    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
-    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    # The count is the tracker-wide one, so this asks it off a PR. It used to
+    # delete the two refs by hand, which was a patch for the disease #65's
+    # conftest fixture cures: no test inherits them now. Dropped deliberately —
+    # a workaround kept after its cause is fixed reads as a requirement.
     install.doctor(REPO, cfg)
     out = capsys.readouterr().out
     assert "invariants evaluated against 0 open rows" in out
