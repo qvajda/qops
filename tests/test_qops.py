@@ -1887,6 +1887,39 @@ def test_no_auto_is_the_authority_veto_in_all_three_mechanisms():
     assert "no-auto" in (REPO / "qops" / "reconcile.py").read_text(encoding="utf-8")
 
 
+# --------------------------------------------------------------------------
+# #69 — ADR-0023's second route into the queue. On an origin:owner row the
+# filing is the grant; it takes effect once the body names a test, with no
+# second label edit. Four cases: a bare origin:owner row with a named test, a
+# row naming no test, a no-auto row (authority still vetoes), and an
+# origin:agent row (the confidence-proposer path is #28's, not this one's).
+# --------------------------------------------------------------------------
+
+def _owner_issue(*labels, body=""):
+    return {"labels": [{"name": n} for n in labels], "body": body}
+
+
+def test_an_owner_filed_planned_row_needs_no_second_label_edit():
+    named_test = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
+    no_test = "just a body with no test named"
+
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner", body=named_test))
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner", body=no_test))
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner", "no-auto",
+                     body=named_test))
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:agent", body=named_test))
+
+
+def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
+    body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:taste", "state:planned", "origin:owner", body=body))
+
+
 def test_the_triage_rules_send_an_unsure_row_to_the_machine():
     """R3 is prose, and prose drifts back. The old default ("when unsure,
     `gate:taste`") is the exact string that produced the parking lot, and 14 of
