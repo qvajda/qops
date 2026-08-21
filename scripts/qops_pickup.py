@@ -23,6 +23,14 @@ named gate has no definition of done. The second route (ADR-0023) is the
 owner's filing itself standing as the grant on an `origin:owner` row: no label
 is written, so there is nothing to clean up afterwards.
 
+**Every run also produces the reviewer's verdict** for each ready PR and posts
+it as a PR comment (#80, `qops/review.py`), and `--review` runs that pass alone
+and picks nothing. It rides this run rather than a second scheduled task
+because a registration is a hand-made machine fact the repo cannot see (#12),
+so the registered command line is unchanged; and it runs on the host rather
+than in CI because the model call needs the subscription this host has and CI
+does not.
+
 `--launch` is what actually starts an agent. Without it this prints what it
 would have picked and exits 0, which is also how the scheduled task is proved
 to run without starting anything.
@@ -55,7 +63,7 @@ from pathlib import Path
 # falls through to site-packages exactly as before.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from qops import config as qconfig, install, ledger  # noqa: E402
+from qops import config as qconfig, install, ledger, review  # noqa: E402
 
 # eligible(), unwritable() and UNWRITABLE live in qops/install.py (#71): doctor
 # needs the same predicates pickup-loop uses, and qops/ may not import from
@@ -263,8 +271,29 @@ def main(argv: list[str]) -> int:
     that is not a qops root has nowhere to write a ledger.
     """
     root = repo_root(argv)
+    # The verdict pass rides the *registered* run, and adds no registration
+    # (#12, #80): a scheduled task is a hand-made machine fact the repo cannot
+    # see, and a second one is a second copy of that problem. It is here rather
+    # than in CI because here is where the Claude subscription is. `--review`
+    # runs it alone, which is also how it is proved by hand.
+    if "--review" in argv:
+        return _review(root)
     rc = _run(argv, root)
     ledger.append(root, "pickup_ran", {"rc": rc})
+    # After the pickup, so a PR this run just opened is judged this run - and
+    # behind `--launch`, by the rule this script already follows: a dry run
+    # says what it would have done and writes nothing anywhere. The first
+    # non-zero wins, because the scheduler gets one exit code and a reviewer
+    # that could not judge is not a quieter failure than a picker that could
+    # not pick.
+    if "--launch" not in argv:
+        return rc
+    return rc or _review(root)
+
+
+def _review(root: Path) -> int:
+    rc = review.produce(root, qconfig.load(root))
+    ledger.append(root, "review_ran", {"rc": rc})
     return rc
 
 

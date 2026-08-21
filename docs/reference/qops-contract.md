@@ -123,6 +123,7 @@ malformed or refused.
 | `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, and the open-issue invariants. | 0/1 |
 | `metrics` | `--state`, `--json`, `--since D`, `--until D` | S1–S13; `--state` writes the state-report table. | 0/1 |
 | `reconcile` | `--limit N` | Advances the row of every merged sortie whose issue is not `state:done`. | 0/1; 2 if no `repo:` |
+| `review` | —; reads `PR_NUMBER` + `PR_HEAD_SHA` | The CI half of the reviewer gate: reads the host's verdict comment for **this** head SHA. Calls no model, needs no secret. Every non-verdict outcome is green and says why. | 0; **1 only on `does-not-serve`** |
 
 Two scripts sit outside the CLI, both rooted the same way:
 
@@ -134,8 +135,13 @@ Two scripts sit outside the CLI, both rooted the same way:
   indistinguishable from an idle queue. Milestones are not created: `gh` has no
   non-`api` verb for them and `gh api -X` is denied by a taken decision, so an
   import naming an absent milestone fails loudly instead.
-- `scripts/qops_pickup.py [--root PATH] [--launch]` — the `pickup-loop` picker.
-  Without `--launch` it prints what it would pick and starts nothing.
+- `scripts/qops_pickup.py [--root PATH] [--launch] [--review]` — the
+  `pickup-loop` picker. Without `--launch` it prints what it would pick and
+  starts nothing. A `--launch` run also produces the reviewer's verdict for
+  every ready PR and posts it as a PR comment; `--review` runs that pass alone.
+  It is here and not in a second scheduled task because a registration is a
+  hand-made machine fact (#12), and here and not in CI because the model call
+  needs this host's Claude subscription (#80).
 
 ## What a fresh repo needs before `doctor` can be clean
 
