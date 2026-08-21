@@ -133,6 +133,12 @@ posts the answer as a PR comment carrying `<!-- qops-reviewer:<sha> -->`. CI's
   denied by a taken decision (ADR-0016/0020). `gh pr comment` is a plain verb.
 - **The SHA is load-bearing.** A verdict on an older commit would authorise
   whatever was pushed after it. A verdict for another SHA is no verdict.
+- **Nothing here repeats.** One commit is judged at most once: the verdict
+  comment is the record, and a PR waiting days on the owner is read as judged,
+  not re-reviewed. A review that *fails* is retried at most `MAX_ATTEMPTS` (3)
+  passes for that commit — counted in the ledger, the way `pickup-loop` counts
+  strikes — then the host says so on the PR and goes quiet. A push is a new SHA
+  and a fresh count, which is the only way to get a new verdict.
 - **A sleeping host is a fail-open, not a hang.** No verdict for this SHA is
   green *and says so*, which is what makes it safe for this check to become
   required later. Turning it on is the owner's act, after a week of real

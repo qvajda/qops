@@ -2291,7 +2291,7 @@ def test_a_verdict_is_keyed_on_the_commit_it_read():
     ("could not read the PR's comments", "7", _SHA, {"repo": "o/r"}, RuntimeError),
     ("no verdict posted", "7", _SHA, {"repo": "o/r"},
      [_verdict_comment(_OLD, "VERDICT: does-not-serve\nstale")]),
-    ("no verdict posted", "7", _SHA, {"repo": "o/r"},
+    ("gave up", "7", _SHA, {"repo": "o/r"},
      [_verdict_comment(_SHA, "I think so?")]),
 ])
 def test_the_reviewer_fails_open_without_a_verdict(monkeypatch, capsys, tmp_path,
@@ -2376,8 +2376,8 @@ def test_the_host_does_not_review_the_same_commit_twice(monkeypatch, capsys,
 def test_the_host_reports_a_pr_it_could_not_judge_and_still_fails_the_pass(
         monkeypatch, capsys, tmp_path):
     """A swallowed per-item exception leaves a state change behind and the run
-    still fails once, after the loop. An unparseable answer is not posted: CI
-    would have to fail that open, and the next pass may simply work."""
+    still fails once, after the loop. An unparseable answer is not posted as a
+    verdict: a rambling answer must not become a merge decision."""
     prs = [{"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
             "isDraft": False},
            {"number": 8, "headRefName": "sweep", "headRefOid": _OLD,
@@ -2387,6 +2387,72 @@ def test_the_host_reports_a_pr_it_could_not_judge_and_still_fails_the_pass(
     assert calls == []
     out = capsys.readouterr().out
     assert "carried no verdict" in out and "names no row" in out
+    # The state change: one ledger row per failed attempt, per commit.
+    events = [e for e in ledger.read(tmp_path)
+              if e["event"] == "review_unjudged"]
+    assert [(e["pr"], e["n"]) for e in events] == [("7", 1), ("8", 1)], events
+
+
+def test_a_pr_that_cannot_be_judged_is_not_retried_forever(monkeypatch, capsys,
+                                                           tmp_path):
+    """The loop this bounds: the pass is hourly and a PR can sit open for days
+    waiting on the owner, so a review that keeps failing would be one model
+    call an hour, forever, on a failure that will not fix itself. Three tries,
+    then the host says so on the PR and goes quiet."""
+    pr = {"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+          "isDraft": False}
+    asked, posted = [], []
+    for _ in range(reviewmod.MAX_ATTEMPTS + 2):
+        calls = _host_pass(monkeypatch, [pr], "no verdict here",
+                           seen=list(posted))
+        monkeypatch.setattr(reviewmod, "ask",
+                            lambda *a, **k: asked.append(1) or "no verdict here")
+        reviewmod.produce(tmp_path, {"repo": "o/r"})
+        for args in calls:                     # what the host said on the PR
+            posted.append(args[args.index("--body") + 1])
+
+    assert len(asked) == reviewmod.MAX_ATTEMPTS, asked   # then it stopped
+    assert len(posted) == 1 and "No verdict" in posted[0]
+    assert reviewmod.marker(_SHA) in posted[0]
+    assert "already judged" in capsys.readouterr().out
+
+    # CI reads that comment as a fail-open, and says which kind it is: the host
+    # gave up here, rather than being asleep.
+    _pr_context(monkeypatch)
+    monkeypatch.setattr(reviewmod, "comments", lambda *a, **k: posted)
+    assert reviewmod.main([], tmp_path, {"repo": "o/r"}) == 0
+    assert "gave up" in capsys.readouterr().out
+
+
+def test_giving_up_holds_even_if_the_host_could_not_say_so(monkeypatch, capsys,
+                                                           tmp_path):
+    """The ledger stops the asking, not the comment. A pass that trusted the
+    comment alone would run the model every hour forever on a PR where posting
+    is what is broken."""
+    pr = {"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+          "isDraft": False}
+    asked = []
+    for _ in range(reviewmod.MAX_ATTEMPTS + 2):
+        _host_pass(monkeypatch, [pr], "no verdict here")
+        monkeypatch.setattr(reviewmod, "ask",
+                            lambda *a, **k: asked.append(1) or "no verdict here")
+        monkeypatch.setattr(reviewmod, "_gh", lambda *a, **k: (
+            _ for _ in ()).throw(RuntimeError("gh pr comment failed")))
+        reviewmod.produce(tmp_path, {"repo": "o/r"})
+    assert len(asked) == reviewmod.MAX_ATTEMPTS, asked
+    assert "given up on" in capsys.readouterr().out
+
+
+def test_a_new_commit_gets_a_fresh_count(monkeypatch, tmp_path):
+    """Giving up is per commit, never per PR: a push is a new SHA, and the
+    reviewer has to read what was pushed."""
+    for _ in range(reviewmod.MAX_ATTEMPTS):
+        _host_pass(monkeypatch, [{"number": 7, "headRefName": "fix/1-x",
+                                  "headRefOid": _SHA, "isDraft": False}],
+                   "no verdict here")
+        reviewmod.produce(tmp_path, {"repo": "o/r"})
+    assert reviewmod.attempts(tmp_path, "7", _SHA) == reviewmod.MAX_ATTEMPTS
+    assert reviewmod.attempts(tmp_path, "7", _OLD) == 0
 
 
 def test_the_reviewer_workflow_calls_no_model_and_needs_no_secret():

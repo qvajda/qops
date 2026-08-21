@@ -48,10 +48,14 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import reconcile
+from . import ledger, reconcile
 
 MAX_DIFF = 60_000        # bytes; a diff past this is summarised by truncation
 MARKER = "<!-- qops-reviewer:"
+# Passes spent on one commit before the host stops asking. The pass is hourly
+# and a PR can sit open for days waiting on the owner, so an unbounded retry is
+# one model call an hour, forever, on a failure that will not fix itself.
+MAX_ATTEMPTS = 3
 
 _PROMPT = """You are reviewing one pull request against the issue it implements.
 
@@ -137,6 +141,51 @@ def latest_verdict(bodies: list[str], sha: str) -> str | None:
     return None
 
 
+def judged(bodies: list[str], sha: str) -> bool:
+    """Whether this commit has been *spoken about*, verdict or give-up.
+
+    This, and not `latest_verdict`, is what stops the pass re-asking. The two
+    differ on exactly one comment: the one the host writes when it gave up, and
+    that comment exists so the hourly pass has somewhere to stop.
+    """
+    return any(marker(sha) in body for body in bodies)
+
+
+def attempts(root: Path, num: str, sha: str) -> int:
+    """How many passes already failed to judge this commit. Counted off the
+    ledger, the same way `pickup-loop` counts a row's strikes."""
+    return sum(1 for e in ledger.read(root)
+               if e.get("event") == "review_unjudged"
+               and e.get("pr") == num and e.get("sha") == sha)
+
+
+def _unjudged(root: Path, repo: str, num: str, sha: str, why: str) -> None:
+    """Record the failed attempt, and after `MAX_ATTEMPTS` stop asking.
+
+    The hazard this closes: a PR that stays open (waiting on the owner, or
+    never merged at all) whose review keeps failing would otherwise be one
+    `claude -p` per hour, forever, on a failure that is not going to change by
+    itself. Three tries covers a rate limit or a network blip; past that the
+    host says so on the PR and goes quiet until someone pushes a commit, which
+    is a new SHA and a fresh count.
+    """
+    n = attempts(root, num, sha) + 1
+    ledger.append(root, "review_unjudged", {"pr": num, "sha": sha, "why": why,
+                                            "n": n})
+    print(f"reviewer: #{num} {sha[:8]} — not judged ({why}), "
+          f"attempt {n}/{MAX_ATTEMPTS}.")
+    if n < MAX_ATTEMPTS:
+        return
+    try:
+        _gh(root, "pr", "comment", num, "--repo", repo, "--body",
+            f"{marker(sha)}\n\n**No verdict.** The reviewer could not judge "
+            f"this commit in {n} passes — last reason: {why}. It has stopped "
+            f"asking; CI fails this open and says so. Push a commit to get a "
+            f"new one.")
+    except Exception as exc:      # the give-up comment is itself best-effort
+        print(f"reviewer: #{num} — could not say so on the PR ({exc}).")
+
+
 def ask(prompt: str, root: Path) -> str:
     """`claude -p` on the host's subscription — the same path
     `scripts/qops_pickup.py:launch_argv` uses. No tools are granted: this reads
@@ -183,35 +232,40 @@ def produce(root: Path, cfg: dict) -> int:
     for pr in prs:
         num, sha = str(pr["number"]), pr["headRefOid"]
         try:
-            if latest_verdict(comments(root, repo, num), sha) is not None:
-                print(f"reviewer: #{num} already has a verdict for {sha[:8]}.")
+            if judged(comments(root, repo, num), sha):
+                print(f"reviewer: #{num} {sha[:8]} is already judged.")
+                continue
+            # The ledger, not the comment, is what stops the asking: if the
+            # give-up comment itself could not be posted, a pass that trusted
+            # the comment alone would run the model again every hour forever.
+            if attempts(root, num, sha) >= MAX_ATTEMPTS:
+                print(f"reviewer: #{num} {sha[:8]} — given up on after "
+                      f"{MAX_ATTEMPTS} passes; not asking again.")
                 continue
             issue = reconcile.issue_number(pr["headRefName"])
             if issue is None:
-                print(f"reviewer: #{num} branch names no row "
-                      f"(`{pr['headRefName']}`) — not judged.")
-                continue
-            patch = pr_diff(root, repo, num)
-            if not patch.strip():
-                print(f"reviewer: #{num} has an empty diff — not judged.")
-                continue
-            answer = ask(_PROMPT.format(row=row_body(root, repo, issue),
-                                        diff=patch), root)
-            call = verdict(answer)
-            if call is None:
-                # Not posted: an unparseable answer that becomes a comment is a
-                # fail-open CI has to explain, where retrying next pass costs
-                # nothing and may simply work.
-                print(f"reviewer: #{num} — the answer carried no verdict, "
-                      f"not posted.")
-                failed += 1
-                continue
-            _gh(root, "pr", "comment", num, "--repo", repo,
-                "--body", f"{marker(sha)}\n\n{answer.strip()}")
-            print(f"reviewer: #{num} {sha[:8]} — {call}.")
+                why = f"the branch names no row (`{pr['headRefName']}`)"
+            else:
+                patch = pr_diff(root, repo, num)
+                if not patch.strip():
+                    why = "the diff is empty"
+                else:
+                    answer = ask(_PROMPT.format(
+                        row=row_body(root, repo, issue), diff=patch), root)
+                    call = verdict(answer)
+                    if call is None:
+                        # Not posted as a verdict: a rambling answer must not
+                        # become one. Retried, then given up on loudly.
+                        why = "the answer carried no verdict"
+                    else:
+                        _gh(root, "pr", "comment", num, "--repo", repo,
+                            "--body", f"{marker(sha)}\n\n{answer.strip()}")
+                        print(f"reviewer: #{num} {sha[:8]} — {call}.")
+                        continue
         except Exception as exc:
-            print(f"reviewer: #{num} — not judged ({exc}).")
-            failed += 1
+            why = str(exc)
+        _unjudged(root, repo, num, sha, why)
+        failed += 1
     if failed:
         print(f"reviewer: {failed} PR(s) were not judged this pass.")
         return 1
@@ -239,6 +293,11 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         return _open(f"could not read the PR's comments ({exc})")
     call = latest_verdict(bodies, sha)
     if call is None:
+        if judged(bodies, sha):
+            # The host spoke and had nothing to say: it gave up on this commit
+            # after `MAX_ATTEMPTS`, and the reason is on the PR.
+            return _open(f"the reviewer gave up on {sha[:8]} — its reason is a "
+                         f"comment on this PR")
         return _open(f"no verdict posted for {sha[:8]} — the reviewer runs on "
                      f"the cron host, and a host that is asleep is a fail-open, "
                      f"not a hang")
