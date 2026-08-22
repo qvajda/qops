@@ -43,6 +43,7 @@ and a blanket bypass (`--dangerously-skip-permissions`) is never passed.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -129,6 +130,36 @@ def plannable(issue: dict) -> bool:
     if labels & BLOCKING_FLAGS:
         return False
     return install.states_an_outcome(issue.get("body") or "")
+
+
+# ADR-0029 §4: the interview stays the owner's; what happens under it does not.
+# The trigger for decomposition must be a fact on the row, not an assumption
+# that a `type:epic` row was interviewed just because it exists. The interview
+# skill's own rule is that it "ends in something written down" - an ADR, for a
+# Mission-routed row - so a reference to an ADR that actually exists on disk is
+# that fact, checked mechanically rather than inferred from a label an
+# unattended session could apply to itself.
+ADR_REF = re.compile(r"docs/adr/\d+-[\w-]+\.md")
+
+
+def interviewed(root: Path, issue: dict) -> bool:
+    """The epic's body names an ADR file that exists in this repo."""
+    for m in ADR_REF.finditer(issue.get("body") or ""):
+        if (Path(root) / m.group(0)).exists():
+            return True
+    return False
+
+
+def decomposable(root: Path, issue: dict) -> bool:
+    """The rows the loop may *decompose* (#84, ADR-0029 §4).
+
+    `type:epic` and interviewed, same veto flags as `plannable()` - `no-auto`
+    and `blocked` still mean the owner is handling this one.
+    """
+    labels = {l["name"] for l in issue.get("labels", [])}
+    if "type:epic" not in labels or labels & BLOCKING_FLAGS:
+        return False
+    return interviewed(root, issue)
 
 
 def repo_root(argv: list[str]) -> Path:
@@ -427,9 +458,7 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     """
     row = first_plannable(root, [i for i in rows if plannable(i)])
     if row is None:
-        print("pickup-loop: nothing to plan either - no `state:triage` row "
-              "states an outcome the planner could turn into criteria.")
-        return 0
+        return _decompose(argv, root, cfg, rows)
     num, before = str(row["number"]), row.get("body") or ""
     print(f"pickup-loop: planning #{num} {row['title']}")
     if "--launch" not in argv:
@@ -534,6 +563,116 @@ def produced_plan(root: Path, num: str, before: str) -> bool:
     return "state:planned" in labels and (data.get("body") or "") != before
 
 
+def _decompose(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
+    """Decompose one interviewed `type:epic` row, when there was nothing to
+    plan either (#84, ADR-0029 §4).
+
+    Same machinery as `_plan()`: one run log, the same #49 strike budget, the
+    same `--launch` rule. It stops after one epic for the reason `_plan()`
+    stops after one row - the owner's review attention is not spent in a
+    single burst.
+    """
+    repo = cfg.get("repo", "")
+    epic = first_decomposable(
+        root, repo, [i for i in rows if decomposable(root, i)])
+    if epic is None:
+        print("pickup-loop: nothing to plan or decompose either - no "
+              "`state:triage` row states an outcome, and no interviewed "
+              "`type:epic` row is undecomposed.")
+        return 0
+    num = str(epic["number"])
+    print(f"pickup-loop: decomposing #{num} {epic['title']}")
+    if "--launch" not in argv:
+        print("pickup-loop: dry run, not decomposing. Pass --launch to start an agent.")
+        return 0
+    log = run_log_path(root, num)
+    ledger.append(root, "pickup", {"issue": num, "log": str(log), "mode": "decompose"})
+    print(f"pickup-loop: run log {log}")
+    before = sub_issue_count(root, repo, num)
+    with log.open("w", encoding="utf-8", errors="replace") as fh:
+        # The planner role's toolset and model, reused rather than a second
+        # role file: filing a child is `gh issue create`, which is Bash - the
+        # same reach a plan already has, and a new agent role is a `.claude/`
+        # write this sortie is not licensed to make.
+        rc = subprocess.run(plan_argv(decompose_prompt(num), cfg), cwd=root,
+                            env=launch_env(), stdout=fh,
+                            stderr=subprocess.STDOUT).returncode
+    if rc or not produced_children(root, repo, num, before):
+        why = f"exit {rc}" if rc else "no new sub-issue"
+        # `relabel=False`: decomposition never claims a state label on the
+        # epic - it stays `state:triage`/wherever it was, untouched apart
+        # from the links (ADR-0029 §4).
+        release(root, num, why, log, relabel=False)
+        labels = {l["name"] for l in epic.get("labels", [])}
+        if struck_out(root, num, labels):
+            strike_out(root, num, strikes(root, num, labels), why)
+        return rc or 1
+    print(f"pickup-loop: #{num} decomposed.")
+    return 0
+
+
+def first_decomposable(root: Path, repo: str, rows: list[dict]) -> dict | None:
+    """Least-recently-updated first, skipping a struck-out epic and one that
+    already has sub-issues - the dedup that keeps a second pass from filing
+    duplicate children."""
+    for row in sorted(rows, key=lambda i: i["updatedAt"]):
+        num = str(row["number"])
+        labels = {l["name"] for l in row.get("labels", [])}
+        if struck_out(root, num, labels):
+            print(f"pickup-loop: skipping #{num} - struck out after "
+                  f"{STRIKES} failed runs (#49).")
+            continue
+        if sub_issue_count(root, repo, num) > 0:
+            continue
+        return row
+    return None
+
+
+def sub_issue_count(root: Path, repo: str, num: str) -> int:
+    """The epic's native sub-issue count, read through the REST endpoint
+    `qops/reconcile.py:parent_origin` already reads the other side of (#81)."""
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/sub_issues"],
+                         cwd=root, capture_output=True, text=True)
+    if out.returncode:
+        return 0
+    try:
+        return len(json.loads(out.stdout or "[]"))
+    except json.JSONDecodeError:
+        return 0
+
+
+def produced_children(root: Path, repo: str, num: str, before: int) -> bool:
+    """A session that exits 0 having filed nothing is a failed run, not a
+    decomposed epic (the same rule `produced_work()` and `produced_plan()`
+    apply to their own runs)."""
+    return sub_issue_count(root, repo, num) > before
+
+
+def decompose_prompt(num: str) -> str:
+    """The rules from ADR-0029 §4, inlined rather than a second role file
+    under `.claude/` this sortie may not write.
+
+    Each child inherits the epic's licence through the native sub-issue link
+    and #81's derivation (`qops/reconcile.py:derive_origin`) - so the child is
+    filed `origin:pending`, never `origin:owner`, and the link is what turns
+    that into `origin:owner` on a later `qops reconcile` pass."""
+    return (
+        f"Read issue #{num} on this repo's tracker - a `type:epic` row whose "
+        f"interview ended in an ADR the body names. Cut its scope into child "
+        f"sorties, each one deliverable, one gate, one acceptance criterion "
+        f"(ADR-0027) and each stating an outcome a machine can turn into "
+        f"criteria (ADR-0028's filing bar) - do not write a full plan for "
+        f"each child, filing is enough. For each child: `gh issue create` "
+        f"with `state:triage`, a real `type:` and `gate:`, and `origin:pending` "
+        f"- never `origin:owner`, never `ready:auto`. Then link it as a native "
+        f"sub-issue of #{num} (`gh api repos/{{owner}}/{{repo}}/issues/{num}"
+        f"/sub_issues -f sub_issue_id=<id>`, using the child's numeric id, not "
+        f"its number). Leave #{num} itself untouched apart from those links: "
+        f"no label, no body edit. Never decompose recursively - a child that "
+        f"is itself too large is ADR-0027's refusal path, not a second pass "
+        f"of this one. Never write `type:milestone`. If the epic cannot be "
+        f"cut into sorties that pass the filing bar, file none, say so on "
+        f"issue #{num} as a comment, and stop.")
 def clarified(root: Path, cfg: dict, num: str) -> bool:
     """Whether the planner ended this row's path by filing a clarification
     against it (#83, ADR-0029 §5).

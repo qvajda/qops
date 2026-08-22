@@ -146,6 +146,38 @@ the `planner` role (`.claude/agents/planner.md`), with the toolset and model
   the run failed to do.
 - **Success is measured, not assumed**: `state:planned` *and* a body that grew.
 
+### It decomposes an interviewed epic when there is nothing to plan (#84, ADR-0029 §4)
+
+The interview stays the owner's — ADR-0017 still routes `type:epic` to *"Mission
+- interview before any issue is written"*. What happens under it does not: once
+an epic's interview has ended in an ADR, cutting its scope into sorties is
+automatic.
+
+The trigger is a fact on the row, never an assumption that a `type:epic` row
+was interviewed just because it exists: the epic's body must name an ADR file
+(`docs/adr/*.md`) that actually exists in the repo — the interview skill's own
+rule that it "ends in something written down". A `type:epic` row with no such
+reference is skipped and says why (`interviewed()`, `decomposable()` in
+`scripts/qops_pickup.py`).
+
+- **Runs one step further down the same fallback** the plan pass uses: only
+  where a `--launch` run found nothing to build *and* nothing to plan.
+- **One epic per pass**, same reasoning as the plan pass.
+- **Through the `planner` role's toolset**, not a second one — filing a child
+  is `gh issue create`, which the planner's `Bash` already reaches, and a new
+  agent role is a `.claude/` write this loop is not licensed to make.
+- **Children are filed `origin:pending`, never `origin:owner`.** The native
+  sub-issue link to the epic is what a later `qops reconcile` pass
+  (`qops/reconcile.py:derive_origin`, #81) turns into the epic's own `origin:`
+  — inheritance is derived from a structural link, never claimed by the filer.
+- **Dedup is the sub-issue link itself.** An epic that already has one is
+  skipped: a second pass over the same epic files no duplicate children
+  (`first_decomposable()`).
+- **The epic itself is untouched apart from the links** — no label, no body
+  edit. A failed decompose does not relabel it, same reasoning as a failed
+  plan.
+- **Success is measured, not assumed**: the epic's sub-issue count grew.
+
 ### The reviewer's verdict rides this run (#80)
 
 A `--launch` run, after it has picked, judges every **ready** (non-draft) open
