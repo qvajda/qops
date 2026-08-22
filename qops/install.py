@@ -383,6 +383,22 @@ _ACCEPTANCE = re.compile(r"^\s*(?:#{1,6}\s*|\*{1,2})?acceptance\b[:*\s]*", re.I)
 _BAR_EXEMPT = (None, "state:triage", "state:done", "state:cancelled")
 
 
+# #92: the prose half of a blocker (`**Blocked by #80**`) and the label half
+# (`state:planned`) can disagree once the blocker closes, and nothing ever
+# makes the prose false again.
+#
+# **The claim form, not the words.** Anchored at the start of a line, through
+# nothing but markdown emphasis. This row's own body was the first false
+# positive: it *cites* #82's prose mid-sentence and *quotes* a run log saying
+# `> #82 blocked by #80`, and neither is a row declaring a dependency. A body
+# that discusses a blocker is not a body that has one.
+_BLOCKED_BY = re.compile(r"^[ \t]*[*_]{0,2}blocked by\s+#(\d+)", re.I | re.M)
+
+# The same carve-out #89 made for the filing bar: a finished row's history is
+# allowed to describe what once blocked it, since nothing downstream reads it.
+_BLOCKER_EXEMPT = ("state:done", "state:cancelled")
+
+
 def states_an_outcome(body: str) -> bool:
     """An acceptance marker with something after it: on its own line, or on the
     next non-blank line that is not itself a heading.
@@ -405,9 +421,15 @@ def states_an_outcome(body: str) -> bool:
     return False
 
 
-def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
+def issue_invariants(issues: list[dict], cfg: dict,
+                     tracker_wide: bool = True) -> list[str]:
     """`validate.require_on_open` and finding 1, asserted against a list of
-    issues. Pure, so it is driven off a fixture and never off the tracker."""
+    issues. Pure, so it is driven off a fixture and never off the tracker.
+
+    `tracker_wide` is False when the caller passed a *scoped* list — one PR's
+    own row (`_rows_in_scope`). Every per-row invariant reads the same either
+    way; the one that does not is #92's blocker check, which asks whether some
+    *other* row is still open and can only answer that from a whole list."""
     problems = []
     # digest.yml opens the pinned status issue with exactly one label, and these
     # invariants rejected it — two halves of the substrate disagreeing about what
@@ -467,6 +489,26 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
             problems.append(f"#{num}: {state} and the body states no outcome — "
                             f"nothing downstream can tell what done looks like "
                             f"(ADR-0028)")
+        # #92: an open row whose body still says `Blocked by #n` for a blocker
+        # that already closed. Labels are what pickup-loop reads; prose is
+        # what an agent reads, and when they disagree the queue looks full
+        # and moves nothing.
+        #
+        # **Only on the tracker-wide run**, because "not open" is derived from
+        # the list passed in and `_rows_in_scope` hands a PR exactly one row —
+        # on the merge path every blocker any row names would read as closed,
+        # which is how this check first failed its own PR (#94). The daily
+        # sweep (`digest.yml`) and a laptop `doctor` see the whole tracker,
+        # and a stale blocker costs unattended sessions, not a merge.
+        if (tracker_wide and state not in _BLOCKER_EXEMPT
+                and issue.get("body") is not None):
+            open_numbers = {str(i.get("number")) for i in issues}
+            for blocker in sorted(set(_BLOCKED_BY.findall(issue["body"]))):
+                if blocker not in open_numbers:
+                    problems.append(f"#{num}: body says `Blocked by #{blocker}` "
+                                    f"but #{blocker} is not open — the blocker "
+                                    f"closed and the prose was never updated, "
+                                    f"edit the body")
     return problems
 
 
@@ -691,7 +733,9 @@ def doctor(root: Path, cfg: dict) -> list[str]:
         # same reason - the two runs are not the same claim (#63).
         print(f"doctor: invariants evaluated against {scope} "
               f"on {cfg.get('repo')}")
-        problems += issue_invariants(judged, cfg)
+        # `_rows_in_scope` returns the list it was given, unchanged, when the
+        # run is not on a PR — identity is the scope, exactly.
+        problems += issue_invariants(judged, cfg, tracker_wide=judged is issues)
         problems += unlaunchable_and_auto_eligible(judged)
         problems += r8_proof(root, issues)
     elif strict():
