@@ -138,6 +138,16 @@ def open_prs(repo: str, limit: int, run=gh) -> list[dict]:
     return json.loads(out or "[]")
 
 
+def _refused(exc: Exception) -> bool:
+    """Whether `gh` refused this on authority rather than failed at it.
+
+    Matched on the refusal's own wording and nothing broader: a transient 502
+    or a rate limit read as an authority refusal would turn a real outage into
+    a quiet skip, which is the failure direction that matters here (#117).
+    """
+    return "does not have permission" in str(exc)
+
+
 def advance_behind(repo: str, limit: int = 50, run=gh) -> dict:
     """#102: GitHub's native auto-merge only advances a stale branch when the
     repo has `allow_update_branch` on, which this repo does not (an owner
@@ -172,6 +182,18 @@ def advance_behind(repo: str, limit: int = 50, run=gh) -> dict:
             run(["pr", "update-branch", str(num), "--repo", repo])
             report["advanced"].append((issue, str(num)))
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            if _refused(exc):
+                # Not an outage: `updatePullRequestBranch` refuses
+                # `github-actions[bot]`, and no retry changes that - only a
+                # token does. Reported as a skip naming the one that would, and
+                # silent on the row: as a failure it fails the `reconcile` job
+                # on every run and comments the same sentence onto the same
+                # rows forever (#117, 8 comments before it was caught). A check
+                # that is permanently red teaches its reader to stop looking.
+                report["skipped"].append(
+                    (issue, "update-branch refused - set QOPS_AGENT_TOKEN, "
+                            "GITHUB_TOKEN may not update a PR branch"))
+                continue
             try:
                 run(["issue", "comment", issue, "--repo", repo, "--body",
                      f"`qops reconcile` could not update-branch PR #{num} "
