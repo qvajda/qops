@@ -393,13 +393,14 @@ def _run(argv: list[str], root: Path) -> int:
     print(f"pickup-loop: run log {log}")
     # Straight to the file rather than captured in memory, so the account
     # survives a run that is killed rather than one that returns.
+    before = launch_evidence(root, num)
     with log.open("w", encoding="utf-8", errors="replace") as fh:
         rc = subprocess.run(launch_argv(launch_prompt(num)), cwd=root,
                             env=launch_env(), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     # produced_work stays the thing that decides. Capturing output must not
     # become it: an empty branch scoring as success is how #57 and #71 died.
-    if rc or not produced_work(root, num):
+    if rc or not produced_work(root, num, before):
         why = f"exit {rc}" if rc else "no commit and no PR"
         release(root, num, why, log)
         # Counted after the release, so this run is included in the count.
@@ -555,28 +556,39 @@ def launch_env() -> dict:
     return {**os.environ, "QOPS_UNATTENDED": "1"}
 
 
-def produced_work(root: Path, num: str) -> bool:
-    """A session that exits 0 having built nothing is a failed run, not a done
-    sortie. Branch naming is ADR-0019: `<type>/<issue#>-<slug>`.
-
-    An *empty* branch is not work. Both 2026-08-18 sorties (#57, #71) wrote
-    their whole change, backgrounded the full test suite, and ended the turn
-    waiting for a notification that a `-p` run can never receive - the branch
-    existed, pointed at master's tip, and read here as success. The claim was
-    never released and neither issue said anything was wrong. Count the
-    commits, not the ref."""
+def launch_evidence(root: Path, num: str) -> dict:
+    """The snapshot `produced_work` diffs against: every commit SHA reachable
+    from a `*/<num>-*` branch but not the default branch, and every PR number
+    a search for `num` turns up. Identity, not a count and not a timestamp -
+    a squash merge keeps the original commits' author dates, so recency
+    cannot tell a stale branch from a fresh one (#8)."""
     branches = subprocess.run(
         ["git", "branch", "--list", f"*/{num}-*", "--format=%(refname:short)"],
         cwd=root, capture_output=True, text=True).stdout.split()
     base = qconfig.load(root)["default_branch"]
+    commits: set[str] = set()
     for branch in branches:
-        ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..{branch}"],
-                               cwd=root, capture_output=True, text=True).stdout.strip()
-        if ahead.isdigit() and int(ahead) > 0:
-            return True
+        commits.update(subprocess.run(
+            ["git", "rev-list", f"{base}..{branch}"],
+            cwd=root, capture_output=True, text=True).stdout.split())
     prs = subprocess.run(["gh", "pr", "list", "--search", num, "--json", "number"],
                          cwd=root, capture_output=True, text=True).stdout.strip()
-    return bool(json.loads(prs or "[]"))
+    pr_numbers = {p["number"] for p in json.loads(prs or "[]")}
+    return {"commits": commits, "prs": pr_numbers}
+
+
+def produced_work(root: Path, num: str, before: dict) -> bool:
+    """A session that exits 0 having built nothing is a failed run, not a done
+    sortie. Branch naming is ADR-0019: `<type>/<issue#>-<slug>`.
+
+    An *empty* branch is not work (#57, #71). Neither is a branch that was
+    already there: a squash-merged sortie's commits stay reachable from its
+    branch forever, so counting commits ahead of the default branch scores a
+    stale branch as work on every later run that picks the same issue (#8).
+    `before` is this launch's snapshot, taken by the caller immediately
+    before the launch; only evidence absent from it counts."""
+    after = launch_evidence(root, num)
+    return bool(after["commits"] - before["commits"]) or bool(after["prs"] - before["prs"])
 
 
 def run_log_path(root: Path, num: str) -> Path:
