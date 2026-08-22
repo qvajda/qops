@@ -274,6 +274,16 @@ waited on an approval nobody was there to give. Three repairs:
   refusal never left the host until then. Deduped like `report_unlaunchable()`:
   a marker names the run's log, and a retry that fails the same way twice still
   gets two comments, because it is two runs.
+- **The strike-out comment's own remedy now works (#99).** Three strikes apply
+  `no-auto` and tell the owner "remove `no-auto` to hand it back" — but
+  `struck_out()` only counted `pickup_release` events in the ledger, so
+  clearing the flag changed nothing it read and the row stayed unreachable for
+  the rest of `STRIKE_WINDOW_DAYS`. `strikes()` now starts counting after the
+  row's last `pickup_struck_out` event whenever `no-auto` is absent from it: no
+  new label, the flag stays the one signal, and a row nothing can build still
+  cannot be re-picked without an owner act. The same fix corrected the final
+  line a pass prints when every eligible row was struck out — it used to fall
+  through to the `unwritable`-path message (#48), naming the wrong cause.
 - **No sandbox escape unattended.** The denied session retried with
   `dangerouslyDisableSandbox`. The launch sets `QOPS_UNATTENDED=1` and `qops
   guard` refuses that flag when it is set. An owner at a keyboard may still
