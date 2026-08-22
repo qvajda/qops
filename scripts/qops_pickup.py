@@ -433,20 +433,42 @@ def run_log_path(root: Path, num: str) -> Path:
     return d / f"{num}-{stamp}.log"
 
 
+RELEASE_TAIL_CHARS = 4000  # bounded so a session that printed a megabyte cannot post it
+
+
 def release(root: Path, num: str, why: str, log: Path | None = None) -> None:
     """The claim is not a one-way door. A failed run puts the sortie back where
     the next fire can reach it and says why (CLAUDE.md, GL-46).
 
     `why` names the symptom. `log` is where the account is - without it the
-    next reader repeats #47's diagnosis by hand (#50)."""
+    next reader repeats #47's diagnosis by hand (#50). The tail of that same
+    log rides along too (#93): three silent strikes on #82 meant the owner's
+    first look at the row came only after the budget was spent, and the one
+    thing that explained the refusal - what the session actually said - had
+    stayed on the host. Deduped like `report_unlaunchable()`: a marker line
+    naming this run's log, and nothing posted twice for it."""
     subprocess.run(["gh", "issue", "edit", num,
                     "--remove-label", "state:building",
                     "--add-label", "state:planned"],
                    cwd=root, capture_output=True, text=True)
+    marker = f"pickup-loop: run {log.name} produced nothing" if log else \
+             "pickup-loop: unattended run produced nothing"
+    if log:
+        seen = subprocess.run(["gh", "issue", "view", num, "--json", "comments",
+                               "--jq", ".comments[].body"],
+                              cwd=root, capture_output=True, text=True, encoding="utf-8")
+        if marker in (seen.stdout or ""):
+            print(f"pickup-loop: released #{num} ({why}), already reported.",
+                  file=sys.stderr)
+            return
     where = f" The run log is `{log}`." if log else ""
-    subprocess.run(["gh", "issue", "comment", num, "--body",
-                    f"pickup-loop: unattended run produced nothing ({why}). "
-                    f"Claim released, back to `state:planned`.{where}"],
+    tail = ""
+    if log and log.exists():
+        tail = log.read_text(encoding="utf-8", errors="replace")[-RELEASE_TAIL_CHARS:]
+    body = f"{marker} ({why}). Claim released, back to `state:planned`.{where}"
+    if tail:
+        body += f"\n\n<details><summary>tail of run log</summary>\n\n```\n{tail}\n```\n\n</details>"
+    subprocess.run(["gh", "issue", "comment", num, "--body", body],
                    cwd=root, capture_output=True, text=True)
     ledger.append(root, "pickup_release",
                   {"issue": num, "why": why, "log": str(log) if log else None})
