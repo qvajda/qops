@@ -1537,6 +1537,49 @@ def test_a_failed_plan_does_not_label_the_row_planned(tmp_path, monkeypatch):
     assert qops_pickup.strikes(root, "5") == 1
 
 
+def test_an_unplannable_row_gets_one_clarification_and_stops(tmp_path, monkeypatch):
+    """ADR-0029 §5, #83. A session planner asks the owner when a row is
+    ambiguous; an unattended one cannot, and the two wrong answers are guessing
+    and retrying. So the planner files the clarification itself and the loop
+    reads the *tracker*, never the planner's prose — a decline parsed out of a
+    comment is the guess this row exists to refuse.
+
+    Three things are asserted here: a clarified run is not a failure, it is not
+    a strike, and the row it left behind cannot be planned a second time."""
+    root = _root(tmp_path)
+    # `clarified()` reads the sub-issue edge through the REST path, which needs
+    # the tracker named — a root that names none is not clarified, it is unread.
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/r\n",
+                                               encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = ""
+        if cmd[:3] == ["gh", "issue", "view"]:
+            out = json.dumps({"labels": [{"name": "state:blocked"}], "body": "x"})
+        elif cmd[:2] == ["gh", "api"] and cmd[2].endswith("/sub_issues"):
+            out = json.dumps([{"number": 99, "state": "open"}])
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
+    monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: False)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [_row(5)])
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    # Not a failure: no release comment, and the strike budget is untouched, so
+    # a row the planner honestly could not plan does not also burn #49's three.
+    assert qops_pickup.strikes(root, "5") == 0
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert not any("no-auto" in c or "state:planned" in c for c in edits), edits
+
+    # And the second run files nothing, because the row the first one left is
+    # `state:blocked` — the taxonomy already says it, so no new label does.
+    assert not qops_pickup.plannable(_row(5, state="state:blocked"))
+
+
 def test_the_planner_launch_reads_its_toolset_from_the_config(tmp_path):
     """The roster is `.qops/config.yml`, not a second copy in this file. The
     planner gets no Edit and no Write: it writes a plan onto the row through
@@ -2030,6 +2073,32 @@ def test_no_substrate_module_assumes_posix(needle):
         if any(needle in s for s in strings) or shell:
             hits.append(str(f.relative_to(REPO)))
     assert hits == [], f"{needle!r} in {hits}"
+
+
+def test_the_reviewer_does_not_pass_the_diff_in_argv(monkeypatch):
+    """ADR-0009 again, one layer down (#111). `subprocess.run` with a list argv
+    is the portable form for a *bounded* argument; the reviewer's prompt is not
+    one — it carries up to `MAX_DIFF` bytes of diff. Windows `CreateProcess`
+    caps a command line at 32,767 characters, so on the cron host every PR with
+    a real diff raised `WinError 206` before the model was reached, and after
+    `MAX_ATTEMPTS` the host posted *No verdict* — a reviewer that read nothing,
+    presenting as one that read and declined."""
+    cap = reviewmod.WINDOWS_CMDLINE_MAX
+    seen = {}
+
+    class _Done:
+        returncode, stdout, stderr = 0, "ok", ""
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return _Done()
+
+    monkeypatch.setattr(reviewmod.subprocess, "run", fake_run)
+    prompt = "x" * (cap + 1)
+    assert reviewmod.ask(prompt, REPO) == "ok"
+    assert all(len(a) <= cap for a in seen["argv"]), \
+        "the prompt reached argv, which is the WinError 206 path"
+    assert seen["kw"].get("input") == prompt
 
 
 def test_every_label_the_config_names_is_in_its_own_taxonomy():

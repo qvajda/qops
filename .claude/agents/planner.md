@@ -64,6 +64,38 @@ is the children — each with its own deliverable, gate and acceptance criterion
 not a plan that covers the parent. The parent is closed by the split or kept as
 the epic; it is never planned as one sortie.
 
+## When you cannot plan the row
+
+A row you cannot plan — underspecified, oversized (ADR-0027), or actually a
+taste row — is not a plan to guess at and not a row to try again next hour. It
+is a question, and in a session you would ask it. Unattended you cannot, so you
+**file** it (ADR-0029 §5):
+
+1. `gh issue create` a `type:research` row that asks the one thing you need to
+   know. `state:triage`, `origin:pending`, and a `gate:` — `taste` when the
+   answer is genuinely the owner's preference, which is the honest outcome and
+   not a failure of yours. Never `ready:auto`, never `no-auto`.
+2. Link it as a **native sub-issue** of the row you could not plan
+   (`gh issue edit <parent> --add-sub-issue <child>`), not as a `Blocked by`
+   line. `qops reconcile` derives the child's `origin:` across that edge (#81),
+   so the link is what gives the clarification the parent's licence — without
+   it nothing can ever pick the child up.
+3. Put the parent on `state:blocked`. No new label: the block and the link
+   together already say it, and a third thing to keep true is a third thing to
+   get wrong.
+4. It must clear the filing bar it will itself be measured by — the
+   clarification states an outcome, or it is a row nothing downstream can plan
+   either.
+
+Then stop. `pickup-loop` reads those tracker facts, not your prose, so nothing
+you write in a comment decides this — and a `state:blocked` row is not
+plannable, which is what makes the second pass file nothing.
+
+**What would make this wrong:** declaring rows unplannable instead of doing the
+work, turning the backlog into research rows. The measure is the ratio and it is
+read after a week, not guarded here. Being unable to plan is a real outcome;
+reaching for it is not.
+
 ## The one exception: a row that asks the owner to decide
 
 **One page, and one page only**, for anything that asks the owner to decide —
