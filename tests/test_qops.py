@@ -2953,6 +2953,29 @@ def test_a_run_that_produced_nothing_says_so_on_the_row(monkeypatch, tmp_path):
     assert not any(c[:3] == ["gh", "issue", "comment"] for c in calls)
 
 
+def test_a_deduped_release_still_counts_as_a_strike(monkeypatch, tmp_path):
+    """The comment is the report; the ledger row is the state. `strikes()`
+    reads a `pickup` with no `pickup_release` after it as a run that *worked*
+    and resets the count, so a release that returns early without writing one
+    disarms #49's three-strike budget — and the row is re-picked hourly,
+    forever, which is the failure that budget exists to stop."""
+    (tmp_path / ".qops").mkdir()
+    log = qops_pickup.run_log_path(tmp_path, "82")
+    log.write_text("refused, again", encoding="utf-8")
+    already = f"pickup-loop: run {log.name} produced nothing"
+
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(
+                            cmd, 0, already if cmd[:3] == ["gh", "issue", "view"]
+                            else "", ""))
+    for _ in range(qops_pickup.STRIKES):
+        ledger.append(tmp_path, "pickup", {"issue": "82"})
+        qops_pickup.release(tmp_path, "82", "no commit and no PR", log)
+
+    assert qops_pickup.strikes(tmp_path, "82") == qops_pickup.STRIKES
+    assert qops_pickup.struck_out(tmp_path, "82")
+
+
 def test_the_run_log_directory_is_ignored_by_git():
     """This repo is public (ADR-0022) and the log is a transcript of an
     unattended session. `.gitignore` enumerates `.qops/` paths one by one, so a

@@ -446,7 +446,15 @@ def release(root: Path, num: str, why: str, log: Path | None = None) -> None:
     first look at the row came only after the budget was spent, and the one
     thing that explained the refusal - what the session actually said - had
     stayed on the host. Deduped like `report_unlaunchable()`: a marker line
-    naming this run's log, and nothing posted twice for it."""
+    naming this run's log, and nothing posted twice for it.
+
+    **The ledger row is written on every path, including the deduped one.**
+    `strikes()` counts `pickup_release` and reads a `pickup` with no release
+    after it as a run that *worked*, so a release that returns early without
+    writing one resets the count to zero - it disarms #49's three-strike budget
+    and the row is re-picked hourly, forever, which is the failure that budget
+    exists to stop. The comment is the report; the ledger row is the state.
+    """
     subprocess.run(["gh", "issue", "edit", num,
                     "--remove-label", "state:building",
                     "--add-label", "state:planned"],
@@ -460,6 +468,9 @@ def release(root: Path, num: str, why: str, log: Path | None = None) -> None:
         if marker in (seen.stdout or ""):
             print(f"pickup-loop: released #{num} ({why}), already reported.",
                   file=sys.stderr)
+            ledger.append(root, "pickup_release",
+                          {"issue": num, "why": why,
+                           "log": str(log), "reported": "already"})
             return
     where = f" The run log is `{log}`." if log else ""
     tail = ""
