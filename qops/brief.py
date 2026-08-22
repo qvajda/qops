@@ -20,10 +20,25 @@ TOKEN_CAP = 400
 BYTES_PER_TOKEN = 4          # PRD §2.1's own divisor, so the numbers compare
 
 
-def qops_version() -> str:
-    """The installed substrate's version — what `pip show qops` would report,
-    read the same way, so a session can tell a stale pin from the brief it
-    already reads (v0.1.1 shipped mislabelled; nothing surfaced that fact)."""
+_VERSION_LINE = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def qops_version(root: Path | None = None) -> str:
+    """The substrate's version, from a single source.
+
+    On the substrate's own tree, `pyproject.toml` is the source: an editable
+    install's egg-info only refreshes on reinstall, so a hand-edited version
+    bump read back from `importlib.metadata` reported the *previous* value
+    (#103) — this repo alone showed 0.1.0 while pyproject.toml already said
+    0.2.0. A consumer that pinned qops has no `pyproject.toml` of its own to
+    read, so it falls back to what `pip show qops` reports.
+    """
+    if root is not None:
+        pyproject = Path(root) / "pyproject.toml"
+        if pyproject.exists():
+            m = _VERSION_LINE.search(pyproject.read_text(encoding="utf-8"))
+            if m:
+                return m.group(1)
     try:
         return _metadata.version("qops")
     except _metadata.PackageNotFoundError:
@@ -144,7 +159,7 @@ def collect(root: Path, cfg: dict) -> dict:
     return {"branch": branch, "dirty": dirty, "worktrees": worktrees,
             "ahead": int(ahead or 0), "issue": issue, "resume": resume,
             "labels": _labels(root, issue), "pointers": _pointers(root),
-            "picker": picker_silence(root, cfg)}
+            "picker": picker_silence(root, cfg), "version": qops_version(root)}
 
 
 # Where a session looks things up, if the repo has them. Order is the order
@@ -174,7 +189,7 @@ def render_from(state: dict, cfg: dict) -> str:
     if state.get("worktrees", 0) >= cfg.get("max_worktrees", 99):
         lines.append(f"{state['worktrees']} worktrees live — at the cap.")
 
-    head = f"qops {qops_version()} | `{state.get('branch','?')}`"
+    head = f"qops {state.get('version') or qops_version()} | `{state.get('branch','?')}`"
     if state.get("ahead"):
         head += f" | {state['ahead']} unpushed"
     if state.get("issue"):

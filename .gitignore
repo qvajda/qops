@@ -13,6 +13,7 @@ dist/
 .qops/ledger.jsonl
 .qops/outbox.jsonl
 .qops/state-report.md
+.qops/migrate-plan.json
 .qops/wt/
 # Transcripts of unattended runs (#50). This repo is public (ADR-0022)
 # and a run log is whatever the launched session printed.
