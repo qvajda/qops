@@ -2559,6 +2559,40 @@ def test_the_filing_bar_cannot_answer_without_a_body():
     assert install.issue_invariants([{"number": 6, "labels": _BAR_LABELS}], cfg) == []
 
 
+def test_a_closed_blocker_in_the_body_is_a_contradiction():
+    """#82's body kept saying `Blocked by #80` after #80 shipped, three
+    unattended sorties read the label as workable and the prose as blocked,
+    and refused. Labels are what pickup-loop reads; prose is what an agent
+    reads — when they disagree the queue looks full and moves nothing."""
+    cfg = qconfig.load(REPO)
+    open_a = [{"name": "type:code"}, {"name": "state:planned"},
+              {"name": "gate:machine"}, {"name": "origin:owner"}]
+
+    def fixture(a_state, body, extra_open=()):
+        a = {"number": 82,
+             "labels": [{"name": "type:code"}, {"name": a_state},
+                        {"name": "gate:machine"}, {"name": "origin:owner"}],
+             "body": body}
+        return [a, *extra_open]
+
+    body = "**Blocked by #80** (the reviewer gate) and **#46**\n\nAcceptance: it merges."
+    contradiction = "body says `Blocked by #80`"
+
+    # #80 not in the open set: the blocker closed, the prose is stale.
+    problems = install.issue_invariants(fixture("state:planned", body), cfg)
+    assert any(contradiction in p and "#82" in p for p in problems), problems
+
+    # #80 present in the open set: no contradiction.
+    problems = install.issue_invariants(
+        fixture("state:planned", body,
+                [{"number": 80, "labels": open_a}]), cfg)
+    assert not any(contradiction in p for p in problems), problems
+
+    # a state:done row is allowed to describe what once blocked it.
+    problems = install.issue_invariants(fixture("state:done", body), cfg)
+    assert not any(contradiction in p for p in problems), problems
+
+
 # --------------------------------------------------------------------------
 # #44 — the gate evaluates the invariants instead of skipping them. PR #43's
 # own gate log said, one line above the word "clean":

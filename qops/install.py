@@ -383,6 +383,17 @@ _ACCEPTANCE = re.compile(r"^\s*(?:#{1,6}\s*|\*{1,2})?acceptance\b[:*\s]*", re.I)
 _BAR_EXEMPT = (None, "state:triage", "state:done", "state:cancelled")
 
 
+# #92: the prose half of a blocker (`**Blocked by #80**`) and the label half
+# (`state:planned`) can disagree once the blocker closes, and nothing ever
+# makes the prose false again. Matches the `Blocked by #n` form only — a body
+# that merely *mentions* an issue number in passing is not a claim this checks.
+_BLOCKED_BY = re.compile(r"blocked by\s+#(\d+)", re.I)
+
+# The same carve-out #89 made for the filing bar: a finished row's history is
+# allowed to describe what once blocked it, since nothing downstream reads it.
+_BLOCKER_EXEMPT = ("state:done", "state:cancelled")
+
+
 def states_an_outcome(body: str) -> bool:
     """An acceptance marker with something after it: on its own line, or on the
     next non-blank line that is not itself a heading.
@@ -467,6 +478,18 @@ def issue_invariants(issues: list[dict], cfg: dict) -> list[str]:
             problems.append(f"#{num}: {state} and the body states no outcome — "
                             f"nothing downstream can tell what done looks like "
                             f"(ADR-0028)")
+        # #92: an open row whose body still says `Blocked by #n` for a blocker
+        # that already closed. Labels are what pickup-loop reads; prose is
+        # what an agent reads, and when they disagree the queue looks full
+        # and moves nothing.
+        if state not in _BLOCKER_EXEMPT and issue.get("body") is not None:
+            open_numbers = {str(i.get("number")) for i in issues}
+            for blocker in _BLOCKED_BY.findall(issue["body"]):
+                if blocker not in open_numbers:
+                    problems.append(f"#{num}: body says `Blocked by #{blocker}` "
+                                    f"but #{blocker} is not open — the blocker "
+                                    f"closed and the prose was never updated, "
+                                    f"edit the body")
     return problems
 
 
