@@ -1331,11 +1331,109 @@ def test_a_failed_backlog_query_is_not_an_idle_queue(tmp_path, monkeypatch):
     assert qops_pickup.candidates(tmp_path) == []
 
 
+# --------------------------------------------------------------------------
+# #82 / ADR-0029 §1 — the loop plans when it has nothing to build. Until this,
+# `state:triage -> state:planned` was the one act in the chain only an owner
+# session performed, so a backlog of 18 rows and an idle loop were the same
+# picture. Building is never starved by planning: the plan pass runs only where
+# the run would previously have stopped.
+# --------------------------------------------------------------------------
+
+def _row(number, state="state:triage", body="## Acceptance\n- it merges.\n",
+         extra=(), updated="2026-08-01T00:00:00Z"):
+    labels = [{"name": state}, {"name": "type:code"}, {"name": "gate:machine"},
+              {"name": "origin:owner"}, *({"name": n} for n in extra)]
+    return {"number": number, "title": f"row {number}", "labels": labels,
+            "body": body, "updatedAt": updated}
+
+
+def test_the_loop_plans_when_it_has_nothing_to_build(tmp_path, monkeypatch):
+    """One `state:triage` row that passes the filing bar, nothing to build:
+    the run plans that row and picks nothing else. A row available to build
+    wins — planning never starves building."""
+    root = _root(tmp_path)
+    planned, launched = [], []
+    monkeypatch.setattr(qops_pickup, "plan_argv",
+                        lambda prompt, cfg: planned.append(prompt) or ["true"])
+    monkeypatch.setattr(qops_pickup, "launch_argv",
+                        lambda prompt: launched.append(prompt) or ["true"])
+    monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: True)
+    monkeypatch.setattr(qops_pickup, "produced_work", lambda *a, **k: True)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+
+    triage = _row(5)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [triage])
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert len(planned) == 1 and "#5" in planned[0], planned
+    assert launched == []
+
+    # A row to build is picked and the plan pass does not run at all.
+    planned.clear()
+    buildable = _row(6, state="state:planned", extra=("ready:auto",),
+                     body="## Acceptance\n- `tests/test_qops.py::test_x` passes.\n")
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [triage, buildable])
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert len(launched) == 1 and "#6" in launched[0], launched
+    assert planned == []
+
+
+@pytest.mark.parametrize("why,row", [
+    ("no outcome stated", _row(7, body="It would be nice if this were faster.")),
+    ("an epic", _row(8, extra=("type:epic",))),
+    ("the owner is handling it", _row(9, extra=("no-auto",))),
+    ("already planned", _row(10, state="state:planned")),
+])
+def test_the_planner_is_not_pointed_at_a_row_it_may_not_plan(why, row):
+    """The filing bar is the gate (ADR-0028): a row stating no outcome cannot
+    be planned into criteria, and guessing at one invents work the owner never
+    licensed. An epic gets an interview and #84's decomposition, never a plan
+    instead of one (ADR-0029 §4)."""
+    assert not qops_pickup.plannable(row), why
+
+
+def test_a_failed_plan_does_not_label_the_row_planned(tmp_path, monkeypatch):
+    """The build path's release writes `state:planned`. On a planning run that
+    failed, that would be the loop asserting the one thing the run did not do —
+    and the row would go to the build queue with no plan on it."""
+    root = _root(tmp_path)
+    calls = []
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
+    monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: False)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [_row(5)])
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 1
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert not any("state:planned" in c for c in edits), edits
+    # It still spends the row's strike budget, so a row nothing can plan stops
+    # being planned hourly (#49).
+    assert qops_pickup.strikes(root, "5") == 1
+
+
+def test_the_planner_launch_reads_its_toolset_from_the_config(tmp_path):
+    """The roster is `.qops/config.yml`, not a second copy in this file. The
+    planner gets no Edit and no Write: it writes a plan onto the row through
+    `gh`, and a planner that can edit the tree is a coder."""
+    cfg = qconfig.load(REPO)
+    argv = qops_pickup.plan_argv("plan #5", cfg)
+    tools = argv[argv.index("--allowedTools") + 1].split(",")
+    assert tools == cfg["agents"]["planner"]["tools"], tools
+    assert "Edit" not in tools and "Write" not in tools
+    for flag in qops_pickup.BLANKET_BYPASS:
+        assert flag not in argv
+
+
 def test_an_unreadable_queue_fails_the_run_and_an_empty_one_does_not(tmp_path, monkeypatch):
     root = _root(tmp_path)
-    monkeypatch.setattr(qops_pickup, "candidates", lambda r: None)
+    # `backlog()` is the seam since #82: one query, two filters over it.
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: None)
     assert qops_pickup.main(["--root", str(root)]) == 1
-    monkeypatch.setattr(qops_pickup, "candidates", lambda r: [])
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [])
     assert qops_pickup.main(["--root", str(root)]) == 0
 
 

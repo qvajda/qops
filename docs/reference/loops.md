@@ -73,6 +73,8 @@ row), **or** it is `origin:owner` with a body naming a test and no `gate:taste`
 — the filing itself is the grant there, so no label is written.
 **Acceptance check:** it branches, commits, opens a PR and stops there. It
 never merges by hand, never activates a listing, never pushes to `master`.
+**And when there is nothing to build it plans one row instead** (#82, below),
+which is what stops a full backlog reading as an idle queue.
 
 ### Registration — the task names its root
 
@@ -113,6 +115,36 @@ Disable-ScheduledTask -TaskName $name        # registering never enables
   resolves through PATH rather than baking an absolute Python path, but the
   name is still machine-global and nothing checks the registration against what
   the config would render. That is #12's remaining scope.
+
+### It plans when it has nothing to build (#82, ADR-0029 §1)
+
+`state:triage -> state:planned` was the last act in the chain that only an
+owner session performed, so the backlog could hold 18 rows and the loop still
+report an idle queue — the rows were filed, and nothing turned them into work.
+
+A `--launch` run that finds nothing to build plans **one** row instead: the
+least-recently-updated `state:triage` row that passes the filing bar, through
+the `planner` role (`.claude/agents/planner.md`), with the toolset and model
+`.qops/config.yml` declares for it.
+
+- **Building is never starved by planning.** The plan pass runs only where the
+  run would previously have stopped — nothing eligible, or nothing eligible the
+  launch may write.
+- **One row per pass.** Planning the whole backlog in one burst spends the
+  owner's review attention all at once, and a wrong planner would spend it
+  before anyone read the first plan.
+- **What it refuses**: a row stating no outcome (the filing bar — a plan cannot
+  invent criteria the owner never licensed), a `type:epic` (an interview and
+  #84's decomposition, never a plan instead of one), and anything carrying
+  `no-auto` or `blocked`.
+- **What it never writes**: `gate:`, `type:`, `ready:auto`, `origin:`. The
+  planner appends a plan and sets `state:planned`, exactly as #55 left it.
+- **Same budget, same account.** It writes the same `pickup` ledger event, uses
+  the same run log, and a row it fails to plan three times strikes out under
+  #49 like any other. A failed plan does **not** relabel the row: the build
+  path's release writes `state:planned`, which here would assert the very thing
+  the run failed to do.
+- **Success is measured, not assumed**: `state:planned` *and* a body that grew.
 
 ### The reviewer's verdict rides this run (#80)
 
