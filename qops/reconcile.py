@@ -125,6 +125,61 @@ def derive_origin(repo: str, limit: int = 50, run=gh) -> dict:
     return report
 
 
+# #110: only a line that actually claims a block counts — an unrelated
+# "#83 fixed this" in prose must not read as a blocking edge.
+BLOCKED_BY = re.compile(r"Blocked by\s+((?:#\d+\s*,?\s*)+)", re.IGNORECASE)
+
+
+def blocked_issues(repo: str, limit: int, run=gh) -> list[str]:
+    out = run(["issue", "list", "--repo", repo, "--label", "state:blocked",
+               "--state", "open", "--limit", str(limit), "--json", "number"])
+    return [str(i["number"]) for i in json.loads(out or "[]")]
+
+
+def blockers(text: str) -> list[str]:
+    nums: list[str] = []
+    for m in BLOCKED_BY.finditer(text or ""):
+        nums += re.findall(r"#(\d+)", m.group(1))
+    return nums
+
+
+def unblock_stale(repo: str, limit: int = 50, run=gh) -> dict:
+    """#110: a `state:blocked` row naming only closed issues on a `Blocked by`
+    line moves to `state:triage` — re-entering triage is the existing return
+    path, and which state it deserves next is a planning read, not a
+    mechanical one. Reads body and comments; a row with no parseable edge, or
+    naming any still-open issue, is left untouched with a reason.
+    """
+    report = {"unblocked": [], "skipped": [], "failed": []}
+    for issue in blocked_issues(repo, limit, run=run):
+        try:
+            data = json.loads(run(["issue", "view", issue, "--repo", repo,
+                                   "--json", "body,comments"]))
+            texts = [data.get("body", "")] + [
+                c.get("body", "") for c in data.get("comments", [])]
+            nums = sorted(set(n for t in texts for n in blockers(t)), key=int)
+            if not nums:
+                report["skipped"].append((issue, "no Blocked by line"))
+                continue
+            still_open = []
+            for n in nums:
+                blocker = json.loads(run(["issue", "view", n, "--repo", repo,
+                                          "--json", "state"]))
+                if blocker.get("state") != "CLOSED":
+                    still_open.append(n)
+            if still_open:
+                report["skipped"].append(
+                    (issue, f"blocked by open #{', #'.join(still_open)}"))
+                continue
+            run(["issue", "edit", issue, "--repo", repo,
+                 "--add-label", "state:triage",
+                 "--remove-label", "state:blocked"])
+            report["unblocked"].append((issue, nums))
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            report["failed"].append((issue, str(exc)))
+    return report
+
+
 def merged_prs(repo: str, limit: int, run=gh) -> list[dict]:
     out = run(["pr", "list", "--repo", repo, "--state", "merged",
                "--limit", str(limit), "--json", "number,headRefName"])
@@ -272,6 +327,13 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"origin skipped #{issue}: {why}")
     for issue, why in origin_report["failed"]:
         print(f"origin FAILED #{issue}: {why}", file=sys.stderr)
+    unblock_report = unblock_stale(repo, limit=limit)
+    for issue, nums in unblock_report["unblocked"]:
+        print(f"unblocked #{issue}: closed #{', #'.join(nums)}")
+    for issue, why in unblock_report["skipped"]:
+        print(f"unblock skipped #{issue}: {why}")
+    for issue, why in unblock_report["failed"]:
+        print(f"unblock FAILED #{issue}: {why}", file=sys.stderr)
     report = reconcile(repo, limit=limit)
     for issue, pr in report["advanced"]:
         print(f"advanced #{issue}: PR #{pr} merged")
@@ -296,4 +358,4 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     # The origin sweep must not stop the backstop, and must not pass silently
     # either.
     return 1 if (report["failed"] or origin_report["failed"]
-                 or behind_report["failed"]) else 0
+                 or unblock_report["failed"] or behind_report["failed"]) else 0

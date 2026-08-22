@@ -1186,6 +1186,89 @@ def test_a_pending_origin_derives_to_the_agent_parents_licence_not_owner():
     assert report["derived"] == [("20", "agent")]
 
 
+def test_a_row_whose_blockers_all_closed_leaves_blocked():
+    """#110: `Blocked by #83` on the body, #83 closed - one reconcile run
+    moves the row `state:blocked` -> `state:triage`."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 85}])
+        if args[:2] == ["issue", "view"] and args[2] == "85":
+            return json.dumps({"body": "Blocked by #83", "comments": []})
+        if args[:2] == ["issue", "view"] and args[2] == "83":
+            return json.dumps({"state": "CLOSED"})
+        if args[:2] == ["issue", "edit"]:
+            return ""
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.unblock_stale("o/r", run=run)
+    assert report["unblocked"] == [("85", ["83"])]
+
+
+def test_a_row_naming_an_open_blocker_stays_blocked_with_a_reason():
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 106}])
+        if args[:2] == ["issue", "view"] and args[2] == "106":
+            return json.dumps({"body": "Blocked by #105", "comments": []})
+        if args[:2] == ["issue", "view"] and args[2] == "105":
+            return json.dumps({"state": "OPEN"})
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.unblock_stale("o/r", run=run)
+    assert report["unblocked"] == []
+    assert report["skipped"] == [("106", "blocked by open #105")]
+
+
+def test_a_blocker_named_two_ways_where_only_one_closed_stays_blocked():
+    """Negative: a row naming two blockers where only one closed must not be
+    treated as fully unblocked."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 1}])
+        if args[:2] == ["issue", "view"] and args[2] == "1":
+            return json.dumps({"body": "Blocked by #2, #3", "comments": []})
+        if args[:2] == ["issue", "view"] and args[2] == "2":
+            return json.dumps({"state": "CLOSED"})
+        if args[:2] == ["issue", "view"] and args[2] == "3":
+            return json.dumps({"state": "OPEN"})
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.unblock_stale("o/r", run=run)
+    assert report["unblocked"] == []
+    assert report["skipped"] == [("1", "blocked by open #3")]
+
+
+def test_the_edge_is_honoured_from_a_comment_not_only_the_body():
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 86}])
+        if args[:2] == ["issue", "view"] and args[2] == "86":
+            return json.dumps({"body": "no edge here",
+                                "comments": [{"body": "Blocked by #82"}]})
+        if args[:2] == ["issue", "view"] and args[2] == "82":
+            return json.dumps({"state": "CLOSED"})
+        if args[:2] == ["issue", "edit"]:
+            return ""
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.unblock_stale("o/r", run=run)
+    assert report["unblocked"] == [("86", ["82"])]
+
+
+def test_a_row_with_no_blocked_by_line_anywhere_stays_blocked():
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 9}])
+        if args[:2] == ["issue", "view"] and args[2] == "9":
+            return json.dumps({"body": "waiting on #83 to land",
+                                "comments": []})
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.unblock_stale("o/r", run=run)
+    assert report["unblocked"] == []
+    assert report["skipped"] == [("9", "no Blocked by line")]
+
+
 def test_origin_pending_is_never_auto_eligible():
     """`eligible()`'s second route requires `origin:owner`; `origin:pending`
     is neither that nor `ready:auto`, so a freshly filed child is briefly
@@ -1677,7 +1760,7 @@ def test_reconcile_skips_an_issue_the_owner_already_closed():
     assert report["skipped"] == [("59", "issue already closed")]
 
 
-def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path):
+def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path, monkeypatch):
     """CLAUDE.md: a swallowed per-item exception writes a status plus a reason
     onto the row, and the run still fails once after the loop."""
     gh = FakeGh([{"number": 148, "headRefName": "fix/59-orphan-gap"}], _building(),
@@ -1691,26 +1774,22 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path):
         return {"advanced": [], "closed": [], "skipped": [],
                 "failed": [("59", "gh boom")]}
 
-    # `main()` runs the origin sweep and the BEHIND sweep alongside the
-    # backstop, and this test's subject is the backstop's exit code — so all
-    # three are stubbed. Stubbing only one let another reach the real `gh`,
-    # which is how #87 first failed in CI: a token-less runner, not a logic
-    # error.
-    def no_origin(repo, limit=50, run=None):
-        return {"derived": [], "skipped": [], "failed": []}
-
-    def no_behind(repo, limit=50, run=None):
-        return {"advanced": [], "skipped": [], "failed": []}
-
-    saved, reconcilemod.reconcile = reconcilemod.reconcile, fake
-    saved_origin, reconcilemod.derive_origin = reconcilemod.derive_origin, no_origin
-    saved_behind, reconcilemod.advance_behind = reconcilemod.advance_behind, no_behind
-    try:
-        assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
-    finally:
-        reconcilemod.reconcile = saved
-        reconcilemod.derive_origin = saved_origin
-        reconcilemod.advance_behind = saved_behind
+    # `main()` runs several sweeps alongside the backstop, and this test's
+    # subject is only the backstop's exit code. Naming each of the others and
+    # stubbing it by hand is what broke here: #110 added `unblock_stale()` to
+    # `main()`, the list still named three, and the unstubbed sweep reached the
+    # real `gh` against this fixture's `o/r` — a token-less runner, not a logic
+    # error, the same shape #87 first failed in CI with.
+    #
+    # So stub the *network*, not the sweeps. Every sweep binds `run=gh` at
+    # import, so rebinding `reconcilemod.gh` would not reach them — but `gh()`
+    # itself looks `subprocess.run` up when it is called. One stub there, and a
+    # sweep added to `main()` tomorrow reads an empty tracker and does nothing
+    # rather than dialling out.
+    monkeypatch.setattr(reconcilemod.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "[]", ""))
+    monkeypatch.setattr(reconcilemod, "reconcile", fake)
+    assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
 
 
 def test_a_failing_origin_sweep_does_not_take_the_backstop_down():
