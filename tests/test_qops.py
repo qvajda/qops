@@ -1537,6 +1537,49 @@ def test_a_failed_plan_does_not_label_the_row_planned(tmp_path, monkeypatch):
     assert qops_pickup.strikes(root, "5") == 1
 
 
+def test_an_unplannable_row_gets_one_clarification_and_stops(tmp_path, monkeypatch):
+    """ADR-0029 §5, #83. A session planner asks the owner when a row is
+    ambiguous; an unattended one cannot, and the two wrong answers are guessing
+    and retrying. So the planner files the clarification itself and the loop
+    reads the *tracker*, never the planner's prose — a decline parsed out of a
+    comment is the guess this row exists to refuse.
+
+    Three things are asserted here: a clarified run is not a failure, it is not
+    a strike, and the row it left behind cannot be planned a second time."""
+    root = _root(tmp_path)
+    # `clarified()` reads the sub-issue edge through the REST path, which needs
+    # the tracker named — a root that names none is not clarified, it is unread.
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/r\n",
+                                               encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = ""
+        if cmd[:3] == ["gh", "issue", "view"]:
+            out = json.dumps({"labels": [{"name": "state:blocked"}], "body": "x"})
+        elif cmd[:2] == ["gh", "api"] and cmd[2].endswith("/sub_issues"):
+            out = json.dumps([{"number": 99, "state": "open"}])
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
+    monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: False)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [_row(5)])
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    # Not a failure: no release comment, and the strike budget is untouched, so
+    # a row the planner honestly could not plan does not also burn #49's three.
+    assert qops_pickup.strikes(root, "5") == 0
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert not any("no-auto" in c or "state:planned" in c for c in edits), edits
+
+    # And the second run files nothing, because the row the first one left is
+    # `state:blocked` — the taxonomy already says it, so no new label does.
+    assert not qops_pickup.plannable(_row(5, state="state:blocked"))
+
+
 def test_the_planner_launch_reads_its_toolset_from_the_config(tmp_path):
     """The roster is `.qops/config.yml`, not a second copy in this file. The
     planner gets no Edit and no Write: it writes a plan onto the row through
@@ -1588,10 +1631,17 @@ def test_an_interviewed_epic_is_decomposable_and_a_planned_row_is_not():
     assert not qops_pickup.decomposable(REPO, blocked)
 
 
-def test_a_reference_to_an_adr_that_does_not_exist_is_not_an_interview_record():
+def test_a_reference_to_an_adr_that_does_not_exist_is_not_an_interview_record(tmp_path):
+    """`interviewed()` asks whether the named ADR exists **in this root**, not
+    whether the string looks like one. So the honest fixture is a real citation
+    checked against a root that does not hold it: an invented `docs/adr/...`
+    literal is itself a broken doc citation, and
+    `test_every_doc_path_cited_from_code_resolves` fails on it — correctly,
+    since `doc_link_roots` covers `tests/`."""
     epic = _row(24, extra=("type:epic",),
-               body="Interviewed in docs/adr/9999-does-not-exist.md.")
-    assert not qops_pickup.interviewed(REPO, epic)
+                body="Interviewed in "
+                     "docs/adr/0029-the-loop-plans-what-the-owner-licensed.md.")
+    assert not qops_pickup.interviewed(tmp_path, epic)
 
 
 def test_an_interviewed_epic_decomposes_into_sorties(tmp_path, monkeypatch):
@@ -1930,6 +1980,50 @@ def test_reconcile_updates_a_behind_gate_machine_pr():
     assert len(updates) == 1 and updates[0][2] == "101"
 
 
+def test_an_update_branch_refusal_is_a_skip_not_a_failure():
+    """#117. `updatePullRequestBranch` refuses `github-actions[bot]`, and every
+    rendered workflow authenticates as exactly that — so on this repo the sweep
+    could never succeed, failed the `reconcile` job on every run, and commented
+    the same sentence onto the row each pass (8 of them across #110 and #86
+    before this was caught).
+
+    A refusal is not an outage: it will not change until a token does. So it is
+    a skip that names the token, silent on the row. Every other exception stays
+    a failure and still comments — this narrows one error class, it does not
+    soften the rule."""
+    issues = {"100": {"labels": [{"name": "gate:machine"}]}}
+
+    class Refuses(FakePrGh):
+        def __call__(self, args):
+            if args[:2] == ["pr", "update-branch"]:
+                raise RuntimeError(
+                    "gh pr update-branch 101 --repo o/r: GraphQL: "
+                    "github-actions[bot] does not have permission to update "
+                    "this pull request. (updatePullRequestBranch)")
+            return super().__call__(args)
+
+    gh = Refuses([_behind_pr()], issues)
+    report = reconcilemod.advance_behind("o/r", run=gh)
+    assert report["failed"] == [], report
+    assert [i for i, _ in report["skipped"]] == ["100"], report
+    assert "QOPS_AGENT_TOKEN" in report["skipped"][0][1], report
+    # Silent on the row: the comment is what made this cost the tracker.
+    assert not [c for c in gh.calls if c[:2] == ["issue", "comment"]], gh.calls
+
+    # A transient error on the same call is still a failure, and still says so
+    # on the row. Classifying that as a skip would turn an outage into silence.
+    class Breaks(FakePrGh):
+        def __call__(self, args):
+            if args[:2] == ["pr", "update-branch"]:
+                raise RuntimeError("gh pr update-branch 101: HTTP 502")
+            return super().__call__(args)
+
+    broke = Breaks([_behind_pr()], issues)
+    report = reconcilemod.advance_behind("o/r", run=broke)
+    assert [i for i, _ in report["failed"]] == ["100"], report
+    assert [c for c in broke.calls if c[:2] == ["issue", "comment"]]
+
+
 def test_advance_behind_skips_dirty_no_auto_merge_and_no_auto():
     issues = {"100": {"labels": [{"name": "gate:machine"}]}}
     dirty = FakePrGh([_behind_pr(status="DIRTY")], issues)
@@ -2134,6 +2228,32 @@ def test_no_substrate_module_assumes_posix(needle):
         if any(needle in s for s in strings) or shell:
             hits.append(str(f.relative_to(REPO)))
     assert hits == [], f"{needle!r} in {hits}"
+
+
+def test_the_reviewer_does_not_pass_the_diff_in_argv(monkeypatch):
+    """ADR-0009 again, one layer down (#111). `subprocess.run` with a list argv
+    is the portable form for a *bounded* argument; the reviewer's prompt is not
+    one — it carries up to `MAX_DIFF` bytes of diff. Windows `CreateProcess`
+    caps a command line at 32,767 characters, so on the cron host every PR with
+    a real diff raised `WinError 206` before the model was reached, and after
+    `MAX_ATTEMPTS` the host posted *No verdict* — a reviewer that read nothing,
+    presenting as one that read and declined."""
+    cap = reviewmod.WINDOWS_CMDLINE_MAX
+    seen = {}
+
+    class _Done:
+        returncode, stdout, stderr = 0, "ok", ""
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return _Done()
+
+    monkeypatch.setattr(reviewmod.subprocess, "run", fake_run)
+    prompt = "x" * (cap + 1)
+    assert reviewmod.ask(prompt, REPO) == "ok"
+    assert all(len(a) <= cap for a in seen["argv"]), \
+        "the prompt reached argv, which is the WinError 206 path"
+    assert seen["kw"].get("input") == prompt
 
 
 def test_every_label_the_config_names_is_in_its_own_taxonomy():

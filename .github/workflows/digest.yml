@@ -102,6 +102,15 @@ jobs:
               --label state:review --json number,title \
               --template '{{ range . }}- #{{ .number }} {{ .title }}{{ "\n" }}{{ end }}'
             echo
+            # ADR-0029 §6's floor for a row the planner could not plan: a label
+            # and a digest line. Without the line the row is blocked where only
+            # the tracker can see it, and the loop looks idle rather than stuck
+            # (#83). Escalation by any other transport is an upgrade, not this.
+            echo "Blocked on a clarification (state:blocked):"
+            gh issue list --repo "$REPO" --state open --limit 20 \
+              --label state:blocked --json number,title \
+              --template '{{ range . }}- #{{ .number }} {{ .title }}{{ "\n" }}{{ end }}'
+            echo
             echo "Awaiting the owner:"
             gh pr list --repo "$REPO" --state open --limit 10 \
               --json number,title,reviewDecision \
