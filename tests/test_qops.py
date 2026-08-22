@@ -3507,7 +3507,12 @@ def test_init_missing_flags_refuses_without_a_tty(tmp_path, monkeypatch):
     assert not (tmp_path / ".qops" / "config.yml").exists()
 
 
-def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(tmp_path):
+def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
+        tmp_path, monkeypatch):
+    # `doctor` reads the three only off a PR, and this suite's own gate run is
+    # on one: both refs are set for every job of a `pull_request` workflow.
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
     rc = initmod.main(
         ["--project", "demo", "--repo", "qvajda/qops-init-104-fixture",
          "--python", "python3"], tmp_path, {})
@@ -3531,6 +3536,31 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(tmp_path):
     assert any("branch protection" in p for p in problems)
     assert any("auto-merge" in p for p in problems)
     assert any("workspace has not been trusted" in p for p in problems)
+
+
+def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
+        tmp_path, monkeypatch):
+    """The three are unanswerable in `gate`, and `gate` is a required check.
+
+    A runner's token cannot read branch protection and a stateless runner has
+    no `~/.claude.json`, so all three read "not confirmed" there whatever the
+    repo is actually set to - PR #109 sat red on a `master` that had every one
+    of them on. A PR cannot fix any of them, so the branch never merges.
+    """
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-init-104-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+    cfg = qconfig.load(tmp_path)
+
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "feat/104-qops-init")
+    on_a_pr = install.doctor(tmp_path, cfg)
+    assert on_a_pr == [], on_a_pr
+
+    # Not dropped, only moved off the merge path: the instrument still reads
+    # them where they are answerable, and `init` prints them as next steps.
+    assert len(install.owner_preconditions(tmp_path, cfg)) == 3
 
 
 def test_init_prints_the_contracts_owner_only_next_steps():

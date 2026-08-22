@@ -759,6 +759,16 @@ def strict() -> bool:
     return os.environ.get("QOPS_STRICT") == "1"
 
 
+def _on_a_pull_request() -> bool:
+    """Whether this `doctor` run is the one `gate` makes on a PR.
+
+    Both refs are set on every job of a `pull_request`-triggered workflow and
+    on nothing else - a laptop run and the daily reconcile job see neither.
+    """
+    return bool(os.environ.get("GITHUB_BASE_REF")
+                and os.environ.get("GITHUB_HEAD_REF"))
+
+
 def _rows_in_scope(issues: list[dict]) -> tuple[list[dict], str]:
     """The rows this `doctor` run may report on, and a phrase naming which.
 
@@ -776,7 +786,7 @@ def _rows_in_scope(issues: list[dict]) -> tuple[list[dict], str]:
     the tracker the PR is answerable to, and the daily job still sees every row.
     """
     head_ref = os.environ.get("GITHUB_HEAD_REF")
-    if not os.environ.get("GITHUB_BASE_REF") or not head_ref:
+    if not _on_a_pull_request():
         return issues, f"{len(issues)} open rows"
     num = reconcile.issue_number(head_ref)
     if num is None:
@@ -821,7 +831,16 @@ def doctor(root: Path, cfg: dict) -> list[str]:
     n = len((Path(root) / "CLAUDE.md").read_text(encoding="utf-8").splitlines())
     if n > cfg["claude_md_max_lines"]:
         problems.append(f"CLAUDE.md is {n} lines, cap is {cfg['claude_md_max_lines']}")
-    problems += owner_preconditions(root, cfg)
+    # Contract items 6-8 are facts about the owner's account and host, not
+    # about the diff, and `gate` is a required status check: a PR cannot grant
+    # branch protection and a stateless runner has no `~/.claude.json` to have
+    # accepted a trust dialog, so counting them here strands the branch on
+    # something no sortie can ever fix. That is #63 exactly - the scoping
+    # `_rows_in_scope` applies to the label sweep, applied to the half that
+    # never had it. Off a PR the instrument still reads all three, which is
+    # where they are answerable and where `init` prints them as next steps.
+    if not _on_a_pull_request():
+        problems += owner_preconditions(root, cfg)
     return problems
 
 
