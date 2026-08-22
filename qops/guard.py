@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import config
+
 # git subcommands that write to the current branch
 _WRITES = {"commit", "push", "merge", "rebase"}
 
@@ -85,20 +87,25 @@ def argv_tokens(cmd: str) -> list[str]:
     return out
 
 
-def git_commands(toks: list[str]) -> list[tuple[str, list[str]]]:
-    """Every `git <subcommand>` in these tokens, as (subcommand, its own args).
+def git_commands(toks: list[str]) -> list[tuple[str, list[str], str | None]]:
+    """Every `git <subcommand>` in these tokens, as (subcommand, its own args,
+    the value of its own `-C` flag or None).
 
     The subcommand is the first non-option token after `git`, so `git -c k=v
     push` is a push and `git stash push` is not one. Args stop at the next shell
     separator, so `git commit && git checkout master` does not read `master` as
-    an argument to `commit`.
+    an argument to `commit`. A repeated `-C` chains like git's own does
+    (`git -C a -C b` means `./a/b`) - #122.
     """
     found = []
     for i, t in enumerate(toks):
         if t != "git":
             continue
         j = i + 1
+        cpath = None
         while j < len(toks) and toks[j].startswith("-"):
+            if toks[j] == "-C" and j + 1 < len(toks):
+                cpath = toks[j + 1] if cpath is None else str(Path(cpath) / toks[j + 1])
             j += 2 if toks[j] in _GIT_VALUE_OPTS else 1
         if j >= len(toks) or toks[j] in _SEPARATORS:
             continue
@@ -107,7 +114,7 @@ def git_commands(toks: list[str]) -> list[tuple[str, list[str]]]:
             if a in _SEPARATORS:
                 break
             args.append(a)
-        found.append((toks[j], args))
+        found.append((toks[j], args, cpath))
     return found
 
 
@@ -235,28 +242,39 @@ def _tripwire(text: str, path_hint, cfg: dict):
 
 
 def git_refusal(toks: list[str], ctx: dict, cfg: dict) -> str | None:
-    """The six git checks, over one parse. None allows."""
+    """The six git checks, over one parse. None allows.
+
+    A `git -C <path>` command is judged by that path's own root, if `hook()`
+    resolved one into `ctx["other_roots"]` - a `-C` under no qops root falls
+    back to this root's rules, unchanged (#122).
+    """
     branch = ctx.get("branch") or ""
     protected = cfg.get("protected_branches", [])
+    other_roots = ctx.get("other_roots") or {}
     commands = git_commands(toks)
     # A command that makes its own branch before it writes is not writing to
     # the protected one. `git checkout -b x && git commit` used to be refused,
     # and the refusal named the wrong verb while doing it.
     branches_first = any(verb in ("checkout", "switch")
                          and any(a in ("-b", "-c", "-B", "-C") for a in args)
-                         for verb, args in commands)
-    for verb, args in commands:
+                         for verb, args, _ in commands)
+    for verb, args, cpath in commands:
+        other = other_roots.get(cpath) if cpath else None
+        own_branch = other["branch"] if other else branch
+        own_protected = other["protected"] if other else protected
         if verb == "push":
             if forces(args):
                 return ("force-push is blocked. Rebase and push normally, or "
                         "ask the owner.")
             # a push naming another branch is fine even while master is out
-            for target in push_targets(args, branch):
-                if target == "*" and protected:
+            for target in push_targets(args, own_branch):
+                if target == "*" and own_protected:
                     return (f"push --all/--mirror is blocked while "
-                            f"{protected[0]} is protected. Open a PR.")
-                if target in protected:
-                    return f"push to {target} is blocked. Open a PR."
+                            f"{own_protected[0]} is protected"
+                            f"{f' in {cpath}' if other else ''}. Open a PR.")
+                if target in own_protected:
+                    return (f"push to {target} is blocked"
+                            f"{f' in {cpath}' if other else ''}. Open a PR.")
         elif verb == "reset" and "--hard" in args:
             return ("git reset --hard discards uncommitted work. Use git stash "
                     "or a soft reset.")
@@ -265,9 +283,10 @@ def git_refusal(toks: list[str], ctx: dict, cfg: dict) -> str | None:
             return (f"worktree sprawl: {ctx['worktrees']} already live, cap is "
                     f"{cfg['max_worktrees']}. Remove one first "
                     f"(git worktree remove).")
-        elif verb in _WRITES and branch in protected and not branches_first:
-            return (f"'{verb}' on {branch} is blocked - {branch} is protected. "
-                    f"Branch first.")
+        elif verb in _WRITES and own_branch in own_protected and not branches_first:
+            return (f"'{verb}' on {own_branch} is blocked"
+                    f"{f' in {cpath}' if other else ''} - {own_branch} is "
+                    f"protected. Branch first.")
     return None
 
 
@@ -363,14 +382,44 @@ def scan(root: Path, cfg: dict) -> list[dict]:
 
 # --- entry points ----------------------------------------------------------
 
+def other_git_roots(cmd: str, root: Path) -> dict:
+    """Every `git -C <path>` in `cmd`, resolved to that path's own branch and
+    protected list - keyed by the literal `-C` value so `git_refusal` can look
+    a command's `cpath` straight up.
+
+    A `-C` path under no qops root is left out: it is judged by this root's
+    rules unchanged, which is `argv_tokens`' own rule (read less, never
+    nothing) applied to roots instead of tokens. The subprocess call and file
+    read live here, not in `check()` - that is the one function the
+    parametrized refusal tests drive directly (#122).
+    """
+    other = {}
+    for _, _, cpath in git_commands(argv_tokens(cmd)):
+        if not cpath or cpath in other:
+            continue
+        candidate = Path(cpath)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        found = config.find_root(candidate)
+        if not (found / ".qops" / "config.yml").exists():
+            continue
+        other[cpath] = {"branch": git_context(found)["branch"],
+                         "protected": config.load(found).get("protected_branches", [])}
+    return other
+
+
 def hook(root: Path, cfg: dict) -> int:
     """PreToolUse. Reads the payload on stdin; exit 2 blocks the call."""
     try:
         payload = json.load(sys.stdin)
     except Exception:
         return 0
-    reason = check(payload.get("tool_name", ""), payload.get("tool_input") or {},
-                   git_context(root), cfg)
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input") or {}
+    ctx = git_context(root)
+    if tool_name == "Bash":
+        ctx["other_roots"] = other_git_roots(tool_input.get("command", ""), root)
+    reason = check(tool_name, tool_input, ctx, cfg)
     if reason:
         print(f"qops guard: {reason}", file=sys.stderr)
         return 2

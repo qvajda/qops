@@ -2601,15 +2601,49 @@ def test_args_stop_at_the_shell_separator():
     """`git commit && git checkout master` must not read `master` as an
     argument to anything before the `&&`."""
     toks = guard.argv_tokens("git stash push a.py && git checkout master")
-    assert guard.git_commands(toks) == [("stash", ["push", "a.py"]),
-                                        ("checkout", ["master"])]
+    assert guard.git_commands(toks) == [("stash", ["push", "a.py"], None),
+                                        ("checkout", ["master"], None)]
 
 
 def test_git_options_are_skipped_to_find_the_subcommand():
     toks = guard.argv_tokens("git -c core.pager=cat --no-pager push origin master")
-    assert guard.git_commands(toks) == [("push", ["origin", "master"])]
+    assert guard.git_commands(toks) == [("push", ["origin", "master"], None)]
     assert guard.check("Bash", {"command": "git -c a=b push origin master"},
                        FEATURE, SYNTHETIC)
+
+
+def test_a_git_dash_c_command_is_judged_by_its_own_root():
+    """#122: `git -C ../other commit` used to be judged by *this* root's
+    branch and protected list. The fixture differs in both the branch and the
+    protected list, so a fix that reads the `-C` path but keeps this root's
+    branch (swapping one wrong answer for another) still fails it."""
+    ctx = dict(FEATURE, other_roots={
+        "../other": {"branch": "feature-x", "protected": ["trunk"]},
+    })
+    # this root is a feature branch; the other root is also a feature branch
+    assert guard.check("Bash", {"command": "git -C ../other commit -m x"},
+                       ctx, SYNTHETIC) is None
+
+    ctx = dict(FEATURE, other_roots={
+        "../other": {"branch": "trunk", "protected": ["trunk"]},
+    })
+    reason = guard.check(
+        "Bash", {"command": "git -C ../other push origin trunk"}, ctx, SYNTHETIC)
+    assert reason and "../other" in reason
+
+    # a -C path resolving to no qops root is judged by this root's rules
+    on_master = dict(CTX, other_roots={})
+    assert guard.check("Bash", {"command": "git -C /tmp/no-root commit -m x"},
+                       on_master, SYNTHETIC)
+
+
+def test_other_git_roots_makes_no_subprocess_call_when_absent(monkeypatch):
+    """`check()` never shells out itself - only `other_git_roots()`/`hook()`
+    do. If `check()` started calling `subprocess.run`, this trips."""
+    monkeypatch.setattr(guard.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("check() shelled out")))
+    assert guard.check("Bash", {"command": "git -C ../other commit -m x"},
+                       CTX, SYNTHETIC) is not None
 
 
 def test_the_importer_taxonomy_parser_matches_the_yaml():
