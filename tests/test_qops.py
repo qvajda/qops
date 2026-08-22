@@ -1648,20 +1648,26 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path):
         return {"advanced": [], "closed": [], "skipped": [],
                 "failed": [("59", "gh boom")]}
 
-    # `main()` runs the origin sweep before the backstop (ADR-0029), and this
-    # test's subject is the backstop's exit code — so both are stubbed. Stubbing
-    # only one let the other reach the real `gh`, which is how #87 first failed
-    # in CI: a token-less runner, not a logic error.
+    # `main()` runs the origin sweep and the BEHIND sweep alongside the
+    # backstop, and this test's subject is the backstop's exit code — so all
+    # three are stubbed. Stubbing only one let another reach the real `gh`,
+    # which is how #87 first failed in CI: a token-less runner, not a logic
+    # error.
     def no_origin(repo, limit=50, run=None):
         return {"derived": [], "skipped": [], "failed": []}
 
+    def no_behind(repo, limit=50, run=None):
+        return {"advanced": [], "skipped": [], "failed": []}
+
     saved, reconcilemod.reconcile = reconcilemod.reconcile, fake
     saved_origin, reconcilemod.derive_origin = reconcilemod.derive_origin, no_origin
+    saved_behind, reconcilemod.advance_behind = reconcilemod.advance_behind, no_behind
     try:
         assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
     finally:
         reconcilemod.reconcile = saved
         reconcilemod.derive_origin = saved_origin
+        reconcilemod.advance_behind = saved_behind
 
 
 def test_a_failing_origin_sweep_does_not_take_the_backstop_down():
@@ -1697,6 +1703,64 @@ def test_reconcile_reads_the_issue_from_the_branch_not_from_closes():
     assert reconcilemod.issue_number("fix/59-orphan-gap") == "59"
     assert reconcilemod.issue_number("no-issue/sweep") is None
     assert reconcilemod.issue_number("") is None
+
+
+# --------------------------------------------------------------------------
+# advance_behind — #102. Native auto-merge only advances a stale branch when
+# `allow_update_branch` is on, which this repo's protection does not set (an
+# owner setting, not ours to flip). A queued `gate:machine` PR that loses a
+# merge race sits `BEHIND` forever, reading exactly like a broken picker.
+# --------------------------------------------------------------------------
+
+class FakePrGh:
+    """A gh double for the BEHIND sweep: PRs carry mergeStateStatus and
+    autoMergeRequest; issues carry labels only."""
+
+    def __init__(self, prs, issues):
+        self.prs, self.issues = prs, issues
+        self.calls = []
+
+    def __call__(self, args):
+        self.calls.append(args)
+        if args[0] == "pr" and args[1] == "list":
+            return json.dumps(self.prs)
+        if args[0] == "pr" and args[1] == "update-branch":
+            return ""
+        if args[0] == "issue" and args[1] == "view":
+            return json.dumps(self.issues[args[2]])
+        return ""
+
+
+def _behind_pr(num=101, status="BEHIND", auto_merge=True):
+    return {"number": num, "headRefName": f"fix/{num - 1}-slug",
+            "mergeStateStatus": status,
+            "autoMergeRequest": {"enabledAt": "now"} if auto_merge else None}
+
+
+def test_reconcile_updates_a_behind_gate_machine_pr():
+    pr = _behind_pr()
+    issues = {"100": {"labels": [{"name": "gate:machine"}]}}
+    gh = FakePrGh([pr], issues)
+    report = reconcilemod.advance_behind("o/r", run=gh)
+    assert report["advanced"] == [("100", "101")]
+    updates = [c for c in gh.calls if c[:2] == ["pr", "update-branch"]]
+    assert len(updates) == 1 and updates[0][2] == "101"
+
+
+def test_advance_behind_skips_dirty_no_auto_merge_and_no_auto():
+    issues = {"100": {"labels": [{"name": "gate:machine"}]}}
+    dirty = FakePrGh([_behind_pr(status="DIRTY")], issues)
+    assert reconcilemod.advance_behind("o/r", run=dirty)["advanced"] == []
+    assert not [c for c in dirty.calls if c[0] == "pr" and c[1] == "update-branch"]
+
+    no_auto_merge = FakePrGh([_behind_pr(auto_merge=False)], issues)
+    assert reconcilemod.advance_behind("o/r", run=no_auto_merge)["advanced"] == []
+    assert not [c for c in no_auto_merge.calls if c[0] == "pr" and c[1] == "update-branch"]
+
+    labelled = {"100": {"labels": [{"name": "gate:machine"}, {"name": "no-auto"}]}}
+    no_auto = FakePrGh([_behind_pr()], labelled)
+    assert reconcilemod.advance_behind("o/r", run=no_auto)["advanced"] == []
+    assert not [c for c in no_auto.calls if c[0] == "pr" and c[1] == "update-branch"]
 
 
 def test_the_reconciler_runs_on_the_digest_cadence_not_a_third_one():
