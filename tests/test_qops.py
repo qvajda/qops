@@ -1996,6 +1996,32 @@ def test_no_substrate_module_assumes_posix(needle):
     assert hits == [], f"{needle!r} in {hits}"
 
 
+def test_the_reviewer_does_not_pass_the_diff_in_argv(monkeypatch):
+    """ADR-0009 again, one layer down (#111). `subprocess.run` with a list argv
+    is the portable form for a *bounded* argument; the reviewer's prompt is not
+    one — it carries up to `MAX_DIFF` bytes of diff. Windows `CreateProcess`
+    caps a command line at 32,767 characters, so on the cron host every PR with
+    a real diff raised `WinError 206` before the model was reached, and after
+    `MAX_ATTEMPTS` the host posted *No verdict* — a reviewer that read nothing,
+    presenting as one that read and declined."""
+    cap = reviewmod.WINDOWS_CMDLINE_MAX
+    seen = {}
+
+    class _Done:
+        returncode, stdout, stderr = 0, "ok", ""
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["kw"] = argv, kw
+        return _Done()
+
+    monkeypatch.setattr(reviewmod.subprocess, "run", fake_run)
+    prompt = "x" * (cap + 1)
+    assert reviewmod.ask(prompt, REPO) == "ok"
+    assert all(len(a) <= cap for a in seen["argv"]), \
+        "the prompt reached argv, which is the WinError 206 path"
+    assert seen["kw"].get("input") == prompt
+
+
 def test_every_label_the_config_names_is_in_its_own_taxonomy():
     """`ci.status_issue_label: qops:status` lived only under `ci:`, so the
     importer never created it and the daily digest failed at 06:00 UTC for
