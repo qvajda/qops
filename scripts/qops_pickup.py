@@ -80,14 +80,17 @@ LAUNCH_TOOLS = "Read,Edit,Write,Grep,Glob,Bash"
 BLANKET_BYPASS = ("--dangerously-skip-permissions", "--dangerously-bypass-permissions")
 
 
-def candidates(root: Path) -> list[dict] | None:
-    """The eligible issues, or None when the backlog could not be read.
+def backlog(root: Path) -> list[dict] | None:
+    """Every open row, or None when the backlog could not be read.
 
     The distinction is the whole hazard: an empty list is an idle queue and a
     failed query is a broken picker, the picker exits 0 on both, and until this
     returned None they printed the same line. A repo with no labels makes the
     query itself return empty, which is the same shape one level down
     (`scripts/qops_import.py --labels` is what a fresh repo runs first).
+
+    One query per pass. The build queue and the plan queue are two filters over
+    this list (#82), not two round trips.
     """
     out = subprocess.run(
         ["gh", "issue", "list", "--state", "open", "--limit", "100",
@@ -96,7 +99,36 @@ def candidates(root: Path) -> list[dict] | None:
     if out.returncode:
         print(out.stderr.strip(), file=sys.stderr)
         return None
-    return [i for i in json.loads(out.stdout or "[]") if eligible(i)]
+    return json.loads(out.stdout or "[]")
+
+
+def candidates(root: Path) -> list[dict] | None:
+    """The rows the loop may *build*: `install.eligible()` over the backlog."""
+    rows = backlog(root)
+    return None if rows is None else [i for i in rows if eligible(i)]
+
+
+def plannable(issue: dict) -> bool:
+    """The rows the loop may *plan* (#82, ADR-0029 §1).
+
+    `state:triage` and nothing else: planning is the act that leaves triage, so
+    a row anywhere else has already had it. The filing bar is the gate — a row
+    whose body states no outcome cannot be planned into criteria, and guessing
+    at one is how a plan invents work the owner never licensed (ADR-0028).
+
+    `type:epic` is refused here rather than planned badly: an epic is where
+    direction only the owner holds gets set, so it gets an interview and then
+    #84's decomposition, never a plan instead of one (ADR-0029 §4).
+
+    `no-auto` and `blocked` veto planning for the same reason they veto
+    building — the flag says the owner is handling this one.
+    """
+    labels = {l["name"] for l in issue.get("labels", [])}
+    if "state:triage" not in labels or "type:epic" in labels:
+        return False
+    if labels & BLOCKING_FLAGS:
+        return False
+    return install.states_an_outcome(issue.get("body") or "")
 
 
 def repo_root(argv: list[str]) -> Path:
@@ -303,20 +335,24 @@ def _run(argv: list[str], root: Path) -> int:
     # which tracker were read is what separates a healthy idle queue from a
     # picker pointed at the wrong place; both of those exit 0.
     print(f"pickup-loop: root {root}, tracker {cfg.get('repo', '(none in config)')}")
-    picks = candidates(root)
-    if picks is None:
+    rows = backlog(root)
+    if rows is None:
         print("pickup-loop: could not read the backlog - nothing was picked and "
               "the queue state is UNKNOWN, which is not the same as empty.",
               file=sys.stderr)
         return 1
-    if not picks:
-        print("pickup-loop: nothing eligible (state:planned + ready:auto + a real gate).")
-        return 0
-    issue = first_launchable(root, picks)
+    picks = [i for i in rows if eligible(i)]
+    # **Building is never starved by planning** (#82). The plan pass runs only
+    # where the run would previously have stopped: nothing eligible, or nothing
+    # eligible that the launch may write.
+    issue = first_launchable(root, picks) if picks else None
     if issue is None:
-        print("pickup-loop: every eligible row names a path the launch may not "
-              "write - nothing was picked, and this is NOT an idle queue (#48).")
-        return 0
+        if not picks:
+            print("pickup-loop: nothing eligible to build (state:planned + a real gate).")
+        else:
+            print("pickup-loop: every eligible row names a path the launch may not "
+                  "write - nothing was built, and this is NOT an idle queue (#48).")
+        return _plan(argv, root, cfg, rows)
     print(f"pickup-loop: #{issue['number']} {issue['title']}")
     if "--launch" not in argv:
         print("pickup-loop: dry run, not launching. Pass --launch to start an agent.")
@@ -352,6 +388,111 @@ def _run(argv: list[str], root: Path) -> int:
             strike_out(root, num, strikes(root, num), why)
         return rc or 1
     return 0
+
+
+def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
+    """Plan one `state:triage` row, when there was nothing to build (#82).
+
+    `state:triage -> state:planned` was the last act in the chain that only an
+    owner session performed, so the queue could be full and the loop still
+    idle - which is exactly what 18 rows of `state:triage` looked like.
+
+    It is the same sortie machinery, not a second set: one root, one heartbeat,
+    one run log, the same `#49` strike budget through `release()`, and the same
+    `--launch` rule that a dry run writes nothing anywhere. It stops after one
+    row: a pass that planned the whole backlog would spend the owner's review
+    attention in a single burst, and a wrong planner would do it before anyone
+    saw the first plan.
+    """
+    row = first_plannable(root, [i for i in rows if plannable(i)])
+    if row is None:
+        print("pickup-loop: nothing to plan either - no `state:triage` row "
+              "states an outcome the planner could turn into criteria.")
+        return 0
+    num, before = str(row["number"]), row.get("body") or ""
+    print(f"pickup-loop: planning #{num} {row['title']}")
+    if "--launch" not in argv:
+        print("pickup-loop: dry run, not planning. Pass --launch to start an agent.")
+        return 0
+    log = run_log_path(root, num)
+    # The same event the build path writes, deliberately: `strikes()` counts it,
+    # so a row that cannot be planned three times over spends the same budget a
+    # row that cannot be built does, and stops the same way (#49).
+    ledger.append(root, "pickup", {"issue": num, "log": str(log), "mode": "plan"})
+    print(f"pickup-loop: run log {log}")
+    with log.open("w", encoding="utf-8", errors="replace") as fh:
+        rc = subprocess.run(plan_argv(plan_prompt(num), cfg), cwd=root,
+                            env=launch_env(), stdout=fh,
+                            stderr=subprocess.STDOUT).returncode
+    if rc or not produced_plan(root, num, before):
+        why = f"exit {rc}" if rc else "the row is still `state:triage`"
+        # `relabel=False`: nothing claimed a label here, and the build path's
+        # release writes `state:planned` - which on an unplanned row would be
+        # the loop asserting the very thing the run failed to do.
+        release(root, num, why, log, relabel=False)
+        if struck_out(root, num):
+            strike_out(root, num, strikes(root, num), why)
+        return rc or 1
+    print(f"pickup-loop: #{num} planned.")
+    return 0
+
+
+def first_plannable(root: Path, rows: list[dict]) -> dict | None:
+    """Least-recently-updated first, skipping rows that already struck out —
+    the same order and the same budget the build path uses."""
+    for row in sorted(rows, key=lambda i: i["updatedAt"]):
+        if struck_out(root, str(row["number"])):
+            print(f"pickup-loop: skipping #{row['number']} - struck out after "
+                  f"{STRIKES} failed runs (#49).")
+            continue
+        return row
+    return None
+
+
+def produced_plan(root: Path, num: str, before: str) -> bool:
+    """A plan is `state:planned` **and** a body that grew, measured after the
+    run. The label alone would score a session that relabelled and wrote
+    nothing; the body alone would score a session that appended and left the
+    row where the loop cannot reach it (CLAUDE.md: verify by measurement)."""
+    out = subprocess.run(["gh", "issue", "view", num, "--json", "labels,body"],
+                         cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if out.returncode:
+        print(f"pickup-loop: could not read #{num} back ({out.stderr.strip()}).",
+              file=sys.stderr)
+        return False
+    data = json.loads(out.stdout or "{}")
+    labels = {l["name"] for l in data.get("labels", [])}
+    return "state:planned" in labels and (data.get("body") or "") != before
+
+
+def plan_prompt(num: str) -> str:
+    """The planner's own file carries the rules (`.claude/agents/planner.md`);
+    this says which row and where to stop. The stop clause is #83's path in its
+    unbuilt form: a row it cannot plan is left alone, never guessed at."""
+    return (f"You are the planner role. Read `.claude/agents/planner.md` first "
+            f"and follow it exactly, then plan sortie #{num} on this repo's "
+            f"tracker. Append the plan to the issue body under a marker, never "
+            f"replacing what the owner wrote, and set `state:planned` when the "
+            f"plan clears the filing bar. Never write `ready:auto`, `no-auto`, "
+            f"`gate:` or `type:` - the gate and the type are already decided "
+            f"and the grant is the owner's alone. If you cannot plan the row - "
+            f"underspecified, oversized (ADR-0027), or actually a taste row - "
+            f"say so on the issue as a comment and stop. Do not guess, do not "
+            f"widen the row, and do not open a branch or a PR: this run plans, "
+            f"it does not build.")
+
+
+def plan_argv(prompt: str, cfg: dict) -> list[str]:
+    """The planner's toolset and model come from `.qops/config.yml`, which is
+    where this repo's one cost control lives (ADR-0009) - not from a second
+    copy of the roster in this file."""
+    planner = (cfg.get("agents") or {}).get("planner") or {}
+    tools = ",".join(planner.get("tools") or ["Read", "Grep", "Glob", "Bash"])
+    argv = ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
+            "--allowedTools", tools]
+    if planner.get("model"):
+        argv += ["--model", str(planner["model"])]
+    return argv
 
 
 BRANCH_PREFIXES = ("feat", "fix", "docs", "chore", "refactor", "test")
@@ -436,7 +577,8 @@ def run_log_path(root: Path, num: str) -> Path:
 RELEASE_TAIL_CHARS = 4000  # bounded so a session that printed a megabyte cannot post it
 
 
-def release(root: Path, num: str, why: str, log: Path | None = None) -> None:
+def release(root: Path, num: str, why: str, log: Path | None = None,
+            relabel: bool = True) -> None:
     """The claim is not a one-way door. A failed run puts the sortie back where
     the next fire can reach it and says why (CLAUDE.md, GL-46).
 
@@ -454,11 +596,16 @@ def release(root: Path, num: str, why: str, log: Path | None = None) -> None:
     writing one resets the count to zero - it disarms #49's three-strike budget
     and the row is re-picked hourly, forever, which is the failure that budget
     exists to stop. The comment is the report; the ledger row is the state.
+
+    `relabel=False` is the plan pass (#82): nothing there claimed a label, and
+    writing `state:planned` on a row whose planning run just failed would be
+    the loop asserting the one thing that run did not do.
     """
-    subprocess.run(["gh", "issue", "edit", num,
-                    "--remove-label", "state:building",
-                    "--add-label", "state:planned"],
-                   cwd=root, capture_output=True, text=True)
+    if relabel:
+        subprocess.run(["gh", "issue", "edit", num,
+                        "--remove-label", "state:building",
+                        "--add-label", "state:planned"],
+                       cwd=root, capture_output=True, text=True)
     marker = f"pickup-loop: run {log.name} produced nothing" if log else \
              "pickup-loop: unattended run produced nothing"
     if log:
