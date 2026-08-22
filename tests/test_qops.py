@@ -1869,6 +1869,50 @@ def test_reconcile_updates_a_behind_gate_machine_pr():
     assert len(updates) == 1 and updates[0][2] == "101"
 
 
+def test_an_update_branch_refusal_is_a_skip_not_a_failure():
+    """#117. `updatePullRequestBranch` refuses `github-actions[bot]`, and every
+    rendered workflow authenticates as exactly that — so on this repo the sweep
+    could never succeed, failed the `reconcile` job on every run, and commented
+    the same sentence onto the row each pass (8 of them across #110 and #86
+    before this was caught).
+
+    A refusal is not an outage: it will not change until a token does. So it is
+    a skip that names the token, silent on the row. Every other exception stays
+    a failure and still comments — this narrows one error class, it does not
+    soften the rule."""
+    issues = {"100": {"labels": [{"name": "gate:machine"}]}}
+
+    class Refuses(FakePrGh):
+        def __call__(self, args):
+            if args[:2] == ["pr", "update-branch"]:
+                raise RuntimeError(
+                    "gh pr update-branch 101 --repo o/r: GraphQL: "
+                    "github-actions[bot] does not have permission to update "
+                    "this pull request. (updatePullRequestBranch)")
+            return super().__call__(args)
+
+    gh = Refuses([_behind_pr()], issues)
+    report = reconcilemod.advance_behind("o/r", run=gh)
+    assert report["failed"] == [], report
+    assert [i for i, _ in report["skipped"]] == ["100"], report
+    assert "QOPS_AGENT_TOKEN" in report["skipped"][0][1], report
+    # Silent on the row: the comment is what made this cost the tracker.
+    assert not [c for c in gh.calls if c[:2] == ["issue", "comment"]], gh.calls
+
+    # A transient error on the same call is still a failure, and still says so
+    # on the row. Classifying that as a skip would turn an outage into silence.
+    class Breaks(FakePrGh):
+        def __call__(self, args):
+            if args[:2] == ["pr", "update-branch"]:
+                raise RuntimeError("gh pr update-branch 101: HTTP 502")
+            return super().__call__(args)
+
+    broke = Breaks([_behind_pr()], issues)
+    report = reconcilemod.advance_behind("o/r", run=broke)
+    assert [i for i, _ in report["failed"]] == ["100"], report
+    assert [c for c in broke.calls if c[:2] == ["issue", "comment"]]
+
+
 def test_advance_behind_skips_dirty_no_auto_merge_and_no_auto():
     issues = {"100": {"labels": [{"name": "gate:machine"}]}}
     dirty = FakePrGh([_behind_pr(status="DIRTY")], issues)

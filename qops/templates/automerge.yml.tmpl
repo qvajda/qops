@@ -208,7 +208,24 @@ jobs:
       issues: write
       pull-requests: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The only job that reads a PAT, and only because one sweep needs an
+      # authority `GITHUB_TOKEN` does not have: `updatePullRequestBranch`
+      # refuses `github-actions[bot]` outright, so `advance_behind` (#107)
+      # could never clear a stranded `BEHIND` PR under the default identity
+      # (#117).
+      #
+      # **Optional by construction.** Absent the secret this resolves to
+      # `GITHUB_TOKEN` and the job authenticates exactly as it did before, so a
+      # repo shaped unlike this one installs unchanged (ADR-0024) - it simply
+      # does not get the BEHIND sweep, and `qops reconcile` says so as a skip
+      # rather than failing the run.
+      #
+      # A fine-grained PAT names its repositories, so this is minted per repo:
+      # Contents, Pull requests and Issues write, and **no administration**
+      # (ADR-0016 finding B8 - an agent identity that could edit protection
+      # settings would route around the decision those settings encode).
+      # Updating a branch is not approving a PR; bot approval stays refused.
+      GH_TOKEN: ${{ secrets.QOPS_AGENT_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
