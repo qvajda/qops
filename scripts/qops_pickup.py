@@ -446,6 +446,15 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
         rc = subprocess.run(plan_argv(prompt, cfg), cwd=root,
                             env=launch_env(), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
+    if not rc and clarified(root, cfg, num):
+        # Not a failure, and deliberately not a strike: a row the planner
+        # honestly could not plan has not refused three sessions, it has ended
+        # its own path in one. `strikes()` reads a `pickup` with no release
+        # after it as a run that worked, which is what this was.
+        print(f"pickup-loop: #{num} could not be planned - a clarification was "
+              f"filed against it and the row is `state:blocked`.")
+        ledger.append(root, "pickup_clarified", {"issue": num})
+        return 0
     if rc or not produced_plan(root, num, before):
         why = f"exit {rc}" if rc else "the row is still `state:triage`"
         # `relabel=False`: nothing claimed a label here, and the build path's
@@ -525,10 +534,51 @@ def produced_plan(root: Path, num: str, before: str) -> bool:
     return "state:planned" in labels and (data.get("body") or "") != before
 
 
+def clarified(root: Path, cfg: dict, num: str) -> bool:
+    """Whether the planner ended this row's path by filing a clarification
+    against it (#83, ADR-0029 §5).
+
+    **Read off the tracker, never off the planner's prose.** A decline parsed
+    out of a comment is the guess this row exists to refuse, and it is the one
+    thing a wrong planner could forge by wording. Two tracker facts, both
+    written by the planner and both checkable: the row is `state:blocked`, and
+    it has at least one sub-issue. Either alone is not it - `state:blocked`
+    with no child is a row blocked on something else, and a child under a row
+    still in triage is a decomposition, not a clarification.
+
+    A row that says nothing (no repo in config, an unreadable tracker) is not
+    clarified, and the caller's release path then writes the state and the
+    reason - so an outage reads as the failed run it was, never as a decline.
+    """
+    repo = cfg.get("repo")
+    if not repo:
+        return False
+    out = subprocess.run(["gh", "issue", "view", num, "--json", "labels"],
+                         cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if out.returncode:
+        print(f"pickup-loop: could not read #{num} back ({out.stderr.strip()}).",
+              file=sys.stderr)
+        return False
+    labels = {l["name"] for l in json.loads(out.stdout or "{}").get("labels", [])}
+    if "state:blocked" not in labels:
+        return False
+    # The native sub-issue link, the same edge `qops reconcile` derives the
+    # child's licence across (#81) - so the clarification inherits the parent's
+    # `origin:` with no second label edit anywhere.
+    kids = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/sub_issues"],
+                          cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if kids.returncode:
+        print(f"pickup-loop: could not read #{num}'s sub-issues "
+              f"({kids.stderr.strip()}).", file=sys.stderr)
+        return False
+    return bool(json.loads(kids.stdout or "[]"))
+
+
 def plan_prompt(num: str, outcomes: list[dict] | None = None) -> str:
     """The planner's own file carries the rules (`.claude/agents/planner.md`);
-    this says which row and where to stop. The stop clause is #83's path in its
-    unbuilt form: a row it cannot plan is left alone, never guessed at.
+    this says which row and where to stop. The unplannable clause names the
+    filing, not the judgement - the role file holds what a clarification must
+    contain, and `clarified()` reads the tracker state it leaves behind.
 
     `outcomes` (#86) is how its previous plans fared - read, not edited: it is
     told, it does not go back and revise a row it planned before."""
@@ -540,9 +590,10 @@ def plan_prompt(num: str, outcomes: list[dict] | None = None) -> str:
               f"`gate:` or `type:` - the gate and the type are already decided "
               f"and the grant is the owner's alone. If you cannot plan the row - "
               f"underspecified, oversized (ADR-0027), or actually a taste row - "
-              f"say so on the issue as a comment and stop. Do not guess, do not "
-              f"widen the row, and do not open a branch or a PR: this run plans, "
-              f"it does not build.")
+              f"follow `## When you cannot plan the row` in your role file: file "
+              f"the clarification, link it, block the row, and stop. Do not "
+              f"guess, do not widen the row, and do not open a branch or a PR: "
+              f"this run plans, it does not build.")
     if outcomes:
         recent = "; ".join(f"#{o['issue']}: {o['why']}" for o in outcomes)
         prompt += (f" Recent plans of yours struck out under #49 - {recent}. "

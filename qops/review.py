@@ -56,6 +56,10 @@ MARKER = "<!-- qops-reviewer:"
 # and a PR can sit open for days waiting on the owner, so an unbounded retry is
 # one model call an hour, forever, on a failure that will not fix itself.
 MAX_ATTEMPTS = 3
+# Windows `CreateProcess` refuses a command line past this with `WinError 206`,
+# which is what a 60KB diff in argv hit on the cron host (#111). Named here so
+# the test can assert the boundary rather than restate the number.
+WINDOWS_CMDLINE_MAX = 32_767
 
 _PROMPT = """You are reviewing one pull request against the issue it implements.
 
@@ -190,9 +194,16 @@ def ask(prompt: str, root: Path) -> str:
     """`claude -p` on the host's subscription — the same path
     `scripts/qops_pickup.py:launch_argv` uses. No tools are granted: this reads
     a diff that is already in the prompt, and a reviewer that can run commands
-    is a wider grant than a reviewer needs."""
-    out = subprocess.run(["claude", "-p", prompt, "--allowedTools", ""],
-                         cwd=root, capture_output=True, text=True,
+    is a wider grant than a reviewer needs.
+
+    **The prompt goes on stdin, not in argv** (#111). It carries up to
+    `MAX_DIFF` bytes of diff, and `WINDOWS_CMDLINE_MAX` is the cap the cron
+    host's `CreateProcess` enforces — so an argv prompt failed every PR with a
+    real diff before the model was reached. `launch_argv` and `plan_argv` keep
+    their argv prompts: those are fixed template strings, bounded and far
+    under the cap, and the defect is the unbounded text, not the call."""
+    out = subprocess.run(["claude", "-p", "--allowedTools", ""],
+                         cwd=root, input=prompt, capture_output=True, text=True,
                          encoding="utf-8", errors="replace", timeout=600)
     if out.returncode:
         raise RuntimeError(out.stderr.strip() or f"claude exited {out.returncode}")
