@@ -1233,20 +1233,25 @@ def test_no_branch_and_no_pr_is_a_failed_run(monkeypatch):
     """The 62-second run exited 0. Exit code alone would have kept the claim."""
     monkeypatch.setattr(qops_pickup.subprocess, "run",
                         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
-    assert qops_pickup.produced_work(REPO, "999999") is False
+    before = {"commits": set(), "prs": set()}
+    assert qops_pickup.produced_work(REPO, "999999", before) is False
 
 
-def _fake_git(branches: str, ahead: str, prs: str = "[]"):
-    """A subprocess double for produced_work's three shell-outs."""
+def _fake_git(branches: str, commits: str, prs: str = "[]"):
+    """A subprocess double for launch_evidence's three shell-outs. `commits` is
+    `git rev-list`'s stdout: one SHA per line, empty for a branch with none."""
     def run(cmd, **kw):
         if cmd[:2] == ["git", "branch"]:
             out = branches
         elif cmd[:2] == ["git", "rev-list"]:
-            out = ahead
+            out = commits
         else:
             out = prs
         return subprocess.CompletedProcess(cmd, 0, out, "")
     return run
+
+
+EMPTY_EVIDENCE = {"commits": set(), "prs": set()}
 
 
 def test_an_empty_branch_is_not_work(monkeypatch):
@@ -1255,21 +1260,54 @@ def test_an_empty_branch_is_not_work(monkeypatch):
     The branch existed and pointed at master's tip, so this returned True, the
     claim was never released and the issue said nothing was wrong."""
     monkeypatch.setattr(qops_pickup.subprocess, "run",
-                        _fake_git("fix/71-modifier-class-schema\n", "0"))
-    assert qops_pickup.produced_work(REPO, "71") is False
+                        _fake_git("fix/71-modifier-class-schema\n", ""))
+    assert qops_pickup.produced_work(REPO, "71", EMPTY_EVIDENCE) is False
 
 
 def test_a_branch_with_a_commit_is_work(monkeypatch):
     monkeypatch.setattr(qops_pickup.subprocess, "run",
-                        _fake_git("fix/71-modifier-class-schema\n", "1"))
-    assert qops_pickup.produced_work(REPO, "71") is True
+                        _fake_git("fix/71-modifier-class-schema\n", "abc123\n"))
+    assert qops_pickup.produced_work(REPO, "71", EMPTY_EVIDENCE) is True
 
 
 def test_an_empty_branch_with_a_pr_is_still_work(monkeypatch):
     """The commit may live only on the remote. A PR is evidence either way."""
     monkeypatch.setattr(qops_pickup.subprocess, "run",
-                        _fake_git("fix/71-x\n", "0", prs='[{"number": 161}]'))
-    assert qops_pickup.produced_work(REPO, "71") is True
+                        _fake_git("fix/71-x\n", "", prs='[{"number": 161}]'))
+    assert qops_pickup.produced_work(REPO, "71", EMPTY_EVIDENCE) is True
+
+
+def test_a_stale_merged_branch_is_not_this_run_s_work(monkeypatch):
+    """#8: a squash-merged sortie's commits stay reachable from its branch
+    forever, so a run that re-picks the same issue and writes nothing must not
+    score the old branch as this run's work."""
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        _fake_git("fix/71-x\n", "abc123\n"))
+    before = {"commits": {"abc123"}, "prs": set()}
+    assert qops_pickup.produced_work(REPO, "71", before) is False
+
+
+def test_a_stale_merged_branch_plus_a_new_commit_is_work(monkeypatch):
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        _fake_git("fix/71-x\n", "abc123\ndef456\n"))
+    before = {"commits": {"abc123"}, "prs": set()}
+    assert qops_pickup.produced_work(REPO, "71", before) is True
+
+
+def test_a_pr_that_predates_the_claim_is_not_this_run_s_work(monkeypatch):
+    """The PR fallback has the same shape as the branch case: a merged PR from
+    a previous attempt must not count again."""
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        _fake_git("", "", prs='[{"number": 161}]'))
+    before = {"commits": set(), "prs": {161}}
+    assert qops_pickup.produced_work(REPO, "71", before) is False
+
+
+def test_a_pr_opened_by_this_run_is_work(monkeypatch):
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        _fake_git("", "", prs='[{"number": 161}]'))
+    before = {"commits": set(), "prs": set()}
+    assert qops_pickup.produced_work(REPO, "71", before) is True
 
 
 def test_the_launch_prompt_forbids_waiting_on_a_backgrounded_command():
@@ -1358,6 +1396,7 @@ def test_the_loop_plans_when_it_has_nothing_to_build(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup, "launch_argv",
                         lambda prompt: launched.append(prompt) or ["true"])
     monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: True)
+    monkeypatch.setattr(qops_pickup, "launch_evidence", lambda *a, **k: {})
     monkeypatch.setattr(qops_pickup, "produced_work", lambda *a, **k: True)
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
     monkeypatch.setattr(qops_pickup.subprocess, "run",
@@ -3094,7 +3133,7 @@ def test_the_log_does_not_change_what_counts_as_a_failed_run():
     and an empty branch scoring as success is how two sorties died silently."""
     src = (REPO / "scripts" / "qops_pickup.py").read_text(encoding="utf-8")
     launch = src[src.index("def main("):]
-    assert "produced_work(root, num)" in launch
+    assert "produced_work(root, num, before)" in launch
     assert "rev-list" in src or "produced_work" in src
 
 
