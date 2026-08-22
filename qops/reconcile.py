@@ -131,6 +131,57 @@ def merged_prs(repo: str, limit: int, run=gh) -> list[dict]:
     return json.loads(out or "[]")
 
 
+def open_prs(repo: str, limit: int, run=gh) -> list[dict]:
+    out = run(["pr", "list", "--repo", repo, "--state", "open",
+               "--limit", str(limit), "--json",
+               "number,headRefName,mergeStateStatus,autoMergeRequest"])
+    return json.loads(out or "[]")
+
+
+def advance_behind(repo: str, limit: int = 50, run=gh) -> dict:
+    """#102: GitHub's native auto-merge only advances a stale branch when the
+    repo has `allow_update_branch` on, which this repo does not (an owner
+    setting, not ours to flip). A queued `gate:machine` PR that loses a merge
+    race to a sibling sortie is `BEHIND` forever otherwise - not failing, not
+    blocked, raising no signal. `DIRTY` is a human's; `BEHIND` is the only
+    case this advances.
+    """
+    report = {"advanced": [], "skipped": [], "failed": []}
+    for pr in open_prs(repo, limit, run=run):
+        num, branch = pr.get("number"), pr.get("headRefName", "")
+        issue = issue_number(branch)
+        if not issue:
+            report["skipped"].append((str(num), "branch names no issue"))
+            continue
+        if pr.get("mergeStateStatus") != "BEHIND":
+            report["skipped"].append((issue, "not BEHIND"))
+            continue
+        if not pr.get("autoMergeRequest"):
+            report["skipped"].append((issue, "auto-merge not enabled"))
+            continue
+        try:
+            data = json.loads(run(["issue", "view", issue, "--repo", repo,
+                                   "--json", "labels"]))
+            labels = {l["name"] for l in data.get("labels", [])}
+            if "gate:machine" not in labels:
+                report["skipped"].append((issue, "not gate:machine"))
+                continue
+            if "no-auto" in labels:
+                report["skipped"].append((issue, "no-auto"))
+                continue
+            run(["pr", "update-branch", str(num), "--repo", repo])
+            report["advanced"].append((issue, str(num)))
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            try:
+                run(["issue", "comment", issue, "--repo", repo, "--body",
+                     f"`qops reconcile` could not update-branch PR #{num} "
+                     f"(`{branch}`), stuck `BEHIND`: `{exc}`"])
+            except Exception:  # noqa: BLE001 - the report is the fallback
+                pass
+            report["failed"].append((issue, str(exc)))
+    return report
+
+
 def _closeable(labels: set[str]) -> bool:
     """ADR-0025: the gate already judged this row, so closing it judges
     nothing new. `gate:taste` and `no-auto` both withhold that."""
@@ -236,7 +287,13 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     if report["failed"]:
         for issue, why in report["failed"]:
             print(f"FAILED #{issue}: {why}", file=sys.stderr)
-    # Either sweep failing fails the run, once, after both have finished. The
-    # origin sweep must not stop the backstop, and must not pass silently
+    behind_report = advance_behind(repo, limit=limit)
+    for issue, pr in behind_report["advanced"]:
+        print(f"update-branch #{issue}: PR #{pr} was BEHIND")
+    for issue, why in behind_report["failed"]:
+        print(f"BEHIND FAILED #{issue}: {why}", file=sys.stderr)
+    # Either sweep failing fails the run, once, after all three have finished.
+    # The origin sweep must not stop the backstop, and must not pass silently
     # either.
-    return 1 if report["failed"] or origin_report["failed"] else 0
+    return 1 if (report["failed"] or origin_report["failed"]
+                 or behind_report["failed"]) else 0
