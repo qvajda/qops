@@ -1287,6 +1287,57 @@ def test_a_closed_blocker_line_is_struck_not_left_to_the_owner():
     assert report["struck"] == [("105", ["103"])]
 
 
+def test_a_blocker_claim_followed_by_prose_is_still_struck():
+    """#128. The shipped matcher anchored the claim to end-of-line, so it only
+    ever fired on a bare `Blocked by #103`. Every real row in this repo writes
+    it as a sentence — `**Blocked by #83.** There is nothing to clear yet` —
+    which the anchor excluded, so the sweep skipped #85 with `no Blocked by
+    line` while `qops doctor` reported that very line as stale. Two matchers
+    for one claim form, disagreeing.
+
+    Only the claim span is struck; the prose after it is the owner's and is
+    left byte-identical."""
+    body = ("## Scope\n\n**Blocked by #83.** There is nothing to clear until "
+            "clarifications exist.\n\nmore prose\n")
+    edits = []
+
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 85, "body": body,
+                                "labels": [{"name": "state:triage"}]}])
+        if args[:2] == ["issue", "view"] and args[2] == "83":
+            return json.dumps({"state": "CLOSED"})
+        if args[:2] == ["issue", "edit"]:
+            edits.append(args)
+            return ""
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.strike_stale_blockers("o/r", run=run)
+    assert report["struck"] == [("85", ["83"])], report
+    new_body = edits[0][edits[0].index("--body") + 1]
+    assert "~~" in new_body
+    # The sentence the claim opened is the owner's prose and survives whole.
+    assert "There is nothing to clear until clarifications exist." in new_body
+    assert new_body.startswith("## Scope\n\n") and new_body.endswith("more prose\n")
+    # And a second pass finds nothing left to strike.
+    assert not BLOCKED_BY_LINE_matches(new_body)
+
+
+def BLOCKED_BY_LINE_matches(body):
+    return [m.group(0) for m in reconcilemod.BLOCKED_BY_LINE.finditer(body)]
+
+
+def test_a_body_that_only_discusses_a_blocker_is_never_struck():
+    """#92's own false positive, kept as a guard: this repo's history quotes a
+    run log saying `> #82 blocked by #80` and cites blockers mid-sentence.
+    Neither is a row declaring a dependency, and relaxing the end anchor must
+    not relax the start one."""
+    for line in ("> #82 blocked by #80",
+                 "as #92 showed, blocked by #80 is prose",
+                 "see the note about being blocked by #80 here"):
+        assert not BLOCKED_BY_LINE_matches(line), line
+
+
 def test_a_partially_closed_blocker_line_is_left_untouched():
     def run(args):
         if args[:2] == ["issue", "list"]:

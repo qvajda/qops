@@ -187,8 +187,16 @@ def unblock_stale(repo: str, limit: int = 50, run=gh) -> dict:
 # *discusses* a blocker (quoting `> #82 blocked by #80` mid-sentence) never
 # matches. `~~` sits outside doctor's `[*_]{0,2}` prefix class, so a struck
 # line stops matching without doctor needing a second form.
+# #128: the claim, not the whole line. The first version anchored to `$`, so it
+# only ever matched a bare `Blocked by #103` occupying a line by itself — and
+# every row in this repo writes the claim as a sentence
+# (`**Blocked by #83.** There is nothing to clear yet`). The sweep therefore
+# skipped the one live row it existed for while doctor reported that same line
+# as stale. The start anchor is what keeps #92's false positives out, and it is
+# unchanged; only the end anchor goes, so the prose after the claim is left
+# exactly as the owner wrote it.
 BLOCKED_BY_LINE = re.compile(
-    r"^(?P<line>[ \t]*[*_]{0,2}Blocked by\s+(?:#\d+\s*,?\s*)+[*_]{0,2})[ \t]*$",
+    r"^[ \t]*(?P<line>[*_]{0,2}Blocked by\s+#\d+(?:[ \t]*,[ \t]*#\d+)*\.?[*_]{0,2})",
     re.I | re.M)
 
 # Same exemption `install.py::_BLOCKER_EXEMPT` makes: a finished row's history
