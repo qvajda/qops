@@ -1550,6 +1550,110 @@ def test_the_planner_launch_reads_its_toolset_from_the_config(tmp_path):
         assert flag not in argv
 
 
+# --------------------------------------------------------------------------
+# #84 / ADR-0029 §4 — the loop decomposes an interviewed epic when it has
+# nothing to build or plan. The interview stays the owner's; the trigger for
+# decomposition is a fact on the row (an ADR the body names that actually
+# exists), not the `type:epic` label existing on its own.
+# --------------------------------------------------------------------------
+
+_INTERVIEWED_EPIC_BODY = (
+    "A big goal. Interviewed in docs/adr/0029-the-loop-plans-what-the-"
+    "owner-licensed.md.\n")
+
+
+def _with_adr(root):
+    """A tmp root carrying the one ADR file `_INTERVIEWED_EPIC_BODY` names,
+    so `interviewed()` finds the fact it looks for without touching REPO."""
+    adr = root / "docs" / "adr"
+    adr.mkdir(parents=True, exist_ok=True)
+    (adr / "0029-the-loop-plans-what-the-owner-licensed.md").write_text(
+        "stub\n", encoding="utf-8")
+    return root
+
+
+def test_an_epic_with_no_record_of_an_interview_is_not_decomposed():
+    uninterviewed = _row(20, extra=("type:epic",), body="A big goal, no ADR.")
+    assert not qops_pickup.interviewed(REPO, uninterviewed)
+    assert not qops_pickup.decomposable(REPO, uninterviewed)
+
+
+def test_an_interviewed_epic_is_decomposable_and_a_planned_row_is_not():
+    epic = _row(21, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+    assert qops_pickup.interviewed(REPO, epic)
+    assert qops_pickup.decomposable(REPO, epic)
+    not_an_epic = _row(22, body=_INTERVIEWED_EPIC_BODY)
+    assert not qops_pickup.decomposable(REPO, not_an_epic)
+    blocked = _row(23, extra=("type:epic", "no-auto"), body=_INTERVIEWED_EPIC_BODY)
+    assert not qops_pickup.decomposable(REPO, blocked)
+
+
+def test_a_reference_to_an_adr_that_does_not_exist_is_not_an_interview_record():
+    epic = _row(24, extra=("type:epic",),
+               body="Interviewed in docs/adr/9999-does-not-exist.md.")
+    assert not qops_pickup.interviewed(REPO, epic)
+
+
+def test_an_interviewed_epic_decomposes_into_sorties(tmp_path, monkeypatch):
+    """One pass files an interviewed epic's children as sub-issues, only when
+    there is nothing to build and nothing to plan - the same fallback order
+    `_plan()` already uses for the plan pass, one step further."""
+    root = _with_adr(_root(tmp_path))
+    decomposed = []
+    monkeypatch.setattr(qops_pickup, "plan_argv",
+                        lambda prompt, cfg: decomposed.append(prompt) or ["true"])
+    monkeypatch.setattr(qops_pickup, "sub_issue_count", lambda *a, **k: 0)
+    monkeypatch.setattr(qops_pickup, "produced_children", lambda *a, **k: True)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+
+    epic = _row(25, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [epic])
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert len(decomposed) == 1 and "#25" in decomposed[0], decomposed
+
+    # A row to build still wins: the decompose pass never runs.
+    decomposed.clear()
+    buildable = _row(26, state="state:planned", extra=("ready:auto",),
+                     body="## Acceptance\n- `tests/test_qops.py::test_x` passes.\n")
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [epic, buildable])
+    monkeypatch.setattr(qops_pickup, "launch_evidence", lambda *a, **k: {})
+    monkeypatch.setattr(qops_pickup, "produced_work", lambda *a, **k: True)
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert decomposed == []
+
+
+def test_a_second_pass_over_the_same_epic_files_no_duplicate_children(monkeypatch):
+    """`first_decomposable()` skips an epic that already has a native
+    sub-issue - the dedup that stops a second pass re-filing children."""
+    epic = _row(27, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+    monkeypatch.setattr(qops_pickup, "sub_issue_count", lambda *a, **k: 1)
+    assert qops_pickup.first_decomposable(REPO, "o/r", [epic]) is None
+
+
+def test_a_failed_decompose_does_not_touch_the_epics_labels(tmp_path, monkeypatch):
+    """Decomposition never claims a state label on the epic - it stays
+    untouched apart from the links (ADR-0029 §4), so `relabel=False` on
+    release, same as a failed plan."""
+    root = _with_adr(_root(tmp_path))
+    calls = []
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
+    monkeypatch.setattr(qops_pickup, "sub_issue_count", lambda *a, **k: 0)
+    monkeypatch.setattr(qops_pickup, "produced_children", lambda *a, **k: False)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    epic = _row(28, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [epic])
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 1
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert not any("--add-label" in c for c in edits), edits
+    assert qops_pickup.strikes(root, "28") == 1
+
+
 def test_an_unreadable_queue_fails_the_run_and_an_empty_one_does_not(tmp_path, monkeypatch):
     root = _root(tmp_path)
     # `backlog()` is the seam since #82: one query, two filters over it.
