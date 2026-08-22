@@ -441,8 +441,9 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     # row that cannot be built does, and stops the same way (#49).
     ledger.append(root, "pickup", {"issue": num, "log": str(log), "mode": "plan"})
     print(f"pickup-loop: run log {log}")
+    prompt = plan_prompt(num, plan_outcomes(root))
     with log.open("w", encoding="utf-8", errors="replace") as fh:
-        rc = subprocess.run(plan_argv(plan_prompt(num), cfg), cwd=root,
+        rc = subprocess.run(plan_argv(prompt, cfg), cwd=root,
                             env=launch_env(), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     if not rc and clarified(root, cfg, num):
@@ -466,6 +467,42 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
         return rc or 1
     print(f"pickup-loop: #{num} planned.")
     return 0
+
+
+# #86 — the one correcting control (ADR-0029 §7). Bounded so a long-lived
+# repo's history cannot crowd the row being planned out of the context.
+PLAN_OUTCOMES_LIMIT = 5
+
+
+def plan_outcomes(root: Path, limit: int = PLAN_OUTCOMES_LIMIT) -> list[dict]:
+    """Recent struck-out rows attributable to a *plan* that failed, most
+    recent last, each with the reason recorded on the row (#86).
+
+    Only a `pickup_struck_out` whose runs were `pickup`s with `mode: plan`
+    says anything about the plan. A row struck out **building** - #48's
+    unwritable path, #74's broken picker - says nothing about the plan that
+    got it to `state:planned`, so it is left out: feeding the planner a
+    failure it did not cause is exactly what ADR-0029 §7 declined a threshold
+    to avoid papering over.
+
+    No new bookkeeping: `strikes()` already reads `pickup`/`pickup_release`/
+    `pickup_struck_out`, and `release()` already writes the reason to
+    `pickup_release.why`. This just reads the same records back.
+    """
+    last_mode: dict[str, str] = {}
+    last_why: dict[str, str] = {}
+    out: list[dict] = []
+    for rec in ledger.read(root):
+        num = str(rec.get("issue"))
+        event = rec.get("event")
+        if event == "pickup":
+            last_mode[num] = rec.get("mode", "")
+        elif event == "pickup_release":
+            last_why[num] = rec.get("why", "")
+        elif event == "pickup_struck_out" and last_mode.get(num) == "plan":
+            out.append({"issue": num, "why": last_why.get(num, ""),
+                        "ts": rec.get("ts", "")})
+    return out[-limit:]
 
 
 def first_plannable(root: Path, rows: list[dict]) -> dict | None:
@@ -537,23 +574,32 @@ def clarified(root: Path, cfg: dict, num: str) -> bool:
     return bool(json.loads(kids.stdout or "[]"))
 
 
-def plan_prompt(num: str) -> str:
+def plan_prompt(num: str, outcomes: list[dict] | None = None) -> str:
     """The planner's own file carries the rules (`.claude/agents/planner.md`);
     this says which row and where to stop. The unplannable clause names the
     filing, not the judgement - the role file holds what a clarification must
-    contain, and `clarified()` reads the tracker state it leaves behind."""
-    return (f"You are the planner role. Read `.claude/agents/planner.md` first "
-            f"and follow it exactly, then plan sortie #{num} on this repo's "
-            f"tracker. Append the plan to the issue body under a marker, never "
-            f"replacing what the owner wrote, and set `state:planned` when the "
-            f"plan clears the filing bar. Never write `ready:auto`, `no-auto`, "
-            f"`gate:` or `type:` - the gate and the type are already decided "
-            f"and the grant is the owner's alone. If you cannot plan the row - "
-            f"underspecified, oversized (ADR-0027), or actually a taste row - "
-            f"follow `## When you cannot plan the row` in your role file: file "
-            f"the clarification, link it, block the row, and stop. Do not "
-            f"guess, do not widen the row, and do not open a branch or a PR: "
-            f"this run plans, it does not build.")
+    contain, and `clarified()` reads the tracker state it leaves behind.
+
+    `outcomes` (#86) is how its previous plans fared - read, not edited: it is
+    told, it does not go back and revise a row it planned before."""
+    prompt = (f"You are the planner role. Read `.claude/agents/planner.md` first "
+              f"and follow it exactly, then plan sortie #{num} on this repo's "
+              f"tracker. Append the plan to the issue body under a marker, never "
+              f"replacing what the owner wrote, and set `state:planned` when the "
+              f"plan clears the filing bar. Never write `ready:auto`, `no-auto`, "
+              f"`gate:` or `type:` - the gate and the type are already decided "
+              f"and the grant is the owner's alone. If you cannot plan the row - "
+              f"underspecified, oversized (ADR-0027), or actually a taste row - "
+              f"follow `## When you cannot plan the row` in your role file: file "
+              f"the clarification, link it, block the row, and stop. Do not "
+              f"guess, do not widen the row, and do not open a branch or a PR: "
+              f"this run plans, it does not build.")
+    if outcomes:
+        recent = "; ".join(f"#{o['issue']}: {o['why']}" for o in outcomes)
+        prompt += (f" Recent plans of yours struck out under #49 - {recent}. "
+                   f"Weigh why before planning this row the same way; you are "
+                   f"not asked to revise those rows, only to not repeat it.")
+    return prompt
 
 
 def plan_argv(prompt: str, cfg: dict) -> list[str]:
