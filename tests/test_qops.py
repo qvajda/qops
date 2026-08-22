@@ -3208,6 +3208,66 @@ def test_striking_out_is_loud_and_says_it_is_a_widening(monkeypatch, tmp_path):
     assert "owner" in flat.lower()
 
 
+def test_the_planner_is_told_how_its_previous_plans_fared(tmp_path):
+    """#86 — the one correcting control (ADR-0029 §7). A planner run whose
+    repo has struck-out *plans* receives them and their recorded reasons; a
+    run with none receives nothing and is unchanged. A row struck out
+    *building* - not planning - says nothing about the plan and is left out,
+    and no row is edited by this path."""
+    d = tmp_path / ".qops"
+    d.mkdir()
+    records = []
+
+    def strike(num, why, mode="plan"):
+        for _ in range(qops_pickup.STRIKES):
+            records.append({"ts": "2026-08-20T00:00:00+00:00", "event": "pickup",
+                            "issue": str(num), "mode": mode})
+            records.append({"ts": "2026-08-20T00:00:00+00:00",
+                            "event": "pickup_release", "issue": str(num),
+                            "why": why})
+        records.append({"ts": "2026-08-20T00:00:00+00:00",
+                        "event": "pickup_struck_out", "issue": str(num)})
+
+    strike(11, "the row is still `state:triage`")
+    strike(47, "no commit and no PR", mode="")  # struck out building, not planning
+    (d / "ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    outcomes = qops_pickup.plan_outcomes(tmp_path)
+    assert outcomes == [{"issue": "11", "why": "the row is still `state:triage`",
+                         "ts": "2026-08-20T00:00:00+00:00"}]
+
+    prompt = qops_pickup.plan_prompt("99", outcomes)
+    assert "#11" in prompt and "state:triage" in prompt
+    assert "#47" not in prompt
+
+    assert qops_pickup.plan_prompt("99", []) == qops_pickup.plan_prompt("99", None)
+    assert "struck out" not in qops_pickup.plan_prompt("99", None)
+
+
+def test_plan_outcomes_are_bounded(tmp_path):
+    """Bounded to a stated number of recent outcomes, asserted, so it cannot
+    grow into the context budget the way a full history would."""
+    d = tmp_path / ".qops"
+    d.mkdir()
+    records = []
+    for num in range(qops_pickup.PLAN_OUTCOMES_LIMIT + 3):
+        for _ in range(qops_pickup.STRIKES):
+            records.append({"ts": "2026-08-20T00:00:00+00:00", "event": "pickup",
+                            "issue": str(num), "mode": "plan"})
+            records.append({"ts": "2026-08-20T00:00:00+00:00",
+                            "event": "pickup_release", "issue": str(num),
+                            "why": "the row is still `state:triage`"})
+        records.append({"ts": "2026-08-20T00:00:00+00:00",
+                        "event": "pickup_struck_out", "issue": str(num)})
+    (d / "ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+    outcomes = qops_pickup.plan_outcomes(tmp_path)
+    assert len(outcomes) == qops_pickup.PLAN_OUTCOMES_LIMIT
+    assert outcomes[-1]["issue"] == str(qops_pickup.PLAN_OUTCOMES_LIMIT + 2)
+
+
 class _Ok:
     returncode = 0
     stdout = ""
