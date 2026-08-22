@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO))
 
 from qops import config as qconfig  # noqa: E402
 from qops import review as reviewmod  # noqa: E402
-from qops import guard, install, ledger, metrics, brief as briefmod  # noqa: E402
+from qops import guard, init as initmod, install, ledger, metrics, brief as briefmod  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -3482,3 +3482,61 @@ def test_migrate_main_dispatches_the_three_flags(tmp_path, capsys):
         assert m.main([], tmp_path, cfg) == 2
     finally:
         m.gh = orig
+
+
+# --------------------------------------------------------------------------
+# init — #104. `qops init` in an empty folder scaffolds the five mechanical
+# preconditions docs/reference/qops-contract.md names; `qops doctor` there
+# must then report only the three owner/machine ones, by name (ADR-0024: by
+# execution, not by inspecting the template).
+# --------------------------------------------------------------------------
+
+def test_init_refuses_a_repo_that_already_has_a_config(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    (tmp_path / ".qops" / "config.yml").write_text("project: x\n",
+                                                    encoding="utf-8")
+    rc = initmod.main(["--project", "x", "--repo", "a/b", "--python", "python3"],
+                      tmp_path, {})
+    assert rc == 2
+
+
+def test_init_missing_flags_refuses_without_a_tty(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    rc = initmod.main(["--project", "x"], tmp_path, {})
+    assert rc == 2
+    assert not (tmp_path / ".qops" / "config.yml").exists()
+
+
+def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(tmp_path):
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-init-104-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+
+    for expect in (".qops/config.yml", "CLAUDE.md", ".claude/settings.json",
+                  "skills-lock.json", ".claude/skills/interview/SKILL.md",
+                  ".claude/skills/spec-to-issue/SKILL.md",
+                  ".claude/skills/triage/SKILL.md"):
+        assert (tmp_path / expect).exists(), f"{expect} not written"
+    for name in install.WORKFLOWS:
+        assert (tmp_path / ".github" / "workflows" / name).exists()
+
+    cfg = qconfig.load(tmp_path)
+    assert install.drift(tmp_path, cfg) == []
+    assert install.skill_drift(tmp_path, cfg) == []
+    assert install.undeclared_labels(cfg) == []
+
+    problems = install.doctor(tmp_path, cfg)
+    assert len(problems) == 3, problems
+    assert any("branch protection" in p for p in problems)
+    assert any("auto-merge" in p for p in problems)
+    assert any("workspace has not been trusted" in p for p in problems)
+
+
+def test_init_prints_the_contracts_owner_only_next_steps():
+    text = initmod.NEXT_STEPS
+    for phrase in ("qops_import.py --labels", "/interview",
+                  "branch protection", "Allow auto-merge",
+                  "Automatically delete head branches", "trust this workspace",
+                  "enable the loop"):
+        assert phrase in text, f"{phrase!r} missing from the printed next steps"

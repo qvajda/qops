@@ -1,10 +1,11 @@
-"""qops — the per-project ways-of-working layer. One CLI, nine verbs.
+"""qops — the per-project ways-of-working layer. One CLI, ten verbs.
 
     qops brief      what a session gets at SessionStart, <=400 tokens
     qops ledger     append a session event (hook payload on stdin)
     qops resume     print or regenerate .qops/resume.md
     qops guard      PreToolUse hook; `qops guard scan` is the CI half
     qops close      close a sortie: label state:done and close the issue
+    qops init       scaffold a blank repo to a clean doctor
     qops install    render .github/workflows from templates + .qops/config.yml
     qops doctor     detect drift, broken doc links, an uninstalled hook
     qops metrics    S1/S2/S4/S9/S10; --state regenerates the PRD §1 table
@@ -16,7 +17,7 @@
 import sys
 from pathlib import Path
 
-from . import (brief, close, config, guard, install, ledger, metrics,
+from . import (brief, close, config, guard, init, install, ledger, metrics,
                migrate, reconcile, review)
 
 VERBS = {
@@ -25,6 +26,7 @@ VERBS = {
     "resume": (ledger.resume_main, "print .qops/resume.md; --write regenerates"),
     "guard": (guard.main, "PreToolUse hook; `scan` greps the tree for tripwires"),
     "close": (close.main, "close a sortie issue and label it state:done"),
+    "init": (init.main, "scaffold a blank repo to a clean doctor"),
     "install": (install.main, "render .github/workflows/ from the config"),
     "doctor": (install.doctor_main, "drift, broken doc links, hooks, hot-path cap"),
     "review": (review.main, "does the PR's diff serve its row's stated outcome"),
@@ -32,6 +34,10 @@ VERBS = {
     "reconcile": (reconcile.main, "advance merged sorties whose row is not state:done"),
     "migrate": (migrate.main, "--dry-run/--execute/--verify a taxonomy migration"),
 }
+
+# init runs before any .qops/config.yml exists — the one verb that must not
+# have the root walked or the config loaded before its own main runs.
+NO_CONFIG = {"init"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     if "--help" in rest or "-h" in rest:
         print(f"qops {verb} — {help_text}")
         return 0
+    if verb in NO_CONFIG:
+        return fn(rest, Path.cwd(), {})
     root = config.find_root()
     try:
         return fn(rest, root, config.load(root))

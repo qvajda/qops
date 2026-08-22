@@ -649,6 +649,74 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
     return []
 
 
+# The three preconditions items 6-8 of docs/reference/qops-contract.md name as
+# the owner's or the machine's, never the package's — `doctor` only ever reads
+# them here, never writes them.
+def owner_preconditions(root: Path, cfg: dict) -> list[str]:
+    """Branch protection, auto-merge settings, and workspace trust.
+
+    Each is checked best-effort and counted a problem on anything short of a
+    confirmed yes — `gh` missing, unauthenticated, or the repo not existing
+    yet are exactly the states a fresh repo is in, and they must read the same
+    as a checked "no" rather than being silently skipped (contrast
+    `open_issues`, which is right to skip: those invariants are read from a
+    tracker this instrument already trusts to exist).
+    """
+    root = Path(root)
+    problems = []
+    repo = cfg.get("repo")
+    branch = cfg.get("default_branch", "master")
+
+    protected = False
+    auto_merge_ready = False
+    if repo:
+        try:
+            p = subprocess.run(
+                ["gh", "api", f"repos/{repo}/branches/{branch}/protection"],
+                capture_output=True, text=True, timeout=15)
+            if p.returncode == 0:
+                data = json.loads(p.stdout)
+                checks = data.get("required_status_checks") or {}
+                contexts = set(checks.get("contexts") or [])
+                contexts |= {c.get("context") for c in checks.get("checks", [])}
+                protected = any("gate" in (c or "") for c in contexts)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            pass
+        try:
+            p = subprocess.run(["gh", "api", f"repos/{repo}"],
+                               capture_output=True, text=True, timeout=15)
+            if p.returncode == 0:
+                data = json.loads(p.stdout)
+                auto_merge_ready = bool(data.get("allow_auto_merge")) and \
+                    bool(data.get("delete_branch_on_merge"))
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            pass
+
+    if not protected:
+        problems.append(
+            f"branch protection on {branch} with the gate as a required "
+            f"status check is not confirmed — the owner's to set (contract #6)")
+    if not auto_merge_ready:
+        problems.append(
+            "\"Allow auto-merge\" and \"Automatically delete head branches\" "
+            "are not both confirmed on — the owner's to set (contract #7)")
+
+    trusted = False
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.exists():
+        try:
+            data = json.loads(claude_json.read_text(encoding="utf-8"))
+            entry = (data.get("projects") or {}).get(str(root)) or {}
+            trusted = bool(entry.get("hasTrustDialogAccepted"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    if not trusted:
+        problems.append(
+            "the workspace has not been trusted here yet — run Claude Code "
+            "interactively in this folder once (contract #8)")
+    return problems
+
+
 def open_issues(cfg: dict) -> list[dict] | None:
     """The tracker's open issues, or None with a printed reason.
 
@@ -753,6 +821,7 @@ def doctor(root: Path, cfg: dict) -> list[str]:
     n = len((Path(root) / "CLAUDE.md").read_text(encoding="utf-8").splitlines())
     if n > cfg["claude_md_max_lines"]:
         problems.append(f"CLAUDE.md is {n} lines, cap is {cfg['claude_md_max_lines']}")
+    problems += owner_preconditions(root, cfg)
     return problems
 
 

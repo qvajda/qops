@@ -1,0 +1,95 @@
+# qops project configuration — TRACKED.
+#
+# This file is the ONLY place a project specific may live. The CLI, the hooks
+# and the rendered workflows read it; none of them carries a project name, a
+# path, an interpreter or a threshold of its own. Read
+# docs/reference/qops-contract.md (in the qops repo) for what every key means.
+#
+# Written by `qops init`. Nothing here is final — edit it and re-run
+# `qops install` to re-render the workflows.
+
+project: {{project}}
+repo: {{repo}}
+default_branch: {{default_branch}}
+
+# The interpreter the hooks and the shims invoke (ADR-0009).
+python: {{python}}
+python_posix: python3
+
+# --- guard -------------------------------------------------------------
+protected_branches: [{{default_branch}}]
+max_worktrees: 2
+tripwires: []
+scan_exclude:
+  - CLAUDE.md
+  - README.md
+  - docs/
+
+# --- portability ---------------------------------------------------------
+portability_forbidden: []
+
+# --- skills (ADR-0018) -----------------------------------------------------
+skills:
+  native: [interview, spec-to-issue, triage]
+  external: []
+
+# --- hot path --------------------------------------------------------------
+claude_md_max_lines: 150
+doc_link_roots: []
+
+# --- CI --------------------------------------------------------------------
+ci:
+  python_version: '3.12'
+  test_command: python -m pytest -q
+  gate_command: python -m pytest -q
+  runs_on: ubuntu-latest
+  digest_cron: '0 6 * * *'
+  digest_posts_on_schedule: true
+  groom_cron: '0 5 * * 1'
+  status_issue_label: 'qops:status'
+
+# --- agents ------------------------------------------------------------
+# effort: start high, drop where quality holds, xhigh only for demanding
+# agentic work.
+agents:
+  planner:
+    model: opus
+    effort: high
+    tools: [Read, Grep, Glob, Bash, WebFetch]
+  coder:
+    model: sonnet
+    effort: medium
+    tools: [Read, Edit, Write, Grep, Glob, Bash]
+  reviewer:
+    model: sonnet
+    effort: high
+    tools: [Read, Grep, Glob, Bash]
+  scribe:
+    model: haiku
+    effort: low
+    tools: [Read, Edit, Write, Bash]
+  triager:
+    model: sonnet
+    effort: low
+    tools: [Bash, Read, Grep]
+  interactor:
+    model: haiku
+    effort: low
+    tools: [Bash, Read]
+delegation_cap: 1
+
+# --- taxonomy ----------------------------------------------------------
+# Every label named anywhere else in this file must appear here.
+labels:
+  type: [epic, research, code, manual, test, decision]
+  state: [triage, planned, building, gate, review, blocked, done, cancelled]
+  mission: [core]
+  gate: [machine, taste, none]
+  origin: [owner, agent, pending]
+  flags: [ready:auto, no-auto, fork, budget:approved, qops:status]
+
+milestones: [core]
+
+validate:
+  require_on_open: [type, state, gate, origin]
+  forbid_at_import: [ready:auto]

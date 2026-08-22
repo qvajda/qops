@@ -119,8 +119,9 @@ malformed or refused.
 | `resume` | `--write`, `--quiet` | Prints `.qops/resume.md`; `--write` regenerates. | 0 |
 | `guard` | none = PreToolUse hook (payload on stdin); `scan` = the CI half | Hook: **2 blocks the call**. Scan: greps the tracked tree. | hook 0/2; scan 0/1 |
 | `close` | `<issue>…` `[--comment TEXT]` | Labels `state:done`, closes, writes the ledger. | 0/1; 2 if no issue given |
+| `init` | `--project`, `--repo`, `--python`, `--default-branch` (prompted if a flag is missing and stdin is a tty) | Scaffolds a blank repo: writes `.qops/config.yml`, `CLAUDE.md`, `.claude/settings.json`, the three native skills, `skills-lock.json`, then renders the workflows. Refuses if `.qops/config.yml` already exists. Prints the preconditions it cannot satisfy itself. | 0; 2 if `.qops/config.yml` exists or a required value is missing |
 | `install` | — | Renders all seven workflows from the templates + config. | 0 |
-| `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, and the open-issue invariants. | 0/1 |
+| `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, the three owner/machine preconditions (branch protection, auto-merge settings, workspace trust — best-effort, and anything short of a confirmed yes counts as a problem), and the open-issue invariants. | 0/1 |
 | `metrics` | `--state`, `--json`, `--since D`, `--until D` | S1–S13; `--state` writes the state-report table. | 0/1 |
 | `reconcile` | `--limit N` | Advances the row of every merged sortie whose issue is not `state:done`. | 0/1; 2 if no `repo:` |
 | `migrate` | `--dry-run` \| `--execute` \| `--verify` | `--dry-run` reads open rows and writes `.qops/migrate-plan.json`, touching no issue. `--execute` applies that plan whole or not at all, refusing if the corpus moved since. `--verify` re-reads the tracker and asserts every planned row landed (ADR-0030). | 0/1; 2 if no `repo:` or no flag given |
@@ -155,6 +156,9 @@ Two scripts sit outside the CLI, both rooted the same way:
    `skills-lock.json` ref per external;
 4. the seven workflows rendered — `qops install`;
 5. the label taxonomy created — `python scripts/qops_import.py --labels`.
+
+`qops init` writes 1-4 in an empty folder and renders the workflows; it cannot
+do 5, because the labels live on a GitHub repo that has to exist first.
 
 And two settings that are the repo owner's, not the package's, without which
 `automerge-loop` cannot do its job:
