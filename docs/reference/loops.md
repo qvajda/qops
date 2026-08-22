@@ -236,6 +236,12 @@ waited on an approval nobody was there to give. Three repairs:
 - **The claim is released on failure.** A non-zero exit, *or* an exit with no
   branch and no PR, reverts `state:building` → `state:planned` and comments why.
   The 62-second run exited 0, so exit code alone would have kept the door shut.
+  **Amended 2026-08-22 (#93):** the comment now carries the tail of that run's
+  log (bounded by `RELEASE_TAIL_CHARS`), not just the reason and the log path —
+  #82 burned all three strikes silently, and the one thing that explained the
+  refusal never left the host until then. Deduped like `report_unlaunchable()`:
+  a marker names the run's log, and a retry that fails the same way twice still
+  gets two comments, because it is two runs.
 - **No sandbox escape unattended.** The denied session retried with
   `dangerouslyDisableSandbox`. The launch sets `QOPS_UNATTENDED=1` and `qops
   guard` refuses that flag when it is set. An owner at a keyboard may still

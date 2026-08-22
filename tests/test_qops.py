@@ -2913,6 +2913,46 @@ def test_a_launched_run_leaves_a_readable_log_the_release_names(monkeypatch, tmp
     assert log.name in body, "the release must name where the account is"
 
 
+def test_a_run_that_produced_nothing_says_so_on_the_row(monkeypatch, tmp_path):
+    """#93 — the owner heard nothing until the third strike, because the run's
+    own account never left the host. `release()` now attaches the log tail,
+    bounded by `RELEASE_TAIL_CHARS`, and skips a second copy for a run already
+    reported."""
+    (tmp_path / ".qops").mkdir()
+    log = qops_pickup.run_log_path(tmp_path, "82")
+    log.write_text("x" * (qops_pickup.RELEASE_TAIL_CHARS * 3) + "TAIL END",
+                    encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup.ledger, "append", lambda *a, **k: None)
+
+    qops_pickup.release(tmp_path, "82", "no commit and no PR", log)
+
+    comment = next(c for c in calls if c[:3] == ["gh", "issue", "comment"])
+    posted = comment[-1]
+    assert "no commit and no PR" in posted
+    assert str(log) in posted
+    assert "TAIL END" in posted
+    assert len(posted) < qops_pickup.RELEASE_TAIL_CHARS + 500
+
+    # Same run, already reported: the marker is in the tracker's comments.
+    calls.clear()
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(
+                            cmd, 0, posted, "") if cmd[:3] == ["gh", "issue", "view"]
+                        else calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    qops_pickup.release(tmp_path, "82", "no commit and no PR", log)
+    assert not any(c[:3] == ["gh", "issue", "comment"] for c in calls)
+
+
 def test_the_run_log_directory_is_ignored_by_git():
     """This repo is public (ADR-0022) and the log is a transcript of an
     unattended session. `.gitignore` enumerates `.qops/` paths one by one, so a
