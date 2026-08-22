@@ -2592,6 +2592,46 @@ def test_a_closed_blocker_in_the_body_is_a_contradiction():
     problems = install.issue_invariants(fixture("state:done", body), cfg)
     assert not any(contradiction in p for p in problems), problems
 
+    # One problem per blocker, not one per mention. #92's own body named the
+    # same blocker twice and `doctor` said the same sentence twice.
+    twice = body + "\n\nBlocked by #80 still, as of today.\n"
+    problems = install.issue_invariants(fixture("state:planned", twice), cfg)
+    assert len([p for p in problems if contradiction in p]) == 1, problems
+
+
+def test_only_a_claimed_blocker_counts_not_a_quoted_one():
+    """This check's own row was its first false positive: #92's body *cites*
+    #82's prose mid-sentence and *quotes* a run log saying `#82 blocked by
+    #80`. A body that discusses a blocker does not have one, so the claim is
+    read from the start of a line, through markdown emphasis and nothing else."""
+    cfg = qconfig.load(REPO)
+    prose = ("A row's blocker lives in its body as prose (`**Blocked by #80**` "
+             "in #82's body), and nothing makes it false again.\n"
+             "> `#82 blocked by #80. #80 still OPEN`\n\n"
+             "Acceptance: `doctor` says so.\n")
+    row = [{"number": 92, "body": prose,
+            "labels": [{"name": "type:code"}, {"name": "state:planned"},
+                       {"name": "gate:machine"}, {"name": "origin:owner"}]}]
+    assert not any("Blocked by" in p
+                   for p in install.issue_invariants(row, cfg)), row
+
+
+def test_the_blocker_check_does_not_run_on_a_scoped_doctor():
+    """`_rows_in_scope` hands a PR its own row and nothing else (#63), so on
+    the merge path *every* blocker a row names would read as closed. That is
+    how this check failed its own PR (#94). The daily sweep sees the whole
+    tracker, and a stale blocker costs unattended sessions, not a merge."""
+    cfg = qconfig.load(REPO)
+    row = [{"number": 82,
+            "body": "**Blocked by #80**\n\nAcceptance: it merges.\n",
+            "labels": [{"name": "type:code"}, {"name": "state:planned"},
+                       {"name": "gate:machine"}, {"name": "origin:owner"}]}]
+    assert any("Blocked by #80" in p
+               for p in install.issue_invariants(row, cfg, tracker_wide=True))
+    assert not any("Blocked by #80" in p
+                   for p in install.issue_invariants(row, cfg,
+                                                     tracker_wide=False))
+
 
 # --------------------------------------------------------------------------
 # #44 — the gate evaluates the invariants instead of skipping them. PR #43's
