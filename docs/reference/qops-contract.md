@@ -123,6 +123,7 @@ malformed or refused.
 | `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, and the open-issue invariants. | 0/1 |
 | `metrics` | `--state`, `--json`, `--since D`, `--until D` | S1–S13; `--state` writes the state-report table. | 0/1 |
 | `reconcile` | `--limit N` | Advances the row of every merged sortie whose issue is not `state:done`. | 0/1; 2 if no `repo:` |
+| `migrate` | `--dry-run` \| `--execute` \| `--verify` | `--dry-run` reads open rows and writes `.qops/migrate-plan.json`, touching no issue. `--execute` applies that plan whole or not at all, refusing if the corpus moved since. `--verify` re-reads the tracker and asserts every planned row landed (ADR-0030). | 0/1; 2 if no `repo:` or no flag given |
 | `review` | —; reads `PR_NUMBER` + `PR_HEAD_SHA` | The CI half of the reviewer gate: reads the host's verdict comment for **this** head SHA. Calls no model, needs no secret. Every non-verdict outcome is green and says why. | 0; **1 only on `does-not-serve`** |
 
 Two scripts sit outside the CLI, both rooted the same way:

@@ -2295,6 +2295,15 @@ def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
     assert "fetch-tags: true" in rendered, "checkout fetches no tags"
 
 
+def test_brief_reports_the_same_version_pyproject_declares():
+    """#103: an editable install's egg-info goes stale the moment
+    pyproject.toml is hand-edited without a reinstall — this repo showed
+    `importlib.metadata` reporting 0.1.0 while pyproject.toml already said
+    0.2.0. `qops_version(root)` must read the tree it is asked about, not
+    whatever was true at the last `pip install -e .`."""
+    assert briefmod.qops_version(REPO) == _declared_version()
+
+
 # --------------------------------------------------------------------------
 # ADR-0026 — the gate says one thing, and the other two concerns have their own
 # carriers. R3's default inverted on the evidence in docs/2026-08-20-gate-audit.md
@@ -3335,3 +3344,141 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
     assert "#57" in problems[0]
     assert ".claude/agents/triager.md" in problems[0]
     assert not any("#13" in p or "#70" in p or "#42" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# migrate — #103. `install.issue_invariants` reports a row missing `origin:`,
+# a `gate:`, or ADR-0028's outcome statement; this is what fixes it, and
+# ADR-0030 says nothing is written to the tracker until the owner has read
+# one diff. Fixture-driven throughout: `propose()` is pure, and `dry_run` /
+# `execute` / `verify` take an injected `run` the same way reconcile does.
+# --------------------------------------------------------------------------
+
+from qops import migrate as migratemod  # noqa: E402
+
+
+class FakeMigrateGh:
+    """Holds open issues by number; `edit --body`/`--add-label` mutate them
+    in place, so a second call sees the first call's effect."""
+
+    def __init__(self, issues):
+        self.issues = {str(i["number"]): i for i in issues}
+        self.calls = []
+
+    def _list(self):
+        return json.dumps(list(self.issues.values()))
+
+    def __call__(self, args):
+        self.calls.append(args)
+        if args[:2] == ["issue", "list"]:
+            return self._list()
+        if args[:2] == ["issue", "edit"]:
+            num = args[2]
+            issue = self.issues[num]
+            names = {l["name"] for l in issue["labels"]}
+            i = 0
+            while i < len(args):
+                if args[i] == "--add-label":
+                    names.add(args[i + 1])
+                elif args[i] == "--remove-label":
+                    names.discard(args[i + 1])
+                elif args[i] == "--body":
+                    issue["body"] = args[i + 1]
+                i += 1
+            issue["labels"] = [{"name": n} for n in sorted(names)]
+            return ""
+        raise AssertionError(f"unexpected gh call: {args}")
+
+
+def _undermigrated_row(number=200):
+    return {"number": number, "body": "no acceptance here",
+            "labels": [{"name": "state:planned"}, {"name": "type:code"}]}
+
+
+def test_migrate_propose_names_missing_origin_gate_and_outcome():
+    plan = migratemod.propose([_undermigrated_row()])
+    row = plan["rows"][0]
+    assert set(row["add_labels"]) == {"origin:pending", "gate:machine"}
+    assert row["body"] is not None and "## Acceptance" in row["body"]
+    assert row["disposition"] == "keep"
+
+
+def test_migrate_propose_leaves_a_compliant_row_alone():
+    compliant = {"number": 201, "labels": [{"name": "origin:owner"},
+                                           {"name": "gate:machine"}],
+                "body": "## Acceptance\n\nSomething a machine can check."}
+    plan = migratemod.propose([compliant])
+    row = plan["rows"][0]
+    assert row["add_labels"] == [] and row["body"] is None
+
+
+def test_migrate_dry_run_writes_the_plan_and_touches_no_tracker_call(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    plan = migratemod.dry_run(tmp_path, "o/r", run=gh)
+    assert migratemod.plan_path(tmp_path).exists()
+    assert plan["rows"][0]["add_labels"]
+    # Wrong if: any code path writes to the tracker during --dry-run.
+    assert all(c[:2] == ["issue", "list"] for c in gh.calls)
+    # And the tracker itself is unchanged.
+    assert gh.issues["200"]["labels"] == _undermigrated_row()["labels"]
+
+
+def test_migrate_execute_applies_the_plan_once(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", run=gh)
+    result = migratemod.execute(tmp_path, "o/r", run=gh)
+    assert result["ok"] and result["applied"] == ["200"]
+    names = {l["name"] for l in gh.issues["200"]["labels"]}
+    assert {"origin:pending", "gate:machine"} <= names
+    assert "## Acceptance" in gh.issues["200"]["body"]
+
+
+def test_migrate_execute_refuses_on_a_corpus_that_moved(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", run=gh)
+    # The corpus moves after the plan was drawn — a label edit nobody replayed.
+    gh.issues["200"]["labels"].append({"name": "no-auto"})
+    result = migratemod.execute(tmp_path, "o/r", run=gh)
+    assert not result["ok"] and result["applied"] == []
+    # Nothing was written: only the two reads (one per dry_run/execute call).
+    assert not any(c[:2] == ["issue", "edit"] for c in gh.calls)
+
+
+def test_migrate_verify_passes_after_a_full_apply(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", run=gh)
+    migratemod.execute(tmp_path, "o/r", run=gh)
+    result = migratemod.verify(tmp_path, "o/r", run=gh)
+    assert result["ok"] and result["mismatches"] == []
+
+
+def test_migrate_verify_fails_on_a_half_applied_fixture(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", run=gh)
+    migratemod.execute(tmp_path, "o/r", run=gh)
+    # Simulate a half-applied state: the label landed, the body edit did not.
+    gh.issues["200"]["body"] = "no acceptance here"
+    result = migratemod.verify(tmp_path, "o/r", run=gh)
+    assert not result["ok"]
+    assert any("body" in m for m in result["mismatches"])
+
+
+def test_migrate_main_dispatches_the_three_flags(tmp_path, capsys):
+    (tmp_path / ".qops").mkdir()
+    cfg = {"repo": "o/r"}
+    gh = FakeMigrateGh([_undermigrated_row()])
+    import qops.migrate as m
+    orig = m.gh
+    try:
+        m.gh = gh
+        assert m.main(["--dry-run"], tmp_path, cfg) == 0
+        assert m.main(["--execute"], tmp_path, cfg) == 0
+        assert m.main(["--verify"], tmp_path, cfg) == 0
+        assert m.main([], tmp_path, cfg) == 2
+    finally:
+        m.gh = orig

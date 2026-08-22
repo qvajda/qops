@@ -9,13 +9,15 @@
     qops doctor     detect drift, broken doc links, an uninstalled hook
     qops metrics    S1/S2/S4/S9/S10; --state regenerates the PRD §1 table
     qops reconcile  advance the row of every merged sortie whose PR landed
+    qops migrate    propose a taxonomy migration over open rows, apply nothing
+                    until --execute (--dry-run/--execute/--verify, ADR-0030)
 """
 
 import sys
 from pathlib import Path
 
 from . import (brief, close, config, guard, install, ledger, metrics,
-               reconcile, review)
+               migrate, reconcile, review)
 
 VERBS = {
     "brief": (brief.main, "session brief for SessionStart (<=400 tokens)"),
@@ -28,6 +30,7 @@ VERBS = {
     "review": (review.main, "does the PR's diff serve its row's stated outcome"),
     "metrics": (metrics.main, "S1/S2/S4/S9/S10; --state writes the state report"),
     "reconcile": (reconcile.main, "advance merged sorties whose row is not state:done"),
+    "migrate": (migrate.main, "--dry-run/--execute/--verify a taxonomy migration"),
 }
 
 
