@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO))
 
 from qops import config as qconfig  # noqa: E402
 from qops import review as reviewmod  # noqa: E402
-from qops import guard, install, ledger, metrics, brief as briefmod  # noqa: E402
+from qops import guard, init as initmod, install, ledger, metrics, brief as briefmod  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -3482,3 +3482,91 @@ def test_migrate_main_dispatches_the_three_flags(tmp_path, capsys):
         assert m.main([], tmp_path, cfg) == 2
     finally:
         m.gh = orig
+
+
+# --------------------------------------------------------------------------
+# init — #104. `qops init` in an empty folder scaffolds the five mechanical
+# preconditions docs/reference/qops-contract.md names; `qops doctor` there
+# must then report only the three owner/machine ones, by name (ADR-0024: by
+# execution, not by inspecting the template).
+# --------------------------------------------------------------------------
+
+def test_init_refuses_a_repo_that_already_has_a_config(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    (tmp_path / ".qops" / "config.yml").write_text("project: x\n",
+                                                    encoding="utf-8")
+    rc = initmod.main(["--project", "x", "--repo", "a/b", "--python", "python3"],
+                      tmp_path, {})
+    assert rc == 2
+
+
+def test_init_missing_flags_refuses_without_a_tty(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    rc = initmod.main(["--project", "x"], tmp_path, {})
+    assert rc == 2
+    assert not (tmp_path / ".qops" / "config.yml").exists()
+
+
+def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
+        tmp_path, monkeypatch):
+    # `doctor` reads the three only off a PR, and this suite's own gate run is
+    # on one: both refs are set for every job of a `pull_request` workflow.
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-init-104-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+
+    for expect in (".qops/config.yml", "CLAUDE.md", ".claude/settings.json",
+                  "skills-lock.json", ".claude/skills/interview/SKILL.md",
+                  ".claude/skills/spec-to-issue/SKILL.md",
+                  ".claude/skills/triage/SKILL.md"):
+        assert (tmp_path / expect).exists(), f"{expect} not written"
+    for name in install.WORKFLOWS:
+        assert (tmp_path / ".github" / "workflows" / name).exists()
+
+    cfg = qconfig.load(tmp_path)
+    assert install.drift(tmp_path, cfg) == []
+    assert install.skill_drift(tmp_path, cfg) == []
+    assert install.undeclared_labels(cfg) == []
+
+    problems = install.doctor(tmp_path, cfg)
+    assert len(problems) == 3, problems
+    assert any("branch protection" in p for p in problems)
+    assert any("auto-merge" in p for p in problems)
+    assert any("workspace has not been trusted" in p for p in problems)
+
+
+def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
+        tmp_path, monkeypatch):
+    """The three are unanswerable in `gate`, and `gate` is a required check.
+
+    A runner's token cannot read branch protection and a stateless runner has
+    no `~/.claude.json`, so all three read "not confirmed" there whatever the
+    repo is actually set to - PR #109 sat red on a `master` that had every one
+    of them on. A PR cannot fix any of them, so the branch never merges.
+    """
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-init-104-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+    cfg = qconfig.load(tmp_path)
+
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "feat/104-qops-init")
+    on_a_pr = install.doctor(tmp_path, cfg)
+    assert on_a_pr == [], on_a_pr
+
+    # Not dropped, only moved off the merge path: the instrument still reads
+    # them where they are answerable, and `init` prints them as next steps.
+    assert len(install.owner_preconditions(tmp_path, cfg)) == 3
+
+
+def test_init_prints_the_contracts_owner_only_next_steps():
+    text = initmod.NEXT_STEPS
+    for phrase in ("qops_import.py --labels", "/interview",
+                  "branch protection", "Allow auto-merge",
+                  "Automatically delete head branches", "trust this workspace",
+                  "enable the loop"):
+        assert phrase in text, f"{phrase!r} missing from the printed next steps"

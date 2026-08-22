@@ -1,0 +1,31 @@
+# {{project}}
+
+This project runs on [qops](https://github.com/qvajda/qops), a ways-of-working
+substrate: one CLI, rendered CI workflows, a label taxonomy and a session
+brief, all configured by `.qops/config.yml`.
+
+This file is hot path: it enters every session unasked, and it is capped at
+**150 lines** by `.qops/config.yml`'s `claude_md_max_lines` and by
+`groom.yml`.
+
+## Ways of working
+
+Issues are the source of truth: `gh issue list` on **{{repo}}** — `qops brief`
+names the tracker it read, every time. The issue wins over any planning
+document.
+
+Session state, the guard and the metrics are qops itself:
+`python -m qops brief|ledger|resume|guard|close|install|doctor|metrics`,
+configured entirely by `.qops/config.yml`.
+
+## Conventions
+
+- Commit type + issue number in the branch name: `<type>/<issue#>-<slug>`,
+  where type is `feat|fix|docs|chore|refactor|test`.
+- Reference code as `file:line`.
+
+<!--
+`qops init` wrote this file as a starting point. Fill in the project's own
+hard constraints, standing decisions and conventions above — this is where
+they belong, not in a planning document nobody re-reads.
+-->

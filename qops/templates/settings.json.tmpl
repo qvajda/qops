@@ -1,0 +1,81 @@
+{
+  "$comment": "qops hooks. Commands invoke `qops <verb>` and nothing else; every project specific lives in .qops/config.yml. Invoked as `python -m qops` because a bare `qops` resolves in neither cmd.exe nor git-bash without a PATH edit, and a PATH edit is a machine fact that does not belong in a committed file.",
+  "permissions": {
+    "allow": [
+      "Bash(sleep:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh label list:*)",
+      "Bash(gh api:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git worktree list:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python -m qops brief:*)",
+      "Bash(python -m qops ledger:*)",
+      "Bash(python -m qops resume:*)",
+      "Bash(python -m qops doctor:*)",
+      "Bash(python -m qops metrics:*)"
+    ],
+    "deny": [
+      "Bash(gh api -X:*)",
+      "Bash(gh api --method:*)",
+      "Bash(gh api -f:*)",
+      "Bash(gh api --field:*)",
+      "Bash(gh api -F:*)",
+      "Bash(gh api --input:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python -m qops brief" },
+          { "type": "command", "command": "python -m qops ledger session_start" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "python -m qops guard" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python -m qops ledger stop" }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python -m qops resume --write --quiet" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python -m qops resume --write --quiet" },
+          { "type": "command", "command": "python -m qops ledger session_end" }
+        ]
+      }
+    ]
+  }
+}
