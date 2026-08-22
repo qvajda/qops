@@ -3005,6 +3005,39 @@ def test_the_strike_count_is_windowed(tmp_path):
     assert qops_pickup.strikes(tmp_path, "47", now="2026-08-20T12:00:00+00:00") == 1
 
 
+def test_removing_no_auto_hands_a_struck_row_back(tmp_path):
+    """The strike-out comment promises `Remove no-auto to hand it back to the
+    loop`. struck_out() must honor that: with no-auto still on the row the
+    three-strike history stands, and once it is removed the count restarts
+    after the pickup_struck_out event rather than reading the row as struck
+    out for the rest of the window (#99)."""
+    root = _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
+                   ("pickup", 47), ("pickup_release", 47),
+                   ("pickup", 47), ("pickup_release", 47),
+                   ("pickup_struck_out", 47))
+    assert qops_pickup.struck_out(root, "47", {"no-auto"})
+    assert not qops_pickup.struck_out(root, "47", set())
+
+
+def test_a_pass_where_every_row_struck_out_names_that_as_the_reason(monkeypatch, tmp_path, capsys):
+    """Falling through to the `unwritable` message when every eligible row
+    was actually skipped as struck out names the wrong cause (#48's message
+    for #49's skip). The final line must say struck out."""
+    row = {"number": 47, "title": "struck", "updatedAt": "2026-08-20T01:00:00Z",
+           "body": "just a body", "labels": [{"name": "state:planned"},
+                                              {"name": "gate:machine"},
+                                              {"name": "ready:auto"}]}
+    _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
+           ("pickup", 47), ("pickup_release", 47),
+           ("pickup", 47), ("pickup_release", 47))
+    monkeypatch.setattr(qops_pickup, "backlog", lambda _root: [row])
+    monkeypatch.setattr(qops_pickup.qconfig, "load", lambda _root: {})
+    qops_pickup._run([], tmp_path)
+    printed = capsys.readouterr().out
+    assert "struck out" in printed
+    assert "cannot write" not in printed
+
+
 def test_striking_out_is_loud_and_says_it_is_a_widening(monkeypatch, tmp_path):
     """A machine writing no-auto is a real widening: every other no-auto in
     this substrate is the owner's. It is defensible only because the

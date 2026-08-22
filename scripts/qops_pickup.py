@@ -201,7 +201,8 @@ STRIKES = 3
 STRIKE_WINDOW_DAYS = 14
 
 
-def strikes(root: Path, num: str, now: str | None = None) -> int:
+def strikes(root: Path, num: str, labels: frozenset[str] = frozenset(),
+            now: str | None = None) -> int:
     """Consecutive failed runs on this row, most recent last.
 
     Consecutive, not cumulative: a `pickup` with no `pickup_release` after it
@@ -209,13 +210,25 @@ def strikes(root: Path, num: str, now: str | None = None) -> int:
     open - it keeps burning sessions - so the interleaved case is the one the
     tests lean on. A `pickup_skip` (#48) is not a strike: nothing was spent and
     no session ever attempted the row.
+
+    `no-auto` absent means the owner cleared a prior strike-out (#99): the
+    count then starts after the last `pickup_struck_out` event rather than
+    from the top of the ledger, so the row gets a fresh budget instead of
+    reading as struck out for the rest of `STRIKE_WINDOW_DAYS`. While
+    `no-auto` is on the row, nothing has been cleared and the full history
+    still counts.
     """
     cutoff = (datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
               ) - timedelta(days=STRIKE_WINDOW_DAYS)
+    records = [rec for rec in ledger.read(root) if str(rec.get("issue")) == str(num)]
+    if "no-auto" not in labels:
+        last_strike_out = max(
+            (i for i, rec in enumerate(records) if rec.get("event") == "pickup_struck_out"),
+            default=None)
+        if last_strike_out is not None:
+            records = records[last_strike_out + 1:]
     count, open_attempt = 0, False
-    for rec in ledger.read(root):
-        if str(rec.get("issue")) != str(num):
-            continue
+    for rec in records:
         try:
             if datetime.fromisoformat(rec["ts"]) < cutoff:
                 continue
@@ -231,8 +244,9 @@ def strikes(root: Path, num: str, now: str | None = None) -> int:
     return count
 
 
-def struck_out(root: Path, num: str, now: str | None = None) -> bool:
-    return strikes(root, num, now) >= STRIKES
+def struck_out(root: Path, num: str, labels: frozenset[str] = frozenset(),
+               now: str | None = None) -> bool:
+    return strikes(root, num, labels, now) >= STRIKES
 
 
 def strike_out(root: Path, num: str, count: int, why: str) -> None:
@@ -272,12 +286,13 @@ def first_launchable(root: Path, picks: list[dict]) -> dict | None:
     """
     for issue in sorted(picks, key=lambda i: i["updatedAt"]):
         num = str(issue["number"])
+        labels = {l["name"] for l in issue.get("labels", [])}
         # A row already struck out is skipped in silence: strike_out() said it
         # once on the row and applied `no-auto`, so this only fires in the gap
         # before that label lands, or if it was removed by hand.
-        if struck_out(root, num):
+        if struck_out(root, num, labels):
             print(f"pickup-loop: skipping #{num} - struck out after "
-                  f"{strikes(root, num)} failed runs (#49).")
+                  f"{strikes(root, num, labels)} failed runs (#49).")
             continue
         paths = unwritable(issue.get("body") or "")
         if not paths:
@@ -349,6 +364,10 @@ def _run(argv: list[str], root: Path) -> int:
     if issue is None:
         if not picks:
             print("pickup-loop: nothing eligible to build (state:planned + a real gate).")
+        elif all(struck_out(root, str(i["number"]),
+                            {l["name"] for l in i.get("labels", [])}) for i in picks):
+            print("pickup-loop: every eligible row struck out - nothing was "
+                  "built, and this is NOT an idle queue (#49).")
         else:
             print("pickup-loop: every eligible row names a path the launch may not "
                   "write - nothing was built, and this is NOT an idle queue (#48).")
@@ -385,8 +404,9 @@ def _run(argv: list[str], root: Path) -> int:
         why = f"exit {rc}" if rc else "no commit and no PR"
         release(root, num, why, log)
         # Counted after the release, so this run is included in the count.
-        if struck_out(root, num):
-            strike_out(root, num, strikes(root, num), why)
+        labels = {l["name"] for l in issue.get("labels", [])}
+        if struck_out(root, num, labels):
+            strike_out(root, num, strikes(root, num, labels), why)
         return rc or 1
     return 0
 
@@ -431,8 +451,9 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
         # release writes `state:planned` - which on an unplanned row would be
         # the loop asserting the very thing the run failed to do.
         release(root, num, why, log, relabel=False)
-        if struck_out(root, num):
-            strike_out(root, num, strikes(root, num), why)
+        labels = {l["name"] for l in row.get("labels", [])}
+        if struck_out(root, num, labels):
+            strike_out(root, num, strikes(root, num, labels), why)
         return rc or 1
     print(f"pickup-loop: #{num} planned.")
     return 0
@@ -442,7 +463,8 @@ def first_plannable(root: Path, rows: list[dict]) -> dict | None:
     """Least-recently-updated first, skipping rows that already struck out —
     the same order and the same budget the build path uses."""
     for row in sorted(rows, key=lambda i: i["updatedAt"]):
-        if struck_out(root, str(row["number"])):
+        labels = {l["name"] for l in row.get("labels", [])}
+        if struck_out(root, str(row["number"]), labels):
             print(f"pickup-loop: skipping #{row['number']} - struck out after "
                   f"{STRIKES} failed runs (#49).")
             continue
