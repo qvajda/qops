@@ -1269,6 +1269,87 @@ def test_a_row_with_no_blocked_by_line_anywhere_stays_blocked():
     assert report["skipped"] == [("9", "no Blocked by line")]
 
 
+def test_a_closed_blocker_line_is_struck_not_left_to_the_owner():
+    """#121: `Blocked by #B` with #B closed - one pass rewrites the line
+    struck-through, and the rest of the body is byte-identical."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 105, "body":
+                                "intro line\n\nBlocked by #103\n\noutro line",
+                                "labels": [{"name": "state:planned"}]}])
+        if args[:2] == ["issue", "view"] and args[2] == "103":
+            return json.dumps({"state": "CLOSED"})
+        if args[:2] == ["issue", "edit"]:
+            return ""
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.strike_stale_blockers("o/r", run=run)
+    assert report["struck"] == [("105", ["103"])]
+
+
+def test_a_partially_closed_blocker_line_is_left_untouched():
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 1, "body": "Blocked by #2, #3",
+                                "labels": [{"name": "state:planned"}]}])
+        if args[:2] == ["issue", "view"] and args[2] == "2":
+            return json.dumps({"state": "CLOSED"})
+        if args[:2] == ["issue", "view"] and args[2] == "3":
+            return json.dumps({"state": "OPEN"})
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.strike_stale_blockers("o/r", run=run)
+    assert report["struck"] == []
+    assert report["skipped"] == [("1", "blocked by open #3")]
+
+
+def test_a_no_auto_row_is_never_rewritten():
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 105, "body": "Blocked by #103",
+                                "labels": [{"name": "state:planned"},
+                                           {"name": "no-auto"}]}])
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.strike_stale_blockers("o/r", run=run)
+    assert report["struck"] == []
+    assert report["skipped"] == [("105", "no-auto")]
+
+
+def test_an_already_struck_line_is_not_rewritten_again():
+    """The strike is its own idempotence marker - a second pass changes
+    nothing."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 105, "body":
+                                "~~Blocked by #103~~ (cleared by "
+                                "`qops reconcile`: closed)",
+                                "labels": [{"name": "state:planned"}]}])
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.strike_stale_blockers("o/r", run=run)
+    assert report["struck"] == []
+    assert report["skipped"] == [("105", "no Blocked by line")]
+
+
+def test_a_body_merely_discussing_a_blocker_is_not_rewritten():
+    """A body that *cites* an issue mid-sentence or quotes a run log is not a
+    row declaring a dependency - the claim form only, anchored at line
+    start."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 92, "body":
+                                "it cites #82's prose mid-sentence and "
+                                "quotes a run log saying\n> #82 blocked "
+                                "by #80",
+                                "labels": [{"name": "state:planned"}]}])
+        raise AssertionError(f"unexpected call: {args}")
+
+    report = reconcilemod.strike_stale_blockers("o/r", run=run)
+    assert report["struck"] == []
+    assert report["skipped"] == [("92", "no Blocked by line")]
+
+
 def test_origin_pending_is_never_auto_eligible():
     """`eligible()`'s second route requires `origin:owner`; `origin:pending`
     is neither that nor `ready:auto`, so a freshly filed child is briefly

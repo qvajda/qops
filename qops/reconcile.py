@@ -180,6 +180,82 @@ def unblock_stale(repo: str, limit: int = 50, run=gh) -> dict:
     return report
 
 
+# #121: the label half (`unblock_stale`, #110) and the body half never met -
+# doctor's own check (`install.py::_BLOCKED_BY`) is a regex over the body, and
+# nothing ever rewrote it. Same claim form as doctor's: anchored at line
+# start, through nothing but markdown emphasis, so a body that merely
+# *discusses* a blocker (quoting `> #82 blocked by #80` mid-sentence) never
+# matches. `~~` sits outside doctor's `[*_]{0,2}` prefix class, so a struck
+# line stops matching without doctor needing a second form.
+BLOCKED_BY_LINE = re.compile(
+    r"^(?P<line>[ \t]*[*_]{0,2}Blocked by\s+(?:#\d+\s*,?\s*)+[*_]{0,2})[ \t]*$",
+    re.I | re.M)
+
+# Same exemption `install.py::_BLOCKER_EXEMPT` makes: a finished row's history
+# is allowed to describe what once blocked it.
+_BLOCKER_EXEMPT = ("state:done", "state:cancelled")
+
+
+def strike_stale_blockers(repo: str, limit: int = 50, run=gh) -> dict:
+    """#121: an open row's `Blocked by #B` line, once every #B it names has
+    closed, is struck through in place - never deleted, since the owner's
+    prose is evidence of what was asked (ADR-0028). A line naming several
+    issues is struck only once every one of them is closed; a partially-closed
+    line is still true and is left untouched. `no-auto` vetoes the write, same
+    as every other write in this module.
+    """
+    report = {"struck": [], "skipped": [], "failed": []}
+    out = run(["issue", "list", "--repo", repo, "--state", "open",
+               "--limit", str(limit), "--json", "number,body,labels"])
+    for item in json.loads(out or "[]"):
+        issue = str(item["number"])
+        labels = {l["name"] for l in item.get("labels", [])}
+        state = next((n for n in labels if n.startswith("state:")), None)
+        if state in _BLOCKER_EXEMPT:
+            report["skipped"].append((issue, f"{state} exempt"))
+            continue
+        if "no-auto" in labels:
+            report["skipped"].append((issue, "no-auto"))
+            continue
+        body = item.get("body") or ""
+        matches = list(BLOCKED_BY_LINE.finditer(body))
+        if not matches:
+            report["skipped"].append((issue, "no Blocked by line"))
+            continue
+        try:
+            nums = sorted(set(n for m in matches
+                              for n in re.findall(r"#(\d+)", m.group("line"))),
+                          key=int)
+            closed = set()
+            for n in nums:
+                data = json.loads(run(["issue", "view", n, "--repo", repo,
+                                       "--json", "state"]))
+                if data.get("state") == "CLOSED":
+                    closed.add(n)
+            struck_nums: list[str] = []
+
+            def replace(m: re.Match) -> str:
+                line = m.group("line")
+                line_nums = re.findall(r"#(\d+)", line)
+                if line_nums and all(n in closed for n in line_nums):
+                    struck_nums.extend(line_nums)
+                    return (f"~~{line}~~ (cleared by `qops reconcile`: "
+                            f"closed)")
+                return m.group(0)
+
+            new_body = BLOCKED_BY_LINE.sub(replace, body)
+            if not struck_nums:
+                still_open = sorted(set(nums) - closed, key=int)
+                report["skipped"].append(
+                    (issue, f"blocked by open #{', #'.join(still_open)}"))
+                continue
+            run(["issue", "edit", issue, "--repo", repo, "--body", new_body])
+            report["struck"].append((issue, struck_nums))
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            report["failed"].append((issue, str(exc)))
+    return report
+
+
 def merged_prs(repo: str, limit: int, run=gh) -> list[dict]:
     out = run(["pr", "list", "--repo", repo, "--state", "merged",
                "--limit", str(limit), "--json", "number,headRefName"])
@@ -356,6 +432,13 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"unblock skipped #{issue}: {why}")
     for issue, why in unblock_report["failed"]:
         print(f"unblock FAILED #{issue}: {why}", file=sys.stderr)
+    strike_report = strike_stale_blockers(repo, limit=limit)
+    for issue, nums in strike_report["struck"]:
+        print(f"struck #{issue}: closed #{', #'.join(nums)}")
+    for issue, why in strike_report["skipped"]:
+        print(f"strike skipped #{issue}: {why}")
+    for issue, why in strike_report["failed"]:
+        print(f"strike FAILED #{issue}: {why}", file=sys.stderr)
     report = reconcile(repo, limit=limit)
     for issue, pr in report["advanced"]:
         print(f"advanced #{issue}: PR #{pr} merged")
@@ -380,4 +463,5 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     # The origin sweep must not stop the backstop, and must not pass silently
     # either.
     return 1 if (report["failed"] or origin_report["failed"]
-                 or unblock_report["failed"] or behind_report["failed"]) else 0
+                 or unblock_report["failed"] or behind_report["failed"]
+                 or strike_report["failed"]) else 0
