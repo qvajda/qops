@@ -35,7 +35,7 @@ import pytest
 # of them changes what the code under test decides, and none of them is the
 # suite's to inherit.
 RUNNER_ENV = ("GITHUB_BASE_REF", "GITHUB_HEAD_REF", "QOPS_STRICT",
-              "QOPS_UNATTENDED", "PR_NUMBER", "PR_HEAD_SHA")
+              "QOPS_UNATTENDED", "QOPS_ROLE", "PR_NUMBER", "PR_HEAD_SHA")
 
 
 @pytest.fixture(autouse=True)

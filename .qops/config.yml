@@ -108,6 +108,10 @@ agents:
     model: opus
     effort: high
     tools: [Read, Grep, Glob, Bash, WebFetch]
+    # ADR-0033 class 3: a planner that edits the tree is a coder; the plan
+    # goes onto the row through `gh`. Belt-and-braces alongside `tools`
+    # already omitting Write/Edit - this is the P2 rendering the ADR names.
+    deny: [Write, Edit, MultiEdit, NotebookEdit]
   coder:
     model: sonnet
     effort: medium
