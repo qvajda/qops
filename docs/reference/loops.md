@@ -519,9 +519,13 @@ What follows from it:
   session by construction. Those rows are `#48`-skipped by the picker anyway,
   for the separate reason that the launch may not write `.claude/`.
 
-**What would make this wrong:** if the snapshot turns out to be per-*spawn*
-rather than per-session — refreshing on some event nobody has identified. One
-session was observed; that is the limit of the evidence.
+**Per-session, not per-spawn — confirmed 2026-08-23.** The open question was
+whether the snapshot refreshed on some unidentified event rather than at session
+start. It does not: in a fresh session, a planner spawned with no tools quoted
+the **post-#55** text for all three questions — `CLAUDE.md` for vocabulary,
+one page for `type:decision` rows only, and append-never-replace verbatim. The
+same three questions in the session that merged #55 got the pre-#55 answers. A
+restart is what refreshes it, and a restart is the only thing observed to.
 
 ## Audit
 
