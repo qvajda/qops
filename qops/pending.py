@@ -23,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import install, reconcile
+from . import install, ledger, reconcile
 
 LIMIT = 200
 
@@ -71,12 +71,42 @@ def _no_auto_reason(labels: set[str]) -> str:
     return "advancing this row"
 
 
+def is_claimed(labels: set[str]) -> bool:
+    """A live claim (ADR-0031 §3): an owner session already has this row, so
+    it is *with* him, not waiting on him. `state:building` + `no-auto`
+    together mark a build/fix session; `state:review` alone marks a review
+    one — the same pair the alerter (#120) fires on, taught here so claiming
+    a row does not create a fresh edge into its own trigger set."""
+    return (("state:building" in labels and "no-auto" in labels)
+            or "state:review" in labels)
+
+
+def _session_for_issue(root: Path, num: int) -> str | None:
+    """The most recent session whose branch names this issue
+    (`<type>/<num>-slug>`, CLAUDE.md) — read from `session_start`, the record
+    every session already writes, no new ledger flag needed."""
+    needle = f"/{num}-"
+    session = None
+    for rec in ledger.read(root):
+        if rec.get("event") == "session_start" and needle in (rec.get("branch") or ""):
+            session = rec.get("session_id")
+    return session
+
+
+def claimed_rows(root: Path, rows: list[dict]) -> list[tuple[dict, str | None]]:
+    """Rows with a live claim, each with the session holding it if known."""
+    return [(row, _session_for_issue(root, row["number"])) for row in rows
+            if is_claimed(_labels(row))]
+
+
 def waiting_on_owner(root: Path, rows: list[dict]) -> list[str]:
     """Each row that needs the owner, with the action — not just the state."""
     out = []
     for row in rows:
         num, title = row["number"], row.get("title", "")
         labels = _labels(row)
+        if is_claimed(labels):
+            continue
         if "gate:taste" in labels:
             out.append(f"#{num} {title} — gate:taste: a judgement is the deliverable")
         if "state:review" in labels:
@@ -125,6 +155,13 @@ def render(root: Path, cfg: dict) -> tuple[list[str], int]:
     lines = ["## Waiting on you"]
     owner_rows = waiting_on_owner(root, rows)
     lines += owner_rows if owner_rows else ["  nothing"]
+
+    claims = claimed_rows(root, rows)
+    if claims:
+        lines.append("## With you (already claimed)")
+        for row, session in claims:
+            who = f"session {session}" if session else "an open session"
+            lines.append(f"  #{row['number']} {row.get('title', '')} — with {who}")
 
     problems = install.doctor(root, cfg, issues=rows)
     if problems:
