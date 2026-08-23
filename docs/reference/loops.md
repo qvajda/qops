@@ -490,6 +490,39 @@ nothing.
 `--limit` window, or a hand-merge older than either mechanism ever saw, is
 otherwise indefinite, and an owner noticing is not a mechanism.
 
+## A role edit is not live until the session restarts (#57)
+
+A property of the harness, not of this repo: **role definitions under
+`.claude/agents/` are snapshotted when a session starts.** A role edited
+mid-session does not reach any subagent spawned later in that same session —
+observed 2026-08-20, right after #55 rewrote `planner.md`: a planner spawned
+afterwards quoted the pre-#55 text for all three questions put to it, with no
+file access and no tools.
+
+**Nothing in this repo can change it.** Nothing here can even see the injected
+prompt — the observation above needed a model call and a subagent willing to
+quote itself back.
+
+What follows from it:
+
+- Every role file opens by telling its agent to read the role from disk and to
+  prefer it over what it was injected with; `pickup-loop`'s launch and plan
+  prompts say the same. That is a **preference, not a control** (GL-53), and it
+  is the mitigation, not a fix.
+- A file-level assertion — and `tests/test_qops.py` is full of them — proves the
+  **file**, never the agent that is running. A green suite on a role change is
+  not evidence the behaviour changed; a restart is.
+- So a sortie that edits a role states in its acceptance that the change is not
+  observable in the session that makes it, and the planner is told to write that
+  clause.
+- A sortie that edits a role *and* is then expected to use it cannot work in one
+  session by construction. Those rows are `#48`-skipped by the picker anyway,
+  for the separate reason that the launch may not write `.claude/`.
+
+**What would make this wrong:** if the snapshot turns out to be per-*spawn*
+rather than per-session — refreshing on some event nobody has identified. One
+session was observed; that is the limit of the evidence.
+
 ## Audit
 
 Loop Doctor, 2026-08-14, once (PRD v3 Phase 4 item 10). A **design** audit —

@@ -4899,3 +4899,53 @@ def test_cli_output_survives_a_non_utf8_stdout():
     )
     assert result.returncode == 0
     assert "—".encode() in result.stdout
+
+
+# --------------------------------------------------------------------------
+# #57 - a role file edited mid-session does not reach any subagent spawned
+# later in that session: the harness snapshots role definitions when the
+# session starts. Probed directly on 2026-08-20, after #55 rewrote
+# `.claude/agents/planner.md`: a planner spawned afterwards quoted the
+# pre-#55 text for all three questions asked of it.
+#
+# Nothing in this repo can see the injected prompt, so this is a mitigation,
+# not a fix, and it is named as one. What the substrate *can* control is
+# whether the role tells its agent to look the file up, and whether the fact
+# is written where a session reads it.
+# --------------------------------------------------------------------------
+
+ROLES = ("planner", "coder", "reviewer", "scribe", "triager", "interactor")
+
+
+def test_every_role_reads_its_own_definition_before_acting():
+    """Each role file, and both prompts the picker launches with, tell the
+    agent to read the role from disk and to prefer it over what it was
+    injected with. A preference, not a control - GL-53 - which is why the
+    restart fact is recorded alongside it."""
+    for name in ROLES:
+        role = _role(name)
+        assert "read this file from disk before you act" in role, name
+        assert "the file on disk wins" in role, name
+    for prompt in (qops_pickup.launch_prompt("116"),
+                   qops_pickup.plan_prompt("116")):
+        low = " ".join(prompt.lower().split())
+        assert "read it from disk" in low
+        assert "snapshot" in low
+
+
+def test_a_role_edit_states_that_it_is_not_observable_in_its_own_session():
+    """The planner writes the acceptance criteria, so it is where the clause
+    has to land: a sortie that edits a role must say the change does not
+    take effect until a restart, or a future session reads a green suite as
+    evidence the running agent changed."""
+    role = _role("planner")
+    assert "not observable in the session that makes it" in role
+
+
+def test_loops_records_that_a_role_edit_needs_a_restart():
+    """A property of the harness, not of this repo - so it is written where
+    a session looks it up, and asserted by sentence rather than by file."""
+    loops = " ".join((REPO / "docs" / "reference" / "loops.md")
+                     .read_text(encoding="utf-8").lower().split())
+    assert "a role edit is not live until the session restarts" in loops
+    assert "nothing in this repo can change it" in loops
