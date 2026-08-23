@@ -4544,3 +4544,17 @@ def test_pending_writes_no_label_no_comment_and_no_ledger(tmp_path, monkeypatch)
     before = ledger.read(root)
     assert pendingmod.main([], root, cfg) == 0
     assert ledger.read(root) == before
+
+
+def test_cli_output_survives_a_non_utf8_stdout():
+    """Issue #143: sys.stdout.encoding is cp1252 on the cron host while the
+    13 modules' non-ASCII text (em dashes, etc.) is UTF-8 source. Force the
+    stream encoding down to cp1252 via the env var and confirm __main__
+    reconfigures it back to UTF-8 before dispatch, rather than mangling."""
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    result = subprocess.run(
+        [sys.executable, "-m", "qops", "--help"],
+        cwd=REPO, env=env, capture_output=True,
+    )
+    assert result.returncode == 0
+    assert "—".encode() in result.stdout
