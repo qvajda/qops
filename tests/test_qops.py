@@ -2646,6 +2646,31 @@ def test_other_git_roots_makes_no_subprocess_call_when_absent(monkeypatch):
                        CTX, SYNTHETIC) is not None
 
 
+def test_the_guard_judges_any_tool_that_carries_a_command():
+    """#123: a shell tool under any name still carries a `command` string -
+    `check()` must judge it the same way it judges `Bash`, with no second,
+    hand-maintained list of tool names to fall out of sync."""
+    assert guard.check("PowerShell", {"command": "git push --force origin master"},
+                       CTX, SYNTHETIC)
+    assert guard.check("Bash", {"command": "git push --force origin master"},
+                       CTX, SYNTHETIC)
+
+
+def test_a_payload_with_no_command_is_allowed_and_shells_out_to_nothing(monkeypatch):
+    """A `Read`-shaped payload has no `command` field and must not reach the
+    git subprocess path at all."""
+    monkeypatch.setattr(guard.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("shelled out")))
+    assert guard.check("Read", {"file_path": "src/x.py"}, CTX, SYNTHETIC) is None
+
+
+def test_check_contains_no_literal_bash_comparison():
+    """The next shell tool needs no edit here (#123)."""
+    import inspect
+    src = inspect.getsource(guard.check)
+    assert '"Bash"' not in src and "'Bash'" not in src
+
+
 def test_the_importer_taxonomy_parser_matches_the_yaml():
     """`qops_import.load_taxonomy()` re-reads the config with regexes rather
     than a YAML parser, and it is what `--labels` creates. If it silently drops
