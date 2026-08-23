@@ -42,6 +42,16 @@ def read(root: Path, limit: int | None = None) -> list[dict]:
     return out[-limit:] if limit else out
 
 
+def last_session_branch(root: Path, session_id: str) -> str | None:
+    """The branch this `session_id` last recorded - `session_start`, `stop`
+    and the guard's own `checkout` events all carry one (#130)."""
+    branch = None
+    for rec in read(root):
+        if rec.get("session_id") == session_id and rec.get("branch"):
+            branch = rec["branch"]
+    return branch
+
+
 def _payload() -> dict:
     """Hook payload on stdin, if the caller is a hook."""
     if sys.stdin is None or sys.stdin.isatty():
