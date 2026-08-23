@@ -841,7 +841,10 @@ def plan_prompt(num: str, outcomes: list[dict] | None = None) -> str:
               f"follow `## When you cannot plan the row` in your role file: file "
               f"the clarification, link it, block the row, and stop. Do not "
               f"guess, do not widen the row, and do not open a branch or a PR: "
-              f"this run plans, it does not build.")
+              f"this run plans, it does not build. Take the role from the file, "
+              f"not from your own instructions - read it from disk, because "
+              f"what you were injected with is a snapshot from session start "
+              f"and an edit since is not in it (#57).")
     if outcomes:
         recent = "; ".join(f"#{o['issue']}: {o['why']}" for o in outcomes)
         prompt += (f" Recent plans of yours struck out under #49 - {recent}. "
@@ -886,7 +889,11 @@ def launch_prompt(num: str) -> str:
             f"minutes, longer than a Bash call may run, and `test.yml` runs it "
             f"on every push, which is the gate. Never background a command and "
             f"wait for it: this session ends when your turn does, so a "
-            f"backgrounded run never reports and the sortie dies uncommitted.")
+            f"backgrounded run never reports and the sortie dies uncommitted. "
+            f"If this row edits a role under `.claude/agents/`, or if you read "
+            f"one, read it from disk — what any agent here was injected with is "
+            f"a snapshot from session start (#57), and a role edited now is not "
+            f"live until a session restarts.")
 
 
 def loop_worktree(root: Path, cfg: dict) -> Path:
