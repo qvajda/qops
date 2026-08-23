@@ -245,6 +245,58 @@ def test_guard_allows_branching_before_writing_on_master():
     assert guard.check("Bash", {"command": cmd}, CTX, SYNTHETIC) is None
 
 
+# --- #130: HEAD can move under a session with no act of its own ------------
+
+def test_a_head_that_moved_under_the_session_is_refused():
+    """pickup-loop branched under the session; it kept believing it was on
+    master and branched again off the wrong base (#130)."""
+    ctx = {"branch": "fix/121-strike-stale-blocker-body", "worktrees": 1,
+           "session_branch": "master"}
+    cmd = "git checkout -b fix/128-x"
+    reason = guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC)
+    assert reason and "master" in reason and "fix/121-strike-stale-blocker-body" in reason
+
+
+def test_guard_allows_branching_when_head_matches_the_session_record():
+    ctx = {"branch": "master", "worktrees": 1, "session_branch": "master"}
+    cmd = "git checkout -b fix/128-x"
+    assert guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC) is None
+
+
+def test_guard_allows_a_checkout_the_session_made_itself():
+    """A session is not refused for a move it made itself."""
+    ctx = {"branch": "fix/121-x", "worktrees": 1, "session_branch": "fix/121-x"}
+    cmd = "git checkout fix/121-x"
+    assert guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC) is None
+
+
+def test_guard_allows_a_moved_head_with_no_prior_session_record():
+    """No ledger event for this session_id yet - nothing to have diverged
+    from, so a first command is not refused."""
+    ctx = {"branch": "fix/121-x", "worktrees": 1, "session_branch": None}
+    cmd = "git checkout -b fix/128-x"
+    assert guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC) is None
+
+
+def test_a_moved_head_does_not_block_a_command_that_is_not_a_checkout():
+    """The guard is scoped to branch-creating/switching commands (ADR-0027
+    scope note) - a moved HEAD does not block ordinary work too."""
+    ctx = {"branch": "fix/121-x", "worktrees": 1, "session_branch": "master"}
+    assert guard.check("Bash", {"command": "git status"}, ctx, SYNTHETIC) is None
+
+
+def test_ledger_last_session_branch_reads_this_sessions_latest(tmp_path):
+    ledger.append(tmp_path, "session_start",
+                  {"session_id": "s1", "branch": "master"})
+    ledger.append(tmp_path, "session_start",
+                  {"session_id": "s2", "branch": "other-branch"})
+    ledger.append(tmp_path, "checkout",
+                  {"session_id": "s1", "branch": "fix/121-x"})
+    assert ledger.last_session_branch(tmp_path, "s1") == "fix/121-x"
+    assert ledger.last_session_branch(tmp_path, "s2") == "other-branch"
+    assert ledger.last_session_branch(tmp_path, "unknown") is None
+
+
 # --------------------------------------------------------------------------
 # ledger + resume
 # --------------------------------------------------------------------------

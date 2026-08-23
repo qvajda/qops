@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import config
+from . import config, ledger
 
 # git subcommands that write to the current branch
 _WRITES = {"commit", "push", "merge", "rebase"}
@@ -116,6 +116,62 @@ def git_commands(toks: list[str]) -> list[tuple[str, list[str], str | None]]:
             args.append(a)
         found.append((toks[j], args, cpath))
     return found
+
+
+def checkout_target(verb: str, args: list[str]) -> str | None:
+    """The branch a `checkout`/`switch` lands on, read plainly off its args.
+
+    The first token that is not a flag and not a `--` path separator is the
+    branch, whether it followed `-b`/`-c`/`-B`/`-C` or stood alone. `switch -`
+    (the previous branch) and other relative forms resolve to nothing here -
+    skipping them leaves the next comparison honest instead of recording a
+    guess (#130).
+    """
+    if verb not in ("checkout", "switch"):
+        return None
+    for a in args:
+        if a == "--":
+            return None
+        if a == "-" or a.startswith("-"):
+            continue
+        return a
+    return None
+
+
+def self_checkout(toks: list[str]) -> str | None:
+    """The branch this session's own command would land HEAD on, if any -
+    the last `checkout`/`switch` among possibly several chained commands,
+    skipping any judged by another root's HEAD (#130)."""
+    target = None
+    for verb, args, cpath in git_commands(toks):
+        if cpath:
+            continue
+        found = checkout_target(verb, args)
+        if found:
+            target = found
+    return target
+
+
+def head_moved_refusal(toks: list[str], ctx: dict) -> str | None:
+    """HEAD can move under a session with no act of its own - another
+    actor's checkout, a rebase in another tool, a script (#130). Before a
+    branch-creating or branch-switching command, refuse if HEAD no longer
+    matches the branch this session itself last recorded in the ledger.
+
+    A session's own earlier checkout is recorded right here in `hook()`, so
+    it is not a divergence - only a move this session did not make is. No
+    prior record for this session (`session_branch` absent) allows through:
+    a first command has nothing to have diverged from.
+    """
+    session_branch = ctx.get("session_branch")
+    branch = ctx.get("branch") or ""
+    if not session_branch or session_branch == branch:
+        return None
+    if not any(verb in ("checkout", "switch") for verb, _, _ in git_commands(toks)):
+        return None
+    return (f"HEAD moved under this session: last recorded on `{session_branch}`, "
+            f"now on `{branch}`. Something else moved the tree - re-read it "
+            f"(git status) before branching.")
 
 
 def issue_filings(toks: list[str]) -> list[list[str]]:
@@ -308,7 +364,8 @@ def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
                     "Report the blocked command on the issue instead.")
 
         toks = argv_tokens(cmd)
-        refusal = git_refusal(toks, ctx, cfg) or origin_refusal(toks, ctx)
+        refusal = (head_moved_refusal(toks, ctx) or git_refusal(toks, ctx, cfg)
+                   or origin_refusal(toks, ctx))
         if refusal:
             return refusal
 
@@ -421,13 +478,21 @@ def hook(root: Path, cfg: dict) -> int:
         return 0
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
+    session_id = payload.get("session_id")
     ctx = git_context(root)
+    if session_id:
+        ctx["session_branch"] = ledger.last_session_branch(root, session_id)
+    cmd = tool_input.get("command", "")
     if "command" in tool_input:
-        ctx["other_roots"] = other_git_roots(tool_input.get("command", ""), root)
+        ctx["other_roots"] = other_git_roots(cmd, root)
     reason = check(tool_name, tool_input, ctx, cfg)
     if reason:
         print(f"qops guard: {reason}", file=sys.stderr)
         return 2
+    if session_id and cmd:
+        target = self_checkout(argv_tokens(cmd))
+        if target:
+            ledger.append(root, "checkout", {"session_id": session_id, "branch": target})
     return 0
 
 
