@@ -1801,6 +1801,34 @@ def test_the_planner_is_not_pointed_at_a_row_it_may_not_plan(why, row):
     assert not qops_pickup.plannable(row), why
 
 
+def test_a_row_stating_no_outcome_is_named_not_silently_skipped(tmp_path, monkeypatch, capsys):
+    """#125: a `state:triage` row with no stated outcome is invisible to
+    `plannable()` by design (ADR-0028's filing bar), and that used to mean
+    invisible everywhere — the "nothing to plan" line named no row and a
+    third of the backlog went four days unseen. Fixture: one `state:triage`
+    row states an outcome, one does not — only the second is named, and only
+    when there is genuinely nothing to plan or decompose."""
+    stated = _row(30, body="## Acceptance\n- it merges.\n")
+    unstated = _row(31, body="It would be nice if this were faster.")
+    assert qops_pickup.unreached_triage([stated, unstated]) == [unstated]
+    assert qops_pickup.unreached_triage([stated]) == []
+
+    root = _root(tmp_path)
+    monkeypatch.setattr(qops_pickup, "_decompose", lambda *a, **k: 0)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+
+    # Nothing else plannable, so the pass has genuinely nothing to plan.
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [unstated])
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert "skipped for stating no outcome: #31" in capsys.readouterr().out
+
+    # An empty backlog and an unreachable one must not read alike: nothing
+    # extra is printed when every `state:triage` row states an outcome.
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [])
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert "skipped for stating no outcome" not in capsys.readouterr().out
+
+
 def test_a_failed_plan_does_not_label_the_row_planned(tmp_path, monkeypatch):
     """The build path's release writes `state:planned`. On a planning run that
     failed, that would be the loop asserting the one thing the run did not do —
