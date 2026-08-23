@@ -97,8 +97,11 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
                                     encoding="utf-8", newline="\n")
     claude_dir = root / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    (claude_dir / "settings.json").write_text(
-        _render("settings.json.tmpl", values), encoding="utf-8", newline="\n")
+    # `.claude/settings.json` is NOT written here: `install.render_all` below
+    # renders it from the same template plus the parsed config, and it is the
+    # only renderer (#158). A second one is how the scaffold and the template
+    # drifted in the first place — `init` wrote a copy nothing ever re-read,
+    # and `_render` takes `values`, which cannot see `permissions.extra`.
 
     skills_dir = claude_dir / "skills"
     for name in SKILLS:
