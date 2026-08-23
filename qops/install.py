@@ -287,8 +287,23 @@ def task_state_of(found: dict | None) -> str:
     return str(found.get("state", "")).casefold() or "unknown"
 
 
+def wants_the_task(cfg: dict) -> bool:
+    """Whether this project keeps a picker on the host at all.
+
+    A standing project decision, so it is a config key and not a flag: `qops
+    install` is run by sorties and by CI as well as by hand, and a flag that
+    has to be remembered every time is remembered none of them. A project that
+    never runs the loop — every consumer that only wants the workflows, the
+    guard and the brief — says so once and no install anywhere touches its
+    machine's scheduler.
+    """
+    return bool(cfg.get("pickup_task", True))
+
+
 def register_task(root: Path, cfg: dict) -> str:
     spec = task_spec(root, cfg)
+    if not wants_the_task(cfg):
+        return "pickup task: not registered — `pickup_task: false` in the config"
     if a_linked_worktree(root):
         return (f"pickup task {task_id(spec)}: not registered — this root is a "
                 f"linked worktree and the task belongs to the main checkout")
@@ -1175,7 +1190,18 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     `qops pending` (#131) already read the backlog once and passes it back
     here, so a run of both never issues the query twice."""
     problems = drift(root, cfg)
-    if a_linked_worktree(root):
+    if not wants_the_task(cfg):
+        # A project that declared no picker is not drifting from one. It is
+        # still checked for the opposite: a task registered under this
+        # project's name while the config says there should be none is an
+        # orphan, and an orphan of the expensive loop is the one worth naming.
+        stray = registered_task(task_spec(root, cfg))
+        if stray:
+            problems.append(
+                f"pickup task {task_id(task_spec(root, cfg))}: registered, but "
+                f"the config says `pickup_task: false` — run "
+                f"`qops install --unregister-task`")
+    elif a_linked_worktree(root):
         # Not merely skipped for safety: from here the answer would be wrong.
         # The registered task names the main checkout and this root is not it,
         # so every sortie would read drift it has no way to fix.

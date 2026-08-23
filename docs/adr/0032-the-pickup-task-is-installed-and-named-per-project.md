@@ -54,6 +54,16 @@ Three things followed from that, and the third is the expensive one:
 - **`qops install --unregister-task` is the deregistration path**, so a project
   that goes away does not leave an orphan firing hourly at a deleted tree.
 
+- **A project may decline the task entirely**, with `pickup_task: false`.
+  Most consumers want the workflows, the guard and the brief and will never run
+  the expensive loop; nothing should put a scheduled task on their machine to
+  say so. A config key and not an install flag, because `install` is run by
+  sorties and by CI as well as by hand, and a flag that must be remembered
+  every time is remembered none of them. Declining registration never declines
+  *de*registration — `--unregister-task` is how a project leaves a task it
+  already has, and `doctor` names a task standing while the config says none
+  should.
+
 - **Only the main checkout registers.** `pickup-loop` runs every unattended
   sortie in a worktree under `.qops/wt/loop`, and that worktree carries a
   tracked `.qops/config.yml` — so `find_root()` inside a sortie resolves to it,

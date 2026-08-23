@@ -120,6 +120,9 @@ python -m qops install --unregister-task  # removes it, leaving no orphan
   the config renders is a problem; the enabled/disabled state is *reported* and
   is never a problem and never changed. On a host with no scheduler the query
   answers unknown rather than clean.
+- **A project may decline it entirely** — `pickup_task: false` and no install
+  touches the host's scheduler. Removal still works with it false, and `doctor`
+  names a task left standing against it.
 - **Only the main checkout registers.** The loop's own sortie worktree
   (`.qops/wt/loop`) carries a tracked config, so an `install` run inside a
   sortie would render this same task name with the worktree as its root and

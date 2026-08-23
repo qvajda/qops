@@ -19,6 +19,15 @@ default_branch: master
 python: py -3
 python_posix: python3
 
+# Whether this project keeps a picker on the host at all. `qops install`
+# registers `pickup-loop`'s scheduled task from this config (ADR-0032); set
+# false and no install anywhere touches the machine's scheduler. A standing
+# project decision, so it is a key and not a flag — install is run by sorties
+# and by CI as well as by hand, and a flag that must be remembered every time
+# is remembered none of them. Removal still works with it false:
+# `qops install --unregister-task`, and `doctor` names a task left behind.
+pickup_task: true
+
 # Whether the registered pickup task passes `--launch`. Default off, and that
 # is the safety valve: the flagless form prints what it would have picked and
 # spends nothing, so the schedule can be proved to fire without starting an

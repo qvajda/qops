@@ -733,6 +733,19 @@ def test_a_linked_worktree_never_registers_or_removes_the_task(tmp_path):
     assert "not removed" in install.unregister_task(wt, cfg)
 
 
+def test_a_project_can_decline_the_task_and_still_remove_one(tmp_path):
+    """The opt-out is a config key rather than a flag: `install` is run by
+    sorties and by CI as well as by hand (#12)."""
+    (tmp_path / ".git").mkdir()
+    off = _other_cfg(pickup_task=False)
+    assert install.wants_the_task(_other_cfg()) is True
+    assert install.wants_the_task(off) is False
+    assert "not registered" in install.register_task(tmp_path, off)
+    # Declining the task must not decline removing one already there — that is
+    # the only path a project has out of a registration it no longer wants.
+    assert "not registered" not in install.unregister_task(tmp_path, off)
+
+
 def test_the_task_state_is_reported_and_never_judged():
     # Neither state is a problem: whether the expensive loop is on is the
     # owner's answer (ADR-0009), and `doctor` only says which it is.
