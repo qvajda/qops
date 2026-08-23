@@ -1989,6 +1989,45 @@ def test_reconcile_no_auto_vetoes_re_advancing_a_row_too():
     assert {l["name"] for l in gh.issues["59"]["labels"]} == {"state:planned", "gate:taste", "no-auto"}
 
 
+def test_an_owner_merged_no_auto_row_still_closes():
+    """#126: `no-auto` withholds the authority to close a `gate:machine` row
+    only when the loop merged it. An owner who merged the PR themselves
+    already exercised that authority — closing costs nothing new."""
+    owner_pr = {"number": 148, "headRefName": "fix/59-orphan-gap",
+                "mergedBy": {"login": "qvajda", "is_bot": False}}
+    machine_no_auto = {"59": {"state": "OPEN",
+                               "labels": [{"name": "state:building"},
+                                          {"name": "gate:machine"},
+                                          {"name": "no-auto"}]}}
+    gh = FakeGh([owner_pr], machine_no_auto)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["closed"] == [("59", "148")] and report["skipped"] == []
+    closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+    assert closes and "you merged PR #148" in closes[0][-1]
+
+    bot_pr = {"number": 149, "headRefName": "fix/60-orphan-gap",
+              "mergedBy": {"login": "github-actions[bot]", "is_bot": True}}
+    machine_no_auto_2 = {"60": {"state": "OPEN",
+                                 "labels": [{"name": "state:building"},
+                                            {"name": "gate:machine"},
+                                            {"name": "no-auto"}]}}
+    gh_bot = FakeGh([bot_pr], machine_no_auto_2)
+    report_bot = reconcilemod.reconcile("o/r", run=gh_bot)
+    assert report_bot["closed"] == [] and report_bot["skipped"] == [("60", "no-auto")]
+
+    taste_no_auto = {"61": {"state": "OPEN",
+                             "labels": [{"name": "state:building"},
+                                        {"name": "gate:taste"},
+                                        {"name": "no-auto"}]}}
+    owner_pr_taste = {"number": 150, "headRefName": "fix/61-orphan-gap",
+                       "mergedBy": {"login": "qvajda", "is_bot": False}}
+    gh_taste = FakeGh([owner_pr_taste], taste_no_auto)
+    report_taste = reconcilemod.reconcile("o/r", run=gh_taste)
+    assert report_taste["closed"] == [] and report_taste["advanced"] == [("61", "150")]
+    names = {l["name"] for l in gh_taste.issues["61"]["labels"]}
+    assert "state:done" in names
+
+
 def test_reconcile_skips_a_branch_that_names_no_issue():
     gh = FakeGh([{"number": 146, "headRefName": "no-issue/triage-sweep"}], {})
     report = reconcilemod.reconcile("o/r", run=gh)
