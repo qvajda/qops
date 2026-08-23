@@ -356,6 +356,8 @@ def main(argv: list[str]) -> int:
     # runs it alone, which is also how it is proved by hand.
     if "--review" in argv:
         return _review(root)
+    if "--unreached-triage" in argv:
+        return _print_unreached_triage(root)
     rc = _run(argv, root)
     ledger.append(root, "pickup_ran", {"rc": rc})
     # After the pickup, so a PR this run just opened is judged this run - and
@@ -458,6 +460,14 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     """
     row = first_plannable(root, [i for i in rows if plannable(i)])
     if row is None:
+        # A skip that names nothing is why #6 went four days unseen (#125) -
+        # nothing extra when the set is empty, since an idle queue and a
+        # stuck one must not read alike.
+        unreached = unreached_triage(rows)
+        if unreached:
+            nums = " ".join(f"#{i['number']}" for i in unreached)
+            print(f"pickup-loop: nothing to plan - skipped for stating no "
+                  f"outcome: {nums}.")
         return _decompose(argv, root, cfg, rows)
     num, before = str(row["number"]), row.get("body") or ""
     print(f"pickup-loop: planning #{num} {row['title']}")
@@ -532,6 +542,35 @@ def plan_outcomes(root: Path, limit: int = PLAN_OUTCOMES_LIMIT) -> list[dict]:
             out.append({"issue": num, "why": last_why.get(num, ""),
                         "ts": rec.get("ts", "")})
     return out[-limit:]
+
+
+def unreached_triage(rows: list[dict]) -> list[dict]:
+    """Open `state:triage` rows the planner can never reach: filed, but
+    `install.states_an_outcome()` is false on the body (#125). Named
+    separately from `plannable()`'s filter — that one also excludes an epic
+    or a blocked row, which are waiting their turn, not stuck. Listing every
+    `state:triage` row here would bury these among rows simply waiting their
+    turn; only the unreachable ones earn a line.
+    """
+    out = []
+    for issue in rows:
+        labels = {l["name"] for l in issue.get("labels", [])}
+        if ("state:triage" in labels
+                and not install.states_an_outcome(issue.get("body") or "")):
+            out.append(issue)
+    return out
+
+
+def _print_unreached_triage(root: Path) -> int:
+    """`digest.yml`'s CI job has no Claude subscription and no judgement to
+    make here — it just names what `unreached_triage()` finds, the same
+    function the plan pass already reads (#125)."""
+    rows = backlog(root)
+    if rows is None:
+        return 1
+    for issue in unreached_triage(rows):
+        print(f"- #{issue['number']} {issue['title']}")
+    return 0
 
 
 def first_plannable(root: Path, rows: list[dict]) -> dict | None:
