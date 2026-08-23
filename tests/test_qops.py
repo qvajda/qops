@@ -4070,6 +4070,41 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
 
 
 # --------------------------------------------------------------------------
+# #127 — `no-auto` on a `gate:machine` row that names an UNWRITABLE path buys
+# nothing the reach check (`unwritable()`) was not already withholding. #83
+# carried it anyway and cost a manual merge and a manual close.
+# --------------------------------------------------------------------------
+
+def test_a_no_auto_that_only_restates_reach_is_reported():
+    redundant = {
+        "number": 57, "body": _ROLE_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "no-auto"}],
+    }
+    no_no_auto = {
+        "number": 13, "body": _ROLE_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"}],
+    }
+    no_auto_but_writable = {
+        # the row's `no-auto` means something else — no .claude/ path named.
+        "number": 70, "body": _OK_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "no-auto"}],
+    }
+    no_auto_wrong_gate = {
+        "number": 42, "body": _ROLE_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:taste"},
+                   {"name": "no-auto"}],
+    }
+    problems = install.redundant_no_auto(
+        [redundant, no_no_auto, no_auto_but_writable, no_auto_wrong_gate])
+    assert len(problems) == 1
+    assert "#57" in problems[0]
+    assert ".claude/agents/triager.md" in problems[0]
+    assert not any("#13" in p or "#70" in p or "#42" in p for p in problems)
+
+
+# --------------------------------------------------------------------------
 # migrate — #103. `install.issue_invariants` reports a row missing `origin:`,
 # a `gate:`, or ADR-0028's outcome statement; this is what fixes it, and
 # ADR-0030 says nothing is written to the tracker until the owner has read
