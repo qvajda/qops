@@ -4804,11 +4804,17 @@ def test_pending_names_the_owner_actions_and_the_loop_queue(tmp_path, monkeypatc
     assert doctor_calls == [rows]
 
     assert "#4" in text and "gate:taste" in text
-    assert "#5" in text and "state:review" in text
     assert "#6" in text and "no-auto" in text
     assert "#7" in text and "struck out" in text
     assert "#8" in text and "cannot close itself" in text
     assert "fake doctor problem" in text
+
+    # #5 carries a live claim (state:review, ADR-0031 §3): it is with the
+    # owner already, not waiting on him, so it renders under its own
+    # heading instead of re-alerting on a claim it already holds.
+    waiting_section, _, rest = text.partition("## With you")
+    assert "#5" not in waiting_section
+    assert "#5" in rest
 
     # The queue order matches scripts/qops_pickup.py's own picks over the
     # same fixture — the predicate is not reimplemented, only assembled.
@@ -4817,6 +4823,38 @@ def test_pending_names_the_owner_actions_and_the_loop_queue(tmp_path, monkeypatc
     assert f"build: #{build_pick['number']}" in text
     assert f"plan: #{plan_pick['number']}" in text
     assert "decompose: #3" in text
+
+
+def test_a_claimed_row_is_with_the_owner_not_waiting_on_him(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+
+    building_claimed = {"number": 1, "title": "being built",
+                        "labels": [{"name": "state:building"}, {"name": "no-auto"},
+                                   {"name": "gate:machine"}]}
+    building_unclaimed = {"number": 2, "title": "unattended build",
+                          "labels": [{"name": "state:building"}, {"name": "gate:machine"}]}
+    review_claimed = {"number": 3, "title": "being reviewed",
+                      "labels": [{"name": "state:review"}, {"name": "gate:machine"}]}
+    no_auto_alone = {"number": 4, "title": "hand-held, not building",
+                     "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                                {"name": "no-auto"}]}
+
+    rows = [building_claimed, building_unclaimed, review_claimed, no_auto_alone]
+    out = pendingmod.waiting_on_owner(root, rows)
+    text = "\n".join(out)
+
+    # A live claim (state:building + no-auto together, or state:review
+    # alone) takes the row out of the set entirely.
+    assert "#1" not in text
+    assert "#3" not in text
+    # The same states without the claim pairing still wait on him: an
+    # unattended build carries no `no-auto`, and a bare `no-auto` without
+    # `state:building` withholds an act rather than claiming a session.
+    assert "#2" not in text  # not eligible/plannable/etc either - no clause matches it alone
+    assert "#4" in text
+
+    claims = pendingmod.claimed_rows(root, rows)
+    assert {row["number"] for row, _ in claims} == {1, 3}
 
 
 def test_pending_says_an_empty_queue_and_an_unreadable_tracker_apart(tmp_path, monkeypatch):
