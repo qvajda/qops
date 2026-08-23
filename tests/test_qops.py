@@ -38,6 +38,19 @@ def test_config_carries_every_project_specific():
     assert "master" in cfg["protected_branches"]
 
 
+def test_the_contract_documents_the_permission_and_role_keys():
+    contract = (REPO / "docs/reference/qops-contract.md").read_text(encoding="utf-8")
+    assert "delegation_cap" not in contract
+    assert "permissions.extra" in contract
+    assert "agents.<role>.allow/deny" in contract
+
+    tmpl = (REPO / "qops/templates/config.yml.tmpl").read_text(encoding="utf-8")
+    assert "delegation_cap" not in tmpl
+
+    cfg_text = (REPO / ".qops/config.yml").read_text(encoding="utf-8")
+    assert "delegation_cap" not in cfg_text
+
+
 # --------------------------------------------------------------------------
 # skills — ADR-0018. ADR-0013 made the count a mitigation a human was asked to
 # re-read; nobody did and 11 accepted became 19 installed. Here it is a check.
