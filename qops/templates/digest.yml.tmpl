@@ -147,17 +147,6 @@ jobs:
           } > digest.md
           cat digest.md
 
-      - name: post to the dev Telegram bot
-        if: env.TELEGRAM_TOKEN != ''
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.QOPS_TELEGRAM_DEV_TOKEN }}
-          TELEGRAM_CHAT: ${{ secrets.QOPS_TELEGRAM_DEV_CHAT_ID }}
-        run: |
-          curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
-            --data-urlencode "chat_id=$TELEGRAM_CHAT" \
-            --data-urlencode "parse_mode=Markdown" \
-            --data-urlencode "text@digest.md" > /dev/null
-
       - name: update the pinned status issue
         run: |
           n=$(gh issue list --repo "$REPO" --label '{{status_issue_label}}' \

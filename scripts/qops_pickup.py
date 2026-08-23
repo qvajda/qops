@@ -66,7 +66,7 @@ from pathlib import Path
 # falls through to site-packages exactly as before.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from qops import config as qconfig, install, ledger, review  # noqa: E402
+from qops import config as qconfig, install, ledger, pending, review  # noqa: E402
 
 # eligible(), unwritable(), UNWRITABLE, plannable(), decomposable(),
 # interviewed(), strikes() and struck_out() live in qops/install.py (#71,
@@ -263,21 +263,132 @@ def main(argv: list[str]) -> int:
         return _print_unreached_triage(root)
     rc = _run(argv, root)
     ledger.append(root, "pickup_ran", {"rc": rc})
-    # After the pickup, so a PR this run just opened is judged this run - and
-    # behind `--launch`, by the rule this script already follows: a dry run
-    # says what it would have done and writes nothing anywhere. The first
-    # non-zero wins, because the scheduler gets one exit code and a reviewer
-    # that could not judge is not a quieter failure than a picker that could
-    # not pick.
+    # The alert pass rides this run too (#120), and it owns its own read
+    # rather than reusing `_run`'s: it must still fire when `_run` bailed
+    # early, and `pending.backlog()` already prints the unreadable-vs-empty
+    # distinction the pass needs.
+    alert_rc = _alert(argv, root, qconfig.load(root))
+    # After the pickup and the alert, so a PR this run just opened is judged
+    # this run - and behind `--launch`, by the rule this script already
+    # follows: a dry run says what it would have done and writes nothing
+    # anywhere. The first non-zero wins, because the scheduler gets one exit
+    # code and a reviewer that could not judge is not a quieter failure than
+    # a picker that could not pick.
     if "--launch" not in argv:
-        return rc
-    return rc or _review(root)
+        return rc or alert_rc
+    return rc or alert_rc or _review(root)
 
 
 def _review(root: Path) -> int:
     rc = review.produce(root, qconfig.load(root))
     ledger.append(root, "review_ran", {"rc": rc})
     return rc
+
+
+# The set is `pending.waiting_on_owner()`, never re-derived (ADR-0031 §1):
+# two lists that agree today diverge at the next edit, and `qops/pending.py`
+# is fenced out of this row anyway. The alerter holds no trigger predicate of
+# its own — `test_the_alerter_holds_no_trigger_predicate` reads these
+# functions' own source to say so.
+
+ALERT_NAME_MAX = 80  # a session name the owner scans, not a full render
+
+
+def alert_session_name(num: int, clause: str) -> str:
+    """The triage surface (ADR-0031 §4). Several rows may wait at once, and
+    the name is how the owner tells them apart without opening the tracker
+    first — a struck-out row reads differently from a taste-judgement one."""
+    clause = " ".join(clause.split())
+    return f"qops #{num} {clause}"[:ALERT_NAME_MAX]
+
+
+def alert_prompt(num: int, clause: str) -> str:
+    """The row plus a drafted proposal (ADR-0031 §4), never the full
+    `pending` render — two concurrent alerts would each recite the other.
+    Short by construction: the issue body is never embedded in argv,
+    `review.WINDOWS_CMDLINE_MAX` is a live failure mode on this host
+    (#111)."""
+    return (
+        f"Read issue #{num} on this repo's tracker - it is waiting on the "
+        f"owner ({clause}). State the situation in a few lines, propose "
+        f"exactly one recommendation with at most four options, then wait "
+        f"for the owner - this reaches them, it does not act on their "
+        f"behalf.")
+
+
+def alert_argv(num: int, clause: str, name: str) -> list[str]:
+    return ["claude", "--remote-control", name, alert_prompt(num, clause)]
+
+
+def _alert(argv: list[str], root: Path, cfg: dict) -> int:
+    """Launch a remote-control session for one row waiting on the owner
+    (#120, ADR-0031), when there is one.
+
+    One launch per pass (ADR-0031 §4 step 3): several rows may wait at once,
+    and that is delegation, not contention - the hourly loop drains them one
+    at a time rather than opening a fan of sessions on the first activation.
+    The claim below is the record of having fired, taken **before** the
+    launch: a claimed row is absent from `waiting_on_owner()` on the next
+    pass, so silence needs no local state.
+    """
+    repo = cfg.get("repo", "")
+    if not repo:
+        # A config naming no tracker is a config defect, and `doctor` is where
+        # it is reported. This pass rides the pickup run's exit code, so
+        # failing here would report that defect as a picker failure, hourly,
+        # forever - and `_run` carries on past the same config for the same
+        # reason, printing `(none in config)`.
+        print("pickup-loop: .qops/config.yml names no tracker - "
+              "nothing to alert on.")
+        return 0
+    rows = pending.backlog(repo)
+    if rows is None:
+        print("pickup-loop: could not read the backlog for alerting - queue "
+              "state is UNKNOWN, which is not the same as empty.",
+              file=sys.stderr)
+        return 1
+    waiting = pending.waiting_on_owner(root, rows)
+    if not waiting:
+        print("pickup-loop: nothing waiting on the owner.")
+        return 0
+    line = waiting[0]
+    num = int(line.split()[0].lstrip("#"))
+    clause = line.split(" — ", 1)[1]
+    name = alert_session_name(num, clause)
+    print(f"pickup-loop: #{num} is waiting on the owner - {clause}")
+    if "--launch" not in argv:
+        print(f"pickup-loop: dry run, not alerting. Would launch {name!r}.")
+        return 0
+    row = next((r for r in rows if r["number"] == num), None)
+    existing = {l["name"] for l in (row or {}).get("labels", [])}
+    prior_state = next((l for l in existing if l.startswith("state:")), None)
+    claim = ["gh", "issue", "edit", str(num)]
+    if prior_state:
+        claim += ["--remove-label", prior_state]
+    claim += ["--add-label", "state:building", "--add-label", "no-auto"]
+    claimed = subprocess.run(claim, cwd=root, capture_output=True, text=True)
+    if claimed.returncode:
+        why = f"could not claim #{num}: {claimed.stderr.strip()}"
+        print(f"pickup-loop: {why}", file=sys.stderr)
+        ledger.append(root, "alert_failed", {"issue": num, "why": why})
+        return 1
+    # Detached: an interactive session never returns, and the hourly task
+    # must not block on it. `cwd` is ROOT, not `loop_worktree()` (#9) - this
+    # is the owner's session, in his tree, and the loop worktree is reset by
+    # the next build pass.
+    try:
+        subprocess.Popen(
+            alert_argv(num, clause, name), cwd=root,
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            start_new_session=(os.name != "nt"))
+    except OSError as exc:
+        why = f"could not launch {name!r}: {exc}"
+        print(f"pickup-loop: {why}", file=sys.stderr)
+        ledger.append(root, "alert_failed", {"issue": num, "why": why})
+        return 1
+    ledger.append(root, "alert_launched", {"issue": num, "session": name})
+    print(f"pickup-loop: launched {name!r} for #{num}.")
+    return 0
 
 
 def _run(argv: list[str], root: Path) -> int:
