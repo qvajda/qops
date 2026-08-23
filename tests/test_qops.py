@@ -663,8 +663,17 @@ def test_the_repo_itself_is_installed_and_undrifted():
 # --------------------------------------------------------------------------
 
 def _other_cfg(**over):
+    """A consuming project's config, not this one's.
+
+    The pickup keys are dropped rather than inherited: they are this repo's own
+    answers, and a test that asserts what the *default* is must not read them
+    from a config that has taken a side. Flipping `pickup_launch` here broke
+    the default assertion in CI and nowhere else (#12).
+    """
     cfg = dict(qconfig.load(REPO))
     cfg.update({"project": "someone-elses-project", "python": "py -3"})
+    for key in ("pickup_task", "pickup_launch"):
+        cfg.pop(key, None)
     cfg.update(over)
     return cfg
 
@@ -4576,6 +4585,25 @@ def test_init_missing_flags_refuses_without_a_tty(tmp_path, monkeypatch):
     rc = initmod.main(["--project", "x"], tmp_path, {})
     assert rc == 2
     assert not (tmp_path / ".qops" / "config.yml").exists()
+
+
+def test_a_fresh_config_shows_the_switch_that_declines_the_task(tmp_path):
+    """A switch controlling whether qops touches the host's scheduler has to be
+    visible in the file it lives in. `qops init` registers nothing, so editing
+    the config it writes is always enough — but only if the key is there to
+    edit (#12)."""
+    rc = initmod.main(["--project", "x", "--repo", "a/b", "--python", "python3"],
+                      tmp_path, {})
+    assert rc == 0
+    cfg = qconfig.load(tmp_path)
+    assert cfg["pickup_task"] is True
+    assert cfg["pickup_launch"] is False
+    assert "pickup_task" in (tmp_path / ".qops" / "config.yml").read_text(
+        encoding="utf-8")
+    # init must not have registered anything for that edit to still be in time.
+    assert not install.a_linked_worktree(tmp_path)
+    assert "not registered" in install.register_task(
+        tmp_path, dict(cfg, pickup_task=False))
 
 
 def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(

@@ -33,7 +33,7 @@ pickup_task: true
 # spends nothing, so the schedule can be proved to fire without starting an
 # agent. The hand-registered task baked `--launch` in, which made the dry run
 # unreachable from the schedule (#12). Registering never enables either way.
-pickup_launch: false
+pickup_launch: true
 
 # --- guard -----------------------------------------------------------------
 protected_branches: [master]

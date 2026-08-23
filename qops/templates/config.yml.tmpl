@@ -16,6 +16,23 @@ default_branch: {{default_branch}}
 python: {{python}}
 python_posix: python3
 
+# --- pickup-loop -------------------------------------------------------
+# `qops install` registers pickup-loop's scheduled task on this host from the
+# keys below (ADR-0032). It is the one loop that costs money.
+#
+# Set false and no install anywhere touches this machine's scheduler. Most
+# projects want the workflows, the guard and the brief and never run a picker;
+# this is where they say so, BEFORE the first `qops install`. `qops init` does
+# not register anything, so editing this first is always enough.
+pickup_task: true
+
+# Whether the registered task passes `--launch`, which is what actually starts
+# an agent. False and the schedule fires, prints what it would have picked and
+# spends nothing — the only way to prove the wiring without spending. Read at
+# RENDER time: change it and re-run `qops install`, or the registered task
+# keeps the argument list it already has.
+pickup_launch: false
+
 # --- guard -------------------------------------------------------------
 protected_branches: [{{default_branch}}]
 max_worktrees: 2

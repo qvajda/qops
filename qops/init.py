@@ -26,7 +26,10 @@ Not done by `qops init` — the owner's or the machine's, not the package's:
   - branch protection on {default_branch}, with the gate as a required check
   - "Allow auto-merge" and "Automatically delete head branches", both on
   - trust this workspace once (open Claude Code here interactively)
-  - enable the loop
+  - python -m qops install — renders the workflows AND registers pickup-loop's
+    scheduled task on this host, disabled. Decline it with `pickup_task: false`
+    in .qops/config.yml first; `qops init` has registered nothing.
+  - enable the loop, once you want it: it is the one that costs money
 """.strip("\n")
 
 
