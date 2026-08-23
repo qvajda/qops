@@ -194,6 +194,22 @@ def issue_filings(toks: list[str]) -> list[list[str]]:
     return found
 
 
+def issue_edits(toks: list[str]) -> list[list[str]]:
+    """The args of every `gh issue edit` in these tokens - same parse as
+    `issue_filings`, same reason (ADR-0021)."""
+    found = []
+    for i, t in enumerate(toks):
+        if t != "gh" or toks[i + 1:i + 3] != ["issue", "edit"]:
+            continue
+        args = []
+        for a in toks[i + 3:]:
+            if a in _SEPARATORS:
+                break
+            args.append(a)
+        found.append(args)
+    return found
+
+
 def label_values(args: list[str]) -> set[str]:
     """Every label a `gh` call passes, across repeated and comma-joined flags."""
     out = set()
@@ -236,6 +252,47 @@ def origin_refusal(toks: list[str], ctx: dict) -> str | None:
         return (f"this filing claims {', '.join(sorted(claimed))}; this session "
                 f"can only claim {choices} (ADR-0023/0029). `origin:` is set by "
                 f"which path filed the row, not chosen.")
+    return None
+
+
+def role_refusal(toks: list[str], ctx: dict) -> str | None:
+    """ADR-0033's per-role command cells that a tool list cannot express (P3).
+    `ctx["role"]` is absent for an attended owner's session, and this returns
+    None immediately then - the table's rules are the unattended launch's,
+    never the owner's own keyboard.
+
+    Only the cells ADR-0033 names as built here: the scribe never pushes and
+    never opens a branch (§4, §5); the planner never commits, branches or adds
+    a worktree (§4); the coder reports by comment, never by editing the row's
+    labels itself (§6). Every other role/verdict in the table still rests on
+    the tool list and P1, unchanged.
+    """
+    role = ctx.get("role")
+    if role not in ("scribe", "planner", "coder"):
+        return None
+    for verb, args, _ in git_commands(toks):
+        if role == "scribe":
+            if verb == "push":
+                return ("the scribe does not push - a scribe that may push is "
+                        "a scribe that ships (ADR-0033 §5).")
+            if verb == "checkout" and "-b" in args:
+                return ("the scribe does not open a branch - it records onto "
+                        "the sortie already in flight (ADR-0033 §4).")
+        elif role == "planner":
+            if verb == "commit":
+                return ("the planner does not commit - the row is the "
+                        "artefact, not a branch (ADR-0033 §4).")
+            if verb == "checkout" and "-b" in args:
+                return ("the planner does not open a branch - a branch from "
+                        "the planner is a sortie nobody licensed (ADR-0033 §4).")
+            if verb == "worktree" and args[:1] == ["add"]:
+                return "the planner does not add a worktree (ADR-0033 §4)."
+    if role == "coder":
+        for args in issue_edits(toks):
+            if any(a in ("--add-label", "--remove-label") for a in args):
+                return ("the coder reports what it built by comment; "
+                        "advancing the row's labels is the loop's act, off "
+                        "facts (ADR-0033 §6).")
     return None
 
 
@@ -365,7 +422,7 @@ def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
 
         toks = argv_tokens(cmd)
         refusal = (head_moved_refusal(toks, ctx) or git_refusal(toks, ctx, cfg)
-                   or origin_refusal(toks, ctx))
+                   or origin_refusal(toks, ctx) or role_refusal(toks, ctx))
         if refusal:
             return refusal
 
@@ -384,6 +441,14 @@ def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
         # The files that state the constraints have to be able to name them.
         if excluded and any(norm.endswith(e) or f"/{e}" in norm for e in excluded):
             return None
+        # ADR-0033 §3, P3: the one cell with no mechanism until this row - the
+        # scribe writes prose and state, never code. `docs/` and the ledger,
+        # nowhere else; an unscoped scribe is a second coder with no test
+        # discipline.
+        if ctx.get("role") == "scribe" and not (
+                norm.startswith("docs/") or norm.endswith(".qops/ledger.jsonl")):
+            return ("the scribe writes only under docs/ and the ledger "
+                    "(ADR-0033 §3).")
         for field in _TEXT_FIELDS:
             value = tool_input.get(field)
             if isinstance(value, str):
@@ -407,7 +472,11 @@ def git_context(root: Path) -> dict:
     worktrees = len([l for l in run("worktree", "list").splitlines() if l.strip()])
     return {"branch": run("rev-parse", "--abbrev-ref", "HEAD"),
             "worktrees": max(worktrees - 1, 0),
-            "unattended": os.environ.get("QOPS_UNATTENDED") == "1"}
+            "unattended": os.environ.get("QOPS_UNATTENDED") == "1",
+            # ADR-0033 P3: the launcher sets QOPS_ROLE, the same idiom
+            # QOPS_UNATTENDED already proves works. Absent for an owner at a
+            # keyboard, who sets nothing and must be unaffected by role_refusal.
+            "role": os.environ.get("QOPS_ROLE")}
 
 
 # --- the CI half -----------------------------------------------------------
