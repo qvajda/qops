@@ -19,6 +19,13 @@ default_branch: master
 python: py -3
 python_posix: python3
 
+# Whether the registered pickup task passes `--launch`. Default off, and that
+# is the safety valve: the flagless form prints what it would have picked and
+# spends nothing, so the schedule can be proved to fire without starting an
+# agent. The hand-registered task baked `--launch` in, which made the dry run
+# unreachable from the schedule (#12). Registering never enables either way.
+pickup_launch: false
+
 # --- guard -----------------------------------------------------------------
 protected_branches: [master]
 max_worktrees: 2

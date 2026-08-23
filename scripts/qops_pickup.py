@@ -1,10 +1,11 @@
 """pickup-loop — pick the next sortie an unattended agent may start.
 
-Default OFF. Registered as a disabled Windows scheduled task, one per repo root,
-so that turning it on is one `schtasks /change /enable` and not a build. The
-registration is a machine fact the repo cannot see - `docs/reference/loops.md`
-carries the exact command, because a machine fact recorded nowhere is one a code
-change can invalidate silently, and one did.
+Default OFF. Registered as a disabled scheduled task, one per repo root, so
+that turning it on is one `Enable-ScheduledTask` and not a build. `qops install`
+renders and registers it from `.qops/config.yml` (ADR-0032) and `qops doctor`
+checks it against what the config renders: it used to be hand-made, naming a
+machine's interpreter and a machine's checkout under a name with no project in
+it, and a code change invalidated that definition once with nothing to notice.
 
 **The task names its root; it never derives one.** `--root <path>` plus a
 matching WorkingDirectory. Both are refused-if-wrong rather than guessed at
@@ -26,14 +27,16 @@ is written, so there is nothing to clean up afterwards.
 **Every run also produces the reviewer's verdict** for each ready PR and posts
 it as a PR comment (#80, `qops/review.py`), and `--review` runs that pass alone
 and picks nothing. It rides this run rather than a second scheduled task
-because a registration is a hand-made machine fact the repo cannot see (#12),
-so the registered command line is unchanged; and it runs on the host rather
+because one loop is one registration (#12), so the registered command line is
+unchanged; and it runs on the host rather
 than in CI because the model call needs the subscription this host has and CI
 does not.
 
 `--launch` is what actually starts an agent. Without it this prints what it
 would have picked and exits 0, which is also how the scheduled task is proved
-to run without starting anything.
+to run without starting anything — so the task passes it only when
+`pickup_launch:` says so, default off. Baked into the schedule, as it was, the
+dry run was unreachable from the schedule.
 
 The launch carries a **scoped** write grant (#122): the coder role's toolset and
 nothing else. It removes the interactive prompt, it does not widen what is
