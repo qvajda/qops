@@ -3499,6 +3499,35 @@ def test_a_new_commit_gets_a_fresh_count(monkeypatch, tmp_path):
     assert reviewmod.attempts(tmp_path, "7", _OLD) == 0
 
 
+def test_a_reason_that_survives_a_repush_still_strikes_out(monkeypatch, tmp_path):
+    """A host-side failure (e.g. WinError 206) recurs on every sha a push
+    produces, so its count must not reset with the commit — that is the class
+    ADR-0031's strike-out cannot reach today (#148)."""
+    pr_a = {"number": 7, "headRefName": "fix/1-x", "headRefOid": _SHA,
+            "isDraft": False}
+    pr_b = {"number": 7, "headRefName": "fix/1-x", "headRefOid": _OLD,
+            "isDraft": False}
+    _host_pass(monkeypatch, [pr_a], "no verdict here")
+    reviewmod.produce(tmp_path, {"repo": "o/r"})
+    _host_pass(monkeypatch, [pr_b], "no verdict here")
+    reviewmod.produce(tmp_path, {"repo": "o/r"})
+
+    events = [e for e in ledger.read(tmp_path) if e["event"] == "review_unjudged"]
+    assert [e["n"] for e in events] == [1, 2], events
+    # Per-sha budget is untouched: each commit still starts at zero.
+    assert reviewmod.attempts(tmp_path, "7", _SHA) == 1
+    assert reviewmod.attempts(tmp_path, "7", _OLD) == 1
+
+    # A different reason on a new sha gets its own fresh budget.
+    pr_c = {"number": 7, "headRefName": "sweep",
+            "headRefOid": "3333333333333333333333333333333333333333",
+            "isDraft": False}
+    _host_pass(monkeypatch, [pr_c], "no verdict here")
+    reviewmod.produce(tmp_path, {"repo": "o/r"})
+    fresh = [e for e in ledger.read(tmp_path) if e["event"] == "review_unjudged"]
+    assert fresh[-1]["n"] == 1, fresh
+
+
 def test_the_reviewer_workflow_calls_no_model_and_needs_no_secret():
     """The whole point of the rebuild: CI cannot reach the subscription, so a
     model call here would be a metered key and a second cost line that grows

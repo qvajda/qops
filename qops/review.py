@@ -156,11 +156,22 @@ def judged(bodies: list[str], sha: str) -> bool:
 
 
 def attempts(root: Path, num: str, sha: str) -> int:
-    """How many passes already failed to judge this commit. Counted off the
-    ledger, the same way `pickup-loop` counts a row's strikes."""
+    """How many passes already failed to judge this exact commit. Resets on
+    every push — the budget for a failure that belongs to *this* diff (a rate
+    limit, a network blip, a diff the model refused)."""
     return sum(1 for e in ledger.read(root)
                if e.get("event") == "review_unjudged"
                and e.get("pr") == num and e.get("sha") == sha)
+
+
+def _reason_attempts(root: Path, num: str, why: str) -> int:
+    """How many passes on this PR already failed for this exact reason,
+    across every sha. A re-push does not reset this one: the failure belongs
+    to the host or the review path, not to the commit, so a new sha does not
+    earn it a fresh budget (#148)."""
+    return sum(1 for e in ledger.read(root)
+               if e.get("event") == "review_unjudged"
+               and e.get("pr") == num and e.get("why") == why)
 
 
 def _unjudged(root: Path, repo: str, num: str, sha: str, why: str) -> None:
@@ -171,9 +182,10 @@ def _unjudged(root: Path, repo: str, num: str, sha: str, why: str) -> None:
     `claude -p` per hour, forever, on a failure that is not going to change by
     itself. Three tries covers a rate limit or a network blip; past that the
     host says so on the PR and goes quiet until someone pushes a commit, which
-    is a new SHA and a fresh count.
+    is a new SHA and a fresh count — unless the same reason keeps recurring,
+    in which case the persistent count is what reaches the cap (#148).
     """
-    n = attempts(root, num, sha) + 1
+    n = _reason_attempts(root, num, why) + 1
     ledger.append(root, "review_unjudged", {"pr": num, "sha": sha, "why": why,
                                             "n": n})
     print(f"reviewer: #{num} {sha[:8]} — not judged ({why}), "
