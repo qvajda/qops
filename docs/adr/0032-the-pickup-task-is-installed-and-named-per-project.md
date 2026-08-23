@@ -54,6 +54,17 @@ Three things followed from that, and the third is the expensive one:
 - **`qops install --unregister-task` is the deregistration path**, so a project
   that goes away does not leave an orphan firing hourly at a deleted tree.
 
+- **Only the main checkout registers.** `pickup-loop` runs every unattended
+  sortie in a worktree under `.qops/wt/loop`, and that worktree carries a
+  tracked `.qops/config.yml` — so `find_root()` inside a sortie resolves to it,
+  and an `install` run there would render the same task name with the worktree
+  as its root and force it over the real one. The picker would then be aimed at
+  a tree that is `clean -fdx`ed at the start of every run, with a valid config
+  and no error: this decision's own failure mode, reached from inside the loop.
+  A linked worktree registers nothing, removes nothing, and `doctor` does not
+  judge the task from one — from there the answer would be wrong, not merely
+  unavailable.
+
 ## What makes this wrong
 
 An installer that enables the task. Everything else here is hygiene; that one
@@ -63,6 +74,12 @@ is the defect the fix would have introduced.
 
 - The naming scheme binds every future project on the machine, which is why
   this is an ADR and not a commit message. `\qops\` is now reserved.
+- **The name derives from `project:`, not from the root**, so two checkouts of
+  the *same* project still render one task name. The linked-worktree refusal
+  covers the case the loop creates itself; a second full clone of one project
+  is not covered, and the later install wins. Left open deliberately — the
+  collision this closes is between projects, and a name that carried the root
+  would stop being derivable from the config alone.
 - A host without a scheduler — every CI runner — answers nothing rather than
   answering "clean": `registered_task` returns `None` there, and both the drift
   check and the state line report unknown instead of agreement.

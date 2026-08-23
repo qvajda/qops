@@ -712,6 +712,27 @@ def test_task_drift_is_detected_and_an_absent_task_is_reported(tmp_path):
     assert len(problems) == 1 and "arguments" in problems[0]
 
 
+def test_a_linked_worktree_never_registers_or_removes_the_task(tmp_path):
+    """The loop's own sortie tree carries a tracked config, so `find_root()`
+    resolves to it — and an install there would `-Force` the same task name
+    over the real one, pointing the picker at a tree that is `clean -fdx`ed
+    at the start of every run (#12)."""
+    main, wt = tmp_path / "main", tmp_path / "main" / ".qops" / "wt" / "loop"
+    (main / ".git").mkdir(parents=True)
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: ../../../.git/worktrees/loop\n", encoding="utf-8")
+
+    assert install.a_linked_worktree(main) is False
+    assert install.a_linked_worktree(wt) is True
+    cfg = _other_cfg()
+    # Same task name from both roots — which is exactly why the worktree may
+    # not register: -Force would repoint the real one at the scratch tree.
+    assert install.task_id(install.task_spec(main, cfg)) == \
+        install.task_id(install.task_spec(wt, cfg))
+    assert "not registered" in install.register_task(wt, cfg)
+    assert "not removed" in install.unregister_task(wt, cfg)
+
+
 def test_the_task_state_is_reported_and_never_judged():
     # Neither state is a problem: whether the expensive loop is on is the
     # owner's answer (ADR-0009), and `doctor` only says which it is.

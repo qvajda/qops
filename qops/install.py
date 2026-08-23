@@ -155,6 +155,24 @@ def task_id(spec: dict) -> str:
     return spec["path"] + spec["name"]
 
 
+def a_linked_worktree(root: Path) -> bool:
+    """The task belongs to the main checkout, and only to it.
+
+    `pickup-loop` runs every unattended sortie in a worktree under
+    `.qops/wt/loop`, which carries a tracked `.qops/config.yml` — so
+    `find_root()` inside a sortie resolves to the worktree, and an `install`
+    run there would render the same task name with the worktree as its root
+    and `-Force` it over the real one. The picker would then be pointed at a
+    tree that is `clean -fdx`ed at the start of every run, with a valid config
+    and no error: the silent replacement this whole change exists to close,
+    reached from inside the loop.
+
+    A linked worktree has `.git` as a file holding a `gitdir:` pointer; a main
+    checkout has it as a directory.
+    """
+    return (Path(root) / ".git").is_file()
+
+
 def _ps_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -271,6 +289,9 @@ def task_state_of(found: dict | None) -> str:
 
 def register_task(root: Path, cfg: dict) -> str:
     spec = task_spec(root, cfg)
+    if a_linked_worktree(root):
+        return (f"pickup task {task_id(spec)}: not registered — this root is a "
+                f"linked worktree and the task belongs to the main checkout")
     done = _powershell(_script(_REGISTER_TASK, spec))
     if done is None:
         return f"pickup task {task_id(spec)}: not registered, this host has no scheduler"
@@ -283,6 +304,9 @@ def register_task(root: Path, cfg: dict) -> str:
 def unregister_task(root: Path, cfg: dict) -> str:
     """So uninstalling a project leaves no orphan firing at a deleted tree."""
     spec = task_spec(root, cfg)
+    if a_linked_worktree(root):
+        return (f"pickup task {task_id(spec)}: not removed — this root is a "
+                f"linked worktree and the task belongs to the main checkout")
     done = _powershell(_script(_UNREGISTER_TASK, spec))
     if done is None:
         return f"pickup task {task_id(spec)}: nothing to remove, this host has no scheduler"
@@ -1151,12 +1175,20 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     `qops pending` (#131) already read the backlog once and passes it back
     here, so a run of both never issues the query twice."""
     problems = drift(root, cfg)
-    spec = task_spec(root, cfg)
-    found = registered_task(spec)
-    problems += task_problems(spec, found)
-    # Reported, not judged: whether the expensive loop is on is the owner's
-    # answer, and `doctor` neither changes it nor calls either state a problem.
-    print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
+    if a_linked_worktree(root):
+        # Not merely skipped for safety: from here the answer would be wrong.
+        # The registered task names the main checkout and this root is not it,
+        # so every sortie would read drift it has no way to fix.
+        print("doctor: pickup task not judged from a linked worktree — it "
+              "belongs to the main checkout")
+    else:
+        spec = task_spec(root, cfg)
+        found = registered_task(spec)
+        problems += task_problems(spec, found)
+        # Reported, not judged: whether the expensive loop is on is the owner's
+        # answer, and `doctor` neither changes it nor calls either state a
+        # problem.
+        print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
     problems += schema_drift(root, cfg)
     problems += undeclared_labels(cfg)
