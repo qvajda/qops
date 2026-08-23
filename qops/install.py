@@ -701,20 +701,37 @@ def owner_preconditions(root: Path, cfg: dict) -> list[str]:
             "\"Allow auto-merge\" and \"Automatically delete head branches\" "
             "are not both confirmed on — the owner's to set (contract #7)")
 
-    trusted = False
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            entry = (data.get("projects") or {}).get(str(root)) or {}
-            trusted = bool(entry.get("hasTrustDialogAccepted"))
-        except (OSError, json.JSONDecodeError):
-            pass
-    if not trusted:
+    if _trust_state(root) == "untrusted":
         problems.append(
             "the workspace has not been trusted here yet — run Claude Code "
             "interactively in this folder once (contract #8)")
     return problems
+
+
+def _trust_state(root: Path) -> str:
+    """"trusted", "untrusted", or "unknown" for `root` in `~/.claude.json`.
+
+    A missing or unreadable file is "unknown", not "untrusted" (#19): a
+    machine that has simply never opened Claude Code anywhere reads the same
+    as one where this workspace's dialog was declined, and only the second is
+    a problem `doctor` should report. `~/.claude.json` holds one root under
+    either path-separator form on Windows, so the match is separator- and
+    case-insensitive rather than an exact string compare.
+    """
+    claude_json = Path.home() / ".claude.json"
+    if not claude_json.exists():
+        return "unknown"
+    try:
+        data = json.loads(claude_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "unknown"
+    target = str(root).replace("\\", "/").casefold()
+    for key, entry in (data.get("projects") or {}).items():
+        if str(key).replace("\\", "/").casefold() == target:
+            if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted"):
+                return "trusted"
+            return "untrusted"
+    return "untrusted"
 
 
 def open_issues(cfg: dict) -> list[dict] | None:

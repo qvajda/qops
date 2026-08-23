@@ -4197,6 +4197,16 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
     # on one: both refs are set for every job of a `pull_request` workflow.
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
     monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    # A missing `~/.claude.json` now reads as "unknown" trust, not "untrusted"
+    # (#19) — pin an explicit untrusted fixture so this count stays 3
+    # regardless of whether the machine running this suite has ever opened
+    # Claude Code anywhere.
+    fake_home = tmp_path.parent / "fake-home-104"
+    fake_home.mkdir(exist_ok=True)
+    (fake_home / ".claude.json").write_text(
+        json.dumps({"projects": {str(tmp_path): {"hasTrustDialogAccepted": False}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(install.Path, "home", lambda: fake_home)
     rc = initmod.main(
         ["--project", "demo", "--repo", "qvajda/qops-init-104-fixture",
          "--python", "python3"], tmp_path, {})
@@ -4237,6 +4247,13 @@ def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
     assert rc == 0
     cfg = qconfig.load(tmp_path)
 
+    fake_home = tmp_path.parent / "fake-home-109"
+    fake_home.mkdir(exist_ok=True)
+    (fake_home / ".claude.json").write_text(
+        json.dumps({"projects": {str(tmp_path): {"hasTrustDialogAccepted": False}}}),
+        encoding="utf-8")
+    monkeypatch.setattr(install.Path, "home", lambda: fake_home)
+
     monkeypatch.setenv("GITHUB_BASE_REF", "master")
     monkeypatch.setenv("GITHUB_HEAD_REF", "feat/104-qops-init")
     on_a_pr = install.doctor(tmp_path, cfg)
@@ -4245,6 +4262,41 @@ def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
     # Not dropped, only moved off the merge path: the instrument still reads
     # them where they are answerable, and `init` prints them as next steps.
     assert len(install.owner_preconditions(tmp_path, cfg)) == 3
+
+
+def test_doctor_reports_an_untrusted_root_without_writing_to_it(
+        tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(install.Path, "home", lambda: fake_home)
+
+    claude_json = fake_home / ".claude.json"
+    claude_json.write_text(json.dumps(
+        {"projects": {str(root): {"hasTrustDialogAccepted": False}}}),
+        encoding="utf-8")
+    before = claude_json.read_text(encoding="utf-8")
+    assert install._trust_state(root) == "untrusted"
+    assert claude_json.read_text(encoding="utf-8") == before
+
+    # True, under either path-separator form Windows may hold for the same
+    # root, reads as trusted.
+    claude_json.write_text(json.dumps(
+        {"projects": {str(root).replace("\\", "/"):
+                      {"hasTrustDialogAccepted": True}}}),
+        encoding="utf-8")
+    assert install._trust_state(root) == "trusted"
+    claude_json.write_text(json.dumps(
+        {"projects": {str(root).replace("/", "\\"):
+                      {"hasTrustDialogAccepted": True}}}),
+        encoding="utf-8")
+    assert install._trust_state(root) == "trusted"
+
+    # No such file: unknown, not untrusted — a fresh, perfectly fine machine
+    # that has never opened Claude Code anywhere must not fail here.
+    claude_json.unlink()
+    assert install._trust_state(root) == "unknown"
 
 
 def test_init_prints_the_contracts_owner_only_next_steps():
