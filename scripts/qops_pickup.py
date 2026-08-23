@@ -347,10 +347,11 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
               "state is UNKNOWN, which is not the same as empty.",
               file=sys.stderr)
         return 1
+    reap_rc = _reap(argv, root, cfg, rows)
     waiting = pending.waiting_on_owner(root, rows)
     if not waiting:
         print("pickup-loop: nothing waiting on the owner.")
-        return 0
+        return reap_rc
     line = waiting[0]
     num = int(line.split()[0].lstrip("#"))
     clause = line.split(" — ", 1)[1]
@@ -358,14 +359,16 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     print(f"pickup-loop: #{num} is waiting on the owner - {clause}")
     if "--launch" not in argv:
         print(f"pickup-loop: dry run, not alerting. Would launch {name!r}.")
-        return 0
+        return reap_rc
     row = next((r for r in rows if r["number"] == num), None)
     existing = {l["name"] for l in (row or {}).get("labels", [])}
     prior_state = next((l for l in existing if l.startswith("state:")), None)
+    added = ["state:building", "no-auto"]
     claim = ["gh", "issue", "edit", str(num)]
     if prior_state:
         claim += ["--remove-label", prior_state]
-    claim += ["--add-label", "state:building", "--add-label", "no-auto"]
+    for label in added:
+        claim += ["--add-label", label]
     claimed = subprocess.run(claim, cwd=root, capture_output=True, text=True)
     if claimed.returncode:
         why = f"could not claim #{num}: {claimed.stderr.strip()}"
@@ -377,7 +380,7 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     # is the owner's session, in his tree, and the loop worktree is reset by
     # the next build pass.
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             alert_argv(num, clause, name), cwd=root,
             creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
             start_new_session=(os.name != "nt"))
@@ -386,9 +389,105 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"pickup-loop: {why}", file=sys.stderr)
         ledger.append(root, "alert_failed", {"issue": num, "why": why})
         return 1
-    ledger.append(root, "alert_launched", {"issue": num, "session": name})
+    # `pid` and `added`/`prior_state` are what a later pass needs to tell
+    # this claim's session apart from a live one and to release it (#147) -
+    # `session` (the display name) alone carries neither.
+    ledger.append(root, "alert_launched",
+                  {"issue": num, "session": name, "pid": proc.pid,
+                   "prior_state": prior_state, "added": added})
     print(f"pickup-loop: launched {name!r} for #{num}.")
-    return 0
+    return reap_rc
+
+
+def _pid_alive(pid: int, image: str) -> bool | None:
+    """Whether the process an alert launch started is still running.
+
+    `None` means *could not tell* and is never treated as `False` - per #147,
+    an absent `session_end` record cannot be trusted either way, so liveness
+    is read from the host's process list, not the ledger. POSIX: signal 0,
+    the standard existence probe. Windows has no such call, so `tasklist` is
+    asked instead and the pid must appear under `image` - narrowing this to
+    the process `alert_argv()` actually launched, so a pid reused by an
+    unrelated program after a reboot does not read as the same session.
+
+    ponytail: no check beyond image name (working directory, start time), so
+    a killed session whose pid is reused by another `claude` process within
+    the same boot still reads as alive. Narrow further if that proves to
+    matter in practice.
+    """
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return None
+        return True
+    exe = image if image.lower().endswith(".exe") else image + ".exe"
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FI", f"IMAGENAME eq {exe}", "/NH"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode:
+        return None
+    return str(pid) in out.stdout
+
+
+def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
+    """Release a claim whose session is gone (#147, ADR-0031 §5).
+
+    Runs ahead of `waiting_on_owner()` (called from `_alert`, before it reads
+    the waiting set): the released row is **not** mutated in `rows`, so this
+    same pass's `waiting_on_owner()` still treats it as claimed, and the
+    alert fires on the *next* pass - which is the acceptance criterion as
+    filed, not this one re-alerting on a row it just touched.
+
+    A claim with no `alert_launched` record is never reaped: it may be the
+    owner's own claim, or a build claim `_run()` took that this pass never
+    launched, and taking it would be a second stall wearing the costume of a
+    fix. `added`/`prior_state` are replayed from that record rather than
+    written here, so this function names no label of its own.
+    """
+    unreadable = False
+    for row, _ in pending.claimed_rows(root, rows):
+        num = row["number"]
+        launch = None
+        for rec in ledger.read(root):
+            if rec.get("event") == "alert_launched" and rec.get("issue") == num:
+                launch = rec
+        if launch is None or "pid" not in launch:
+            continue
+        image = Path(alert_argv(0, "", "")[0]).name
+        alive = _pid_alive(launch["pid"], image)
+        if alive is None:
+            unreadable = True
+            continue
+        if alive:
+            continue
+        if "--launch" not in argv:
+            print(f"pickup-loop: dry run, would release #{num} - session "
+                  f"{launch['pid']} is gone.")
+            continue
+        claim = ["gh", "issue", "edit", str(num)]
+        for label in launch.get("added", []):
+            claim += ["--remove-label", label]
+        prior_state = launch.get("prior_state")
+        if prior_state:
+            claim += ["--add-label", prior_state]
+        released = subprocess.run(claim, cwd=root, capture_output=True, text=True)
+        if released.returncode:
+            print(f"pickup-loop: could not release #{num}: "
+                  f"{released.stderr.strip()}", file=sys.stderr)
+            unreadable = True
+            continue
+        ledger.append(root, "alert_released", {"issue": num, "pid": launch["pid"]})
+        print(f"pickup-loop: released #{num} - session {launch['pid']} is gone.")
+    if unreadable:
+        print("pickup-loop: could not tell whether every claimed session is "
+              "alive - reaping nothing rather than guessing.", file=sys.stderr)
+    return 1 if unreadable else 0
 
 
 def _run(argv: list[str], root: Path) -> int:

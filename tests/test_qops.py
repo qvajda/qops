@@ -5224,8 +5224,12 @@ def test_an_attention_row_launches_one_remote_session(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
 
     launched = []
+
+    class _FakeProc:
+        pid = 4242
+
     monkeypatch.setattr(qops_pickup.subprocess, "Popen",
-                        lambda argv, **kw: launched.append(argv))
+                        lambda argv, **kw: launched.append(argv) or _FakeProc())
     edits = []
 
     def fake_run(cmd, **kw):
@@ -5328,10 +5332,143 @@ def test_the_alerter_holds_no_trigger_predicate():
     import re
     src = "\n".join(inspect.getsource(fn) for fn in (
         qops_pickup._alert, qops_pickup.alert_argv,
-        qops_pickup.alert_prompt, qops_pickup.alert_session_name))
+        qops_pickup.alert_prompt, qops_pickup.alert_session_name,
+        qops_pickup._reap, qops_pickup._pid_alive))
     assert not re.findall(r"gate:\w+", src)
     assert re.findall(r"state:\w+", src) == ["state:building"]
     assert src.count("no-auto") == 1
+
+
+# --------------------------------------------------------------------------
+# #147 - a dead alert session releases its claim, so a stalled row does not
+# read as worked-on forever. Liveness is read off the host's process list,
+# never off the ledger (a hard kill never writes `session_end`).
+# --------------------------------------------------------------------------
+
+def _claimed_row(number, extra_labels=("state:building", "no-auto")):
+    labels = [{"name": n} for n in extra_labels]
+    return {"number": number, "title": f"row {number}", "labels": labels,
+            "body": "n/a", "updatedAt": "2026-08-01T00:00:00Z"}
+
+
+def test_a_dead_alert_session_releases_its_claim(tmp_path, monkeypatch, capsys):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(50)
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 50, "session": "qops #50", "pid": 999,
+                               "prior_state": "state:planned",
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: False)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+
+    edits = []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert len(edits) == 1
+    claim = edits[0]
+    assert claim[:3] == ["gh", "issue", "edit"]
+    assert claim.count("--remove-label") == 2
+    assert "state:building" in claim and "no-auto" in claim
+    assert "--add-label" in claim and "state:planned" in claim
+
+    # The tracker, not the in-memory row, is what changed - so this pass's
+    # own `waiting_on_owner()` still treats the row as claimed. The *next*
+    # pass, reading the tracker's now-released labels, alerts again.
+    row["labels"] = [{"name": "state:planned"}, {"name": "gate:taste"}]
+    edits.clear()
+    assert qops_pickup._alert([], root, cfg) == 0
+    assert edits == []
+    assert "is waiting on the owner" in capsys.readouterr().out
+
+
+def test_a_live_alert_session_keeps_its_claim(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(51)
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 51, "session": "qops #51", "pid": 1234,
+                               "prior_state": "state:planned",
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: True)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("gh called")))
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+
+
+def test_a_session_killed_without_session_end_is_dead(tmp_path, monkeypatch):
+    """The reboot case #147 measured: a hard kill never writes
+    `session_end`, so an absent one must not read as a live session - the
+    claim is released on pid liveness alone, with `session_end` never
+    consulted."""
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(52)
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 52, "session": "qops #52", "pid": 777,
+                               "prior_state": None,
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: False)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    edits = []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert len(edits) == 1
+    assert "--remove-label" in edits[0] and "--add-label" not in edits[0]
+
+
+def test_an_unreadable_process_list_fails_the_run_and_reaps_nothing(tmp_path, monkeypatch):
+    """An unreadable host and an empty host must not look alike (CLAUDE.md):
+    `None` from `_pid_alive` fails the run once and reaps nothing, rather
+    than treating every claim on the host as dead."""
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(53)
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 53, "session": "qops #53", "pid": 555,
+                               "prior_state": "state:planned",
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: None)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("gh called")))
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 1
+
+
+def test_a_claim_with_no_alert_launched_is_never_reaped(tmp_path, monkeypatch):
+    """A claim this pass never took - an owner's own claim, or a build claim
+    - is not this pass's to touch, even though `pending.is_claimed()` sees
+    it. No `alert_launched` record for it means `_pid_alive` is never even
+    asked."""
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(54)
+    monkeypatch.setattr(qops_pickup, "_pid_alive",
+                        lambda pid, image: (_ for _ in ()).throw(AssertionError("checked")))
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("gh called")))
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
 
 
 def test_digest_template_carries_no_telegram_step():
