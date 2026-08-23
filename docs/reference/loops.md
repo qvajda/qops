@@ -76,45 +76,93 @@ never merges by hand, never activates a listing, never pushes to `master`.
 **And when there is nothing to build it plans one row instead** (#82, below),
 which is what stops a full backlog reading as an idle queue.
 
-### Registration — the task names its root
+### Registration — `qops install` renders it (ADR-0032)
 
-One task per repo root, **registered disabled**, and it is the only part of
-qops with no installer: the definition lives on the cron host and nowhere the
-repo can see it, which is why it is written down here. A code change already
-invalidated it once (#12, and the source repo's #176) — the picker stopped
-rooting off `__file__`, the registered task set no WorkingDirectory, and
-nothing noticed because the task was off.
+One task per repo root, **registered disabled**, and it is rendered from
+`.qops/config.yml` exactly like a workflow. It used to be the only part of qops
+with no installer: the definition lived on the cron host, named that machine's
+Python and that machine's checkout, and sat at the root of the task namespace
+under `qops-pickup-loop`, one per machine — so a second project installing qops
+replaced the first project's loop in silence (#12). A code change had already
+invalidated the hand-made definition once (the source repo's #176) and nothing
+noticed, because the task was off.
 
-PowerShell, per root, substituting the root's `.qops/config.yml` `project:`
-into the name:
-
-```powershell
-$root = "<absolute path to the repo root>"
-$name = "qops-pickup-loop-<project>"
-$action = New-ScheduledTaskAction -Execute "py.exe" `
-  -Argument "-3 `"$root\scripts\qops_pickup.py`" --root `"$root`" --launch" `
-  -WorkingDirectory $root
-$trigger = New-ScheduledTaskTrigger -Once -At 07:23 `
-  -RepetitionInterval (New-TimeSpan -Hours 1)
-Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Force
-Disable-ScheduledTask -TaskName $name        # registering never enables
 ```
+python -m qops install                    # renders the workflows AND the task
+python -m qops install --unregister-task  # removes it, leaving no orphan
+```
+
+| | |
+|---|---|
+| **Name** | `\qops\<project>\pickup-loop`, `<project>` from the config. A folder, so `Get-ScheduledTask -TaskPath '\qops\*'` lists every project's loop at once |
+| **Command** | `python:` from the config (`py -3`) **resolved on the host at install time**, the root's `scripts/qops_pickup.py`, `--root <root>`, and `--launch` only when `pickup_launch: true` |
+| **WorkingDirectory** | the root |
+| **Trigger** | once at 07:23, repeating hourly |
+| **State** | disabled on a fresh registration; a re-install never enables, and never disables one the owner enabled |
 
 - **`--root` is the point.** `find_root()` walks up from the working directory
   and returns that directory when it finds nothing, so a task with no root and
   no WorkingDirectory reads whatever tree the scheduler started it in. With two
   roots on one host that is the wrong backlog or no backlog, and the picker
-  exits 0 either way. `repo_root()` now refuses a root holding no
+  exits 0 either way. `repo_root()` refuses a root holding no
   `.qops/config.yml` and names where the root came from.
 - **`Register-ScheduledTask`, not `schtasks /create`** — `schtasks` cannot set a
   WorkingDirectory, which is how the empty one got there.
 - **Registering never enables.** ADR-0009's cost argument rests on the expensive
   loop being off unless the owner turned it on; an installer that helpfully
-  starts it is a bigger defect than the one being fixed (#12).
-- **Still hand-registered, still hardcoding an interpreter.** `py.exe` above
-  resolves through PATH rather than baking an absolute Python path, but the
-  name is still machine-global and nothing checks the registration against what
-  the config would render. That is #12's remaining scope.
+  starts it is a bigger defect than the one being fixed (#12). Turning it on
+  stays one `Enable-ScheduledTask` and not a build.
+- **`--launch` is off by default.** The flagless form prints what it would have
+  picked and spends nothing, so the schedule can be proved to fire without
+  starting an agent. It was baked into the hand-made task, where the dry run
+  was unreachable from the schedule.
+- **`qops doctor` checks it.** A registered command that no longer matches what
+  the config renders is a problem; the enabled/disabled state is *reported* and
+  is never a problem and never changed. On a host with no scheduler the query
+  answers unknown rather than clean.
+- **The interpreter is resolved, not just named.** A registered task does not
+  resolve its executable the way a shell does — no PATHEXT, and not the user's
+  PATH either. `py` and `py.exe` both register fine and then fail every fire
+  with `0x80070002` where the launcher is a per-user install. `qops install`
+  resolves `python:` on the host and registers the resolved path. That is not
+  the hardcoding #12 named: what was wrong was an absolute path *nothing
+  generated*, unable to follow the config and invalidated by it in silence.
+- **A project may decline it entirely** — `pickup_task: false` and no install
+  touches the host's scheduler. Removal still works with it false, and `doctor`
+  names a task left standing against it.
+- **Only the main checkout registers.** The loop's own sortie worktree
+  (`.qops/wt/loop`) carries a tracked config, so an `install` run inside a
+  sortie would render this same task name with the worktree as its root and
+  force it over the real one — aiming the picker at a tree that is
+  `clean -fdx`ed every run. A linked worktree registers nothing, removes
+  nothing, and `doctor` does not judge the task from one.
+- **The old flat task is not migrated by code.** A machine that still holds
+  `qops-pickup-loop` or `qops-pickup-loop-<project>` fires two pickers at one
+  root; removing it is one `Unregister-ScheduledTask` by the owner.
+
+### The schedule itself, observed 2026-08-23 (#12)
+
+Registration is `qops install`'s now, so the schedule could finally be fired
+rather than reasoned about — and firing it is what found the defect. Three
+attempts, on this machine:
+
+| Registered `Execute` | `LastTaskResult` | |
+|---|---|---|
+| `py` | `2147942402` | `0x80070002`, file not found — no PATHEXT for a task |
+| `py.exe` | `2147942402` | still not found: the launcher is a per-user install, outside the machine PATH |
+| the resolved absolute path | `0` | ran |
+
+The third left the evidence that matters, which a return code alone would not
+have: `{"ts": "2026-08-23T11:37:19+00:00", "event": "pickup_ran", "rc": 0}` in
+the ledger, from a run nobody started by hand. The picker read the right root,
+named the right tracker, picked a real row and — `pickup_launch` being false —
+spent nothing.
+
+Two of those three states would have failed hourly and silently. Nothing in
+the repo could have caught them: `doctor` compares the registration against
+what the config renders, and all three *were* what the config rendered. Only
+firing it and reading the result found it, which is CLAUDE.md's rule about
+measurement rather than status codes, applied to the scheduler itself.
 
 ### It answers a clarification when there is nothing to build (#85, ADR-0029 §5)
 
@@ -266,8 +314,9 @@ keystroke between the pick and the reconcile.**
 Three things it does *not* prove, stated because a criterion that swallows its
 own caveats is not a criterion:
 
-- **The schedule is still unexercised.** `qops-pickup-loop-qops` is registered
-  and **disabled**; this run was hand-launched and watched, because #9 is open.
+- **The schedule was still unexercised** at the time of this run: the task was
+  registered and disabled, and the run was hand-launched and watched. **Closed
+  2026-08-23**, below.
 - **The reconciler was dispatched, not scheduled.** `advance` did not fire, for
   the documented reason: GitHub raises no workflow run from an event its own
   `GITHUB_TOKEN` caused. The `reconcile` job in `digest.yml` is the backstop and

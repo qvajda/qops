@@ -1,4 +1,5 @@
-"""`qops install` renders .github/workflows from templates + .qops/config.yml;
+"""`qops install` renders .github/workflows from templates + .qops/config.yml
+and registers `pickup-loop`'s scheduled task from the same config;
 `qops doctor` detects drift between what is on disk and what the config says.
 
 A workflow nobody may hand-edit is the point: the CLAUDE.md line cap and the
@@ -102,6 +103,255 @@ def drift(root: Path, cfg: dict) -> list[str]:
             problems.append(f"{name}: hand-edited — edit .qops/config.yml or the "
                             f"template, then `qops install`")
     return problems
+
+
+# --- the pickup task (#12, ADR-0032) --------------------------------------
+#
+# The one loop that costs money was the one part of qops with no installer: its
+# definition lived on the cron host, named that machine's interpreter and that
+# machine's checkout, and sat at the root of the task namespace under a name
+# with no project in it — so a second project installing qops replaced the
+# first project's loop in silence. It is rendered from the config now, exactly
+# like a workflow, and named per project so a second checkout gets a second
+# task. Registering never enables: ADR-0009's cost argument rests on the
+# expensive loop being off unless the owner turned it on.
+
+TASK_FOLDER = "qops"
+TASK_LEAF = "pickup-loop"
+TASK_START = "07:23"
+TASK_SCRIPT = ("scripts", "qops_pickup.py")
+
+
+def _resolve_interpreter(token: str) -> str:
+    """The config's interpreter, as the scheduler will have to find it.
+
+    A registered task does NOT resolve its executable the way a shell does:
+    no PATHEXT, and not the user's PATH either. `py` and even `py.exe` register
+    fine here and then fail every fire with 0x80070002, "cannot find the file
+    specified" — because the launcher is a per-user install and lives outside
+    the machine PATH. Hourly, silently, on a host whose whole failure mode is
+    silence (ADR-0009); found only by firing the task and reading its result.
+
+    So the path is resolved **on the host, at install time**, and that is not
+    the defect #12 named. What was wrong before was an absolute path *nothing
+    generated*: written by hand, unable to follow `python:`, invalidated by a
+    config change with nothing to notice. This one is derived from `python:`
+    every install, re-derived on every host, and checked by `doctor`. The repo
+    still names no interpreter but the one in the config.
+    """
+    found = shutil.which(token)
+    if found:
+        return found
+    return token if Path(token).suffix else token + ".exe"
+
+
+def _quote(arg: str) -> str:
+    return f'"{arg}"' if " " in arg else arg
+
+
+def task_spec(root: Path, cfg: dict) -> dict:
+    """What the config says the scheduled task is. Pure — reads no host.
+
+    A folder rather than a flat prefix: one query over the qops folder lists
+    every project's loop on the machine at once, which a suffixed flat name
+    cannot do.
+    """
+    root = Path(root).resolve()
+    interpreter = str(cfg["python"]).split()
+    interpreter[0] = _resolve_interpreter(interpreter[0])
+    args = interpreter[1:] + [str(root.joinpath(*TASK_SCRIPT)), "--root", str(root)]
+    # Default off, and that is the safety valve: the flagless form prints what
+    # it would have picked and spends nothing, so the wiring can be proved
+    # without starting an agent. It was baked into the hand-made task, where it
+    # was unreachable.
+    if cfg.get("pickup_launch", False):
+        args.append("--launch")
+    return {
+        "path": f"\\{TASK_FOLDER}\\{cfg['project']}\\",
+        "name": TASK_LEAF,
+        "execute": interpreter[0],
+        "arguments": " ".join(_quote(a) for a in args),
+        "workdir": str(root),
+    }
+
+
+def task_id(spec: dict) -> str:
+    return spec["path"] + spec["name"]
+
+
+def a_linked_worktree(root: Path) -> bool:
+    """The task belongs to the main checkout, and only to it.
+
+    `pickup-loop` runs every unattended sortie in a worktree under
+    `.qops/wt/loop`, which carries a tracked `.qops/config.yml` — so
+    `find_root()` inside a sortie resolves to the worktree, and an `install`
+    run there would render the same task name with the worktree as its root
+    and `-Force` it over the real one. The picker would then be pointed at a
+    tree that is `clean -fdx`ed at the start of every run, with a valid config
+    and no error: the silent replacement this whole change exists to close,
+    reached from inside the loop.
+
+    A linked worktree has `.git` as a file holding a `gitdir:` pointer; a main
+    checkout has it as a directory.
+    """
+    return (Path(root) / ".git").is_file()
+
+
+def _ps_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _powershell(script: str):
+    """The host's answer, or None when there is no host to ask.
+
+    None is not "clean" — it is "unknown", and every caller reports it as
+    nothing rather than as agreement. A POSIX runner has no scheduled tasks and
+    no project's loop lives on it; `qops install` in CI renders workflows and
+    stops there.
+    """
+    if os.name != "nt":
+        return None
+    exe = shutil.which("powershell") or shutil.which("pwsh")
+    if not exe:
+        return None
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True)
+
+
+_QUERY_TASK = """
+$ErrorActionPreference = 'Stop'
+$t = Get-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@ -ErrorAction SilentlyContinue
+if (-not $t) { Write-Output 'null'; exit 0 }
+$a = $t.Actions[0]
+[pscustomobject]@{
+  execute   = [string]$a.Execute
+  arguments = [string]$a.Arguments
+  workdir   = [string]$a.WorkingDirectory
+  state     = [string]$t.State
+} | ConvertTo-Json -Compress
+"""
+
+# Register, then disable ONLY a task that was not already enabled. Force keeps
+# the definition current across a re-install; the conditional keeps an
+# enable the owner performed from being quietly undone by one.
+_REGISTER_TASK = """
+$ErrorActionPreference = 'Stop'
+$was = Get-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@ -ErrorAction SilentlyContinue
+$action = New-ScheduledTaskAction -Execute @EXECUTE@ -Argument @ARGUMENTS@ -WorkingDirectory @WORKDIR@
+$trigger = New-ScheduledTaskTrigger -Once -At @START@ -RepetitionInterval (New-TimeSpan -Hours 1)
+Register-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@ -Action $action -Trigger $trigger -Force | Out-Null
+if (-not $was -or $was.State -eq 'Disabled') {
+  Disable-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@ | Out-Null
+}
+(Get-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@).State
+"""
+
+_UNREGISTER_TASK = """
+$ErrorActionPreference = 'Stop'
+$t = Get-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@ -ErrorAction SilentlyContinue
+if (-not $t) { Write-Output 'absent'; exit 0 }
+Unregister-ScheduledTask -TaskPath @PATH@ -TaskName @NAME@ -Confirm:$false
+Write-Output 'removed'
+"""
+
+
+def _script(template: str, spec: dict) -> str:
+    out = template
+    for key, value in (("@PATH@", spec["path"]), ("@NAME@", spec["name"]),
+                       ("@EXECUTE@", spec["execute"]),
+                       ("@ARGUMENTS@", spec["arguments"]),
+                       ("@WORKDIR@", spec["workdir"]), ("@START@", TASK_START)):
+        out = out.replace(key, _ps_literal(value))
+    return out
+
+
+def registered_task(spec: dict) -> dict | None:
+    """The task as the host holds it: {} when absent, None when unknowable."""
+    done = _powershell(_script(_QUERY_TASK, spec))
+    if done is None or done.returncode != 0:
+        return None
+    try:
+        found = json.loads(done.stdout.strip() or "null")
+    except json.JSONDecodeError:
+        return None
+    return {} if found is None else found
+
+
+def task_problems(spec: dict, found: dict | None) -> list[str]:
+    """Drift between what the config renders and what the host has. Pure."""
+    if found is None:
+        return []
+    name = task_id(spec)
+    if not found:
+        return [f"pickup task {name}: not registered — run `qops install`"]
+    problems = []
+    for field in ("execute", "arguments", "workdir"):
+        want, got = spec[field], str(found.get(field, ""))
+        if want.casefold() != got.casefold():
+            problems.append(f"pickup task {name}: {field} is {got!r}, the config "
+                            f"renders {want!r} — run `qops install`")
+    return problems
+
+
+def task_drift(root: Path, cfg: dict) -> list[str]:
+    spec = task_spec(root, cfg)
+    return task_problems(spec, registered_task(spec))
+
+
+def task_state_of(found: dict | None) -> str:
+    """Reported, never changed — enabling stays a deliberate owner action.
+
+    Takes the query's answer rather than making it: `doctor` asks the host once
+    and both the drift check and this line read that one answer.
+    """
+    if found is None:
+        return "unknown (no scheduled-task host)"
+    if not found:
+        return "not registered"
+    return str(found.get("state", "")).casefold() or "unknown"
+
+
+def wants_the_task(cfg: dict) -> bool:
+    """Whether this project keeps a picker on the host at all.
+
+    A standing project decision, so it is a config key and not a flag: `qops
+    install` is run by sorties and by CI as well as by hand, and a flag that
+    has to be remembered every time is remembered none of them. A project that
+    never runs the loop — every consumer that only wants the workflows, the
+    guard and the brief — says so once and no install anywhere touches its
+    machine's scheduler.
+    """
+    return bool(cfg.get("pickup_task", True))
+
+
+def register_task(root: Path, cfg: dict) -> str:
+    spec = task_spec(root, cfg)
+    if not wants_the_task(cfg):
+        return "pickup task: not registered — `pickup_task: false` in the config"
+    if a_linked_worktree(root):
+        return (f"pickup task {task_id(spec)}: not registered — this root is a "
+                f"linked worktree and the task belongs to the main checkout")
+    done = _powershell(_script(_REGISTER_TASK, spec))
+    if done is None:
+        return f"pickup task {task_id(spec)}: not registered, this host has no scheduler"
+    if done.returncode != 0:
+        return (f"pickup task {task_id(spec)}: registration failed — "
+                f"{done.stderr.strip().splitlines()[-1] if done.stderr.strip() else 'no output'}")
+    return f"registered pickup task {task_id(spec)}, state {done.stdout.strip().casefold()}"
+
+
+def unregister_task(root: Path, cfg: dict) -> str:
+    """So uninstalling a project leaves no orphan firing at a deleted tree."""
+    spec = task_spec(root, cfg)
+    if a_linked_worktree(root):
+        return (f"pickup task {task_id(spec)}: not removed — this root is a "
+                f"linked worktree and the task belongs to the main checkout")
+    done = _powershell(_script(_UNREGISTER_TASK, spec))
+    if done is None:
+        return f"pickup task {task_id(spec)}: nothing to remove, this host has no scheduler"
+    if done.returncode != 0:
+        return f"pickup task {task_id(spec)}: removal failed — {done.stderr.strip()}"
+    return f"pickup task {task_id(spec)}: {done.stdout.strip()}"
 
 
 def broken_doc_links(root: Path) -> list[str]:
@@ -964,6 +1214,31 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     `qops pending` (#131) already read the backlog once and passes it back
     here, so a run of both never issues the query twice."""
     problems = drift(root, cfg)
+    if not wants_the_task(cfg):
+        # A project that declared no picker is not drifting from one. It is
+        # still checked for the opposite: a task registered under this
+        # project's name while the config says there should be none is an
+        # orphan, and an orphan of the expensive loop is the one worth naming.
+        stray = registered_task(task_spec(root, cfg))
+        if stray:
+            problems.append(
+                f"pickup task {task_id(task_spec(root, cfg))}: registered, but "
+                f"the config says `pickup_task: false` — run "
+                f"`qops install --unregister-task`")
+    elif a_linked_worktree(root):
+        # Not merely skipped for safety: from here the answer would be wrong.
+        # The registered task names the main checkout and this root is not it,
+        # so every sortie would read drift it has no way to fix.
+        print("doctor: pickup task not judged from a linked worktree — it "
+              "belongs to the main checkout")
+    else:
+        spec = task_spec(root, cfg)
+        found = registered_task(spec)
+        problems += task_problems(spec, found)
+        # Reported, not judged: whether the expensive loop is on is the owner's
+        # answer, and `doctor` neither changes it nor calls either state a
+        # problem.
+        print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
     problems += schema_drift(root, cfg)
     problems += undeclared_labels(cfg)
@@ -1013,9 +1288,13 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
 
 
 def main(argv: list[str], root: Path, cfg: dict) -> int:
+    if "--unregister-task" in argv:
+        print(unregister_task(root, cfg))
+        return 0
     written = render_all(root, cfg)
     for p in written:
         print(f"rendered {Path(p).relative_to(Path(root))}")
+    print(register_task(root, cfg))
     return 0
 
 

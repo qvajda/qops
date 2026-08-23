@@ -51,6 +51,14 @@ Required keys are marked ●. Everything else has a default and may be omitted.
 | `schema_check.sql` | path | A declared SQL schema to compare the live DB against. Omit the block and no check runs. |
 | `schema_check.db` | path | The live DB. Absent on a fresh checkout, which is not drift. |
 
+### pickup-loop
+
+| Key | Type | Meaning |
+|---|---|---|
+| `pickup_task` | bool | Default `true`. Whether `qops install` registers the scheduled task at all. False and no install touches the host's scheduler; `--unregister-task` still removes one, and `doctor` reports a task registered under this project's name while the config says there should be none. |
+| `pickup_launch` | bool | Default `false`. Whether the registered scheduled task passes `--launch`. Off, the schedule fires, prints what it would have picked and spends nothing — the only way to prove the wiring without starting an agent (ADR-0032). |
+| `pickup_max_silence_hours` | int | How long `qops brief` stays quiet before it reports that the loop has not completed a run. Read as state: the picker writes a heartbeat when a run finishes, and the absence of a recent one is the report. |
+
 ### Docs and hot path
 
 | Key | Type | Meaning |
@@ -120,8 +128,8 @@ malformed or refused.
 | `guard` | none = PreToolUse hook (payload on stdin); `scan` = the CI half | Hook: **2 blocks the call**. Scan: greps the tracked tree. | hook 0/2; scan 0/1 |
 | `close` | `<issue>…` `[--comment TEXT]` | Labels `state:done`, closes, writes the ledger. | 0/1; 2 if no issue given |
 | `init` | `--project`, `--repo`, `--python`, `--default-branch` (prompted if a flag is missing and stdin is a tty) | Scaffolds a blank repo: writes `.qops/config.yml`, `CLAUDE.md`, `.claude/settings.json`, the three native skills, `skills-lock.json`, then renders the workflows. Refuses if `.qops/config.yml` already exists. Prints the preconditions it cannot satisfy itself. | 0; 2 if `.qops/config.yml` exists or a required value is missing |
-| `install` | — | Renders all seven workflows from the templates + config. | 0 |
-| `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, the three owner/machine preconditions (branch protection, auto-merge settings, workspace trust — best-effort, and anything short of a confirmed yes counts as a problem, but read **only off a PR**: a runner cannot answer them and no PR can fix them), and the open-issue invariants. | 0/1 |
+| `install` | `--unregister-task` | Renders all seven workflows from the templates + config, then registers `pickup-loop`'s scheduled task (unless `pickup_task: false`) — named `\qops\<project>\pickup-loop`, commanded from `python:` and the root, **disabled** (ADR-0032). Registering never enables, and never disables a task the owner enabled. `--unregister-task` removes it and renders nothing. A host with no scheduler renders the workflows and says so. | 0 |
+| `doctor` | — | Workflow drift, broken doc citations, skill drift, hook installation, the hot-path cap, schema drift, the pickup task's drift against what the config renders (its enabled/disabled state is *reported*, never a problem and never changed), the three owner/machine preconditions (branch protection, auto-merge settings, workspace trust — best-effort, and anything short of a confirmed yes counts as a problem, but read **only off a PR**: a runner cannot answer them and no PR can fix them), and the open-issue invariants. | 0/1 |
 | `metrics` | `--state`, `--json`, `--since D`, `--until D` | S1–S13; `--state` writes the state-report table. | 0/1 |
 | `reconcile` | `--limit N` | Advances the row of every merged sortie whose issue is not `state:done`. | 0/1; 2 if no `repo:` |
 | `migrate` | `--dry-run` \| `--execute` \| `--verify` | `--dry-run` reads open rows and writes `.qops/migrate-plan.json`, touching no issue. `--execute` applies that plan whole or not at all, refusing if the corpus moved since. `--verify` re-reads the tracker and asserts every planned row landed (ADR-0030). | 0/1; 2 if no `repo:` or no flag given |
@@ -142,9 +150,10 @@ Two scripts sit outside the CLI, both rooted the same way:
   `pickup-loop` picker. Without `--launch` it prints what it would pick and
   starts nothing. A `--launch` run also produces the reviewer's verdict for
   every ready PR and posts it as a PR comment; `--review` runs that pass alone.
-  It is here and not in a second scheduled task because a registration is a
-  hand-made machine fact (#12), and here and not in CI because the model call
-  needs this host's Claude subscription (#80).
+  It is here and not in a second scheduled task because one loop is one
+  registration (#12), and here and not in CI because the model call needs this
+  host's Claude subscription (#80). The registered task passes `--launch` only
+  when `pickup_launch:` says so.
 
 ## What a fresh repo needs before `doctor` can be clean
 

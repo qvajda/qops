@@ -653,6 +653,119 @@ def test_the_repo_itself_is_installed_and_undrifted():
 
 
 # --------------------------------------------------------------------------
+# the pickup task is rendered from the config, not hand-registered (#12,
+# ADR-0032)
+#
+# The acceptance that matters is the second checkout: two projects on one
+# machine must get two independently named tasks, because the flat
+# machine-global name meant project 2's install silently replaced project 1's
+# loop and nothing said so.
+# --------------------------------------------------------------------------
+
+def _other_cfg(**over):
+    cfg = dict(qconfig.load(REPO))
+    cfg.update({"project": "someone-elses-project", "python": "py -3"})
+    cfg.update(over)
+    return cfg
+
+
+def test_the_pickup_task_is_named_for_its_project(tmp_path):
+    spec = install.task_spec(tmp_path, _other_cfg())
+    assert spec["path"] == "\\qops\\someone-elses-project\\"
+    assert spec["name"] == "pickup-loop"
+    assert install.task_id(spec) == "\\qops\\someone-elses-project\\pickup-loop"
+
+
+def test_a_second_checkout_gets_a_second_task(tmp_path):
+    first = install.task_spec(tmp_path / "one", _other_cfg(project="one"))
+    second = install.task_spec(tmp_path / "two", _other_cfg(project="two"))
+    assert install.task_id(first) != install.task_id(second)
+    assert first["workdir"] != second["workdir"]
+    assert first["arguments"] != second["arguments"]
+
+
+def test_the_task_command_carries_no_absolute_interpreter(tmp_path, monkeypatch):
+    # A registered task resolves its executable neither through PATHEXT nor
+    # through the user's PATH, so `python:` is resolved on the host at install
+    # time and the task carries what it finds. Both halves are asserted: what
+    # the host answers is used, and a host that answers nothing still gets a
+    # name a scheduler can look up.
+    monkeypatch.setattr(install.shutil, "which", lambda t: r"C:\Somewhere\py.EXE")
+    assert install.task_spec(tmp_path, _other_cfg())["execute"] == r"C:\Somewhere\py.EXE"
+    monkeypatch.setattr(install.shutil, "which", lambda t: None)
+    assert install.task_spec(tmp_path, _other_cfg())["execute"] == "py.exe"
+    assert install.task_spec(tmp_path, _other_cfg(python="py.exe -3"))["execute"] == "py.exe"
+
+    spec = install.task_spec(tmp_path, _other_cfg())
+    assert spec["arguments"].startswith("-3 ")
+    assert str(Path(tmp_path).resolve()) in spec["arguments"]
+    assert "qops_pickup.py" in spec["arguments"]
+    assert "--root" in spec["arguments"]
+    # The whole point of `python:` in config: no machine's Python path in the
+    # definition the repo renders.
+    assert ".exe" not in spec["arguments"].casefold()
+
+
+def test_launch_is_off_unless_the_config_says_otherwise(tmp_path):
+    assert "--launch" not in install.task_spec(tmp_path, _other_cfg())["arguments"]
+    on = install.task_spec(tmp_path, _other_cfg(pickup_launch=True))
+    assert on["arguments"].endswith("--launch")
+
+
+def test_task_drift_is_detected_and_an_absent_task_is_reported(tmp_path):
+    spec = install.task_spec(tmp_path, _other_cfg())
+    assert install.task_problems(spec, dict(spec, state="Disabled")) == []
+    assert install.task_problems(spec, None) == []          # unknowable, not clean
+    assert "not registered" in " ".join(install.task_problems(spec, {}))
+    stale = dict(spec, arguments=r"-3 C:\somewhere\else\qops_pickup.py --launch")
+    problems = install.task_problems(spec, stale)
+    assert len(problems) == 1 and "arguments" in problems[0]
+
+
+def test_a_linked_worktree_never_registers_or_removes_the_task(tmp_path):
+    """The loop's own sortie tree carries a tracked config, so `find_root()`
+    resolves to it — and an install there would `-Force` the same task name
+    over the real one, pointing the picker at a tree that is `clean -fdx`ed
+    at the start of every run (#12)."""
+    main, wt = tmp_path / "main", tmp_path / "main" / ".qops" / "wt" / "loop"
+    (main / ".git").mkdir(parents=True)
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: ../../../.git/worktrees/loop\n", encoding="utf-8")
+
+    assert install.a_linked_worktree(main) is False
+    assert install.a_linked_worktree(wt) is True
+    cfg = _other_cfg()
+    # Same task name from both roots — which is exactly why the worktree may
+    # not register: -Force would repoint the real one at the scratch tree.
+    assert install.task_id(install.task_spec(main, cfg)) == \
+        install.task_id(install.task_spec(wt, cfg))
+    assert "not registered" in install.register_task(wt, cfg)
+    assert "not removed" in install.unregister_task(wt, cfg)
+
+
+def test_a_project_can_decline_the_task_and_still_remove_one(tmp_path):
+    """The opt-out is a config key rather than a flag: `install` is run by
+    sorties and by CI as well as by hand (#12)."""
+    (tmp_path / ".git").mkdir()
+    off = _other_cfg(pickup_task=False)
+    assert install.wants_the_task(_other_cfg()) is True
+    assert install.wants_the_task(off) is False
+    assert "not registered" in install.register_task(tmp_path, off)
+    # Declining the task must not decline removing one already there — that is
+    # the only path a project has out of a registration it no longer wants.
+    assert "not registered" not in install.unregister_task(tmp_path, off)
+
+
+def test_the_task_state_is_reported_and_never_judged():
+    # Neither state is a problem: whether the expensive loop is on is the
+    # owner's answer (ADR-0009), and `doctor` only says which it is.
+    assert install.task_state_of({"state": "Disabled"}) == "disabled"
+    assert install.task_state_of({"state": "Ready"}) == "ready"
+    assert install.task_state_of({}) == "not registered"
+    assert "unknown" in install.task_state_of(None)
+
+
+# --------------------------------------------------------------------------
 # a rendered workflow has to run in a repo shaped UNLIKE the one that rendered
 # it (ADR-0024)
 #
@@ -4494,6 +4607,13 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
     for name in install.WORKFLOWS:
         assert (tmp_path / ".github" / "workflows" / name).exists()
 
+    # The host's scheduler is not this suite's to read or write: on a Windows
+    # machine the query answers about that machine's real tasks and on a runner
+    # it answers nothing, so the count below would depend on where the suite
+    # ran. Pin the task to "registered exactly as the config renders it" — the
+    # drift check itself is measured by the pure `task_problems` tests (#12).
+    monkeypatch.setattr(install, "registered_task",
+                        lambda spec: dict(spec, state="Disabled"))
     cfg = qconfig.load(tmp_path)
     assert install.drift(tmp_path, cfg) == []
     assert install.skill_drift(tmp_path, cfg) == []
@@ -4528,6 +4648,13 @@ def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
         encoding="utf-8")
     monkeypatch.setattr(install.Path, "home", lambda: fake_home)
 
+    # The host's scheduler is not this suite's to read or write: on a Windows
+    # machine the query answers about that machine's real tasks and on a runner
+    # it answers nothing, so the count below would depend on where the suite
+    # ran. Pin the task to "registered exactly as the config renders it" — the
+    # drift check itself is measured by the pure `task_problems` tests (#12).
+    monkeypatch.setattr(install, "registered_task",
+                        lambda spec: dict(spec, state="Disabled"))
     monkeypatch.setenv("GITHUB_BASE_REF", "master")
     monkeypatch.setenv("GITHUB_HEAD_REF", "feat/104-qops-init")
     on_a_pr = install.doctor(tmp_path, cfg)
