@@ -1533,6 +1533,108 @@ def test_the_launch_prompt_forbids_waiting_on_a_backgrounded_command():
     assert "only the tests you touched" in prompt
 
 
+# --------------------------------------------------------------------------
+# #9 — the launch never runs with `cwd=ROOT`. A sortie branches, so a launch
+# sharing the owner's checkout switched the branch underneath a live owner
+# session; the tree happening to be clean that time was luck, not a control.
+# `loop_worktree()` gives the launch its own persistent worktree instead.
+# --------------------------------------------------------------------------
+
+def _bare_repo(tmp_path, name="repo"):
+    """A real git repo with one commit on `master`, so `loop_worktree()`'s
+    `git worktree add` has a real ref to detach at."""
+    root = tmp_path / name
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "master")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / ".gitignore").write_text(".qops/wt/\n", encoding="utf-8")
+    (root / "f.txt").write_text("base\n", encoding="utf-8")
+    _git(root, "add", "f.txt", ".gitignore")
+    _git(root, "commit", "-q", "-m", "base")
+    return root
+
+
+def test_the_loop_worktree_is_never_the_owner_tree(tmp_path):
+    root = _bare_repo(tmp_path)
+    wt = qops_pickup.loop_worktree(root, {"default_branch": "master"})
+    assert wt != root
+    assert wt == root / ".qops" / "wt" / "loop"
+    assert (wt / "f.txt").exists()
+    listed = subprocess.run(["git", "worktree", "list"], cwd=root,
+                            capture_output=True, text=True).stdout
+    assert wt.as_posix() in listed.replace("\\", "/")
+
+
+def test_the_loop_worktree_is_reused_not_recreated(tmp_path):
+    """One persistent worktree, per the owner's decision (#9): a sortie
+    branches inside it, and the *next* launch must not find that branch still
+    checked out — it is reset to a clean detached `default_branch` first."""
+    root = _bare_repo(tmp_path)
+    cfg = {"default_branch": "master"}
+    wt = qops_pickup.loop_worktree(root, cfg)
+    _git(wt, "checkout", "-q", "-b", "fix/1-leftover")
+    (wt / "junk.txt").write_text("leftover\n", encoding="utf-8")
+
+    wt2 = qops_pickup.loop_worktree(root, cfg)
+    assert wt2 == wt
+    branch = subprocess.run(["git", "branch", "--show-current"], cwd=wt2,
+                            capture_output=True, text=True).stdout.strip()
+    assert branch == ""  # detached again, not still on the leftover branch
+    assert not (wt2 / "junk.txt").exists()
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=root,
+                               capture_output=True, text=True).stdout.replace("\\", "/")
+    assert worktrees.count(wt.as_posix()) == 1  # not added a second time
+
+
+def test_a_dirty_owner_tree_survives_setting_up_the_loop_worktree(tmp_path):
+    """The measured criterion from #9's acceptance: with an uncommitted change
+    at ROOT, giving the launch its worktree must leave ROOT's status and HEAD
+    exactly as they were."""
+    root = _bare_repo(tmp_path)
+    (root / "f.txt").write_text("owner is mid-edit\n", encoding="utf-8")
+    before_status = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                                   capture_output=True, text=True).stdout
+    before_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                                 capture_output=True, text=True).stdout
+
+    qops_pickup.loop_worktree(root, {"default_branch": "master"})
+
+    after_status = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                                  capture_output=True, text=True).stdout
+    after_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                                capture_output=True, text=True).stdout
+    assert after_status == before_status
+    assert after_head == before_head
+    assert (root / "f.txt").read_text(encoding="utf-8") == "owner is mid-edit\n"
+
+
+def test_the_run_launches_into_the_loop_worktree_not_root(tmp_path, monkeypatch):
+    """Wires `loop_worktree()` into `_run`'s launch call: the `cwd` the launch
+    subprocess actually runs with must not be `root`."""
+    root = _root(tmp_path)
+    row = _row(6, state="state:planned", extra=("ready:auto",),
+              body="## Acceptance\n- `tests/test_qops.py::test_x` passes.\n")
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [row])
+    monkeypatch.setattr(qops_pickup, "launch_evidence", lambda *a, **k: {})
+    monkeypatch.setattr(qops_pickup, "produced_work", lambda *a, **k: True)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    sentinel = root / "not-root"
+    monkeypatch.setattr(qops_pickup, "loop_worktree", lambda r, cfg: sentinel)
+
+    seen_cwd = []
+
+    def fake_run(cmd, **kw):
+        if cmd and cmd[0] == "claude":
+            seen_cwd.append(kw.get("cwd"))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert seen_cwd == [sentinel]
+    assert sentinel != root
+
+
 # --- the task names its root, and an unreadable queue is not an empty one ---
 #
 # The registered task's WorkingDirectory was empty (#12, and the source repo's
