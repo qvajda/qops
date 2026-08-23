@@ -425,8 +425,9 @@ def _run(argv: list[str], root: Path) -> int:
     # Straight to the file rather than captured in memory, so the account
     # survives a run that is killed rather than one that returns.
     before = launch_evidence(root, num)
+    launch_cwd = loop_worktree(root, cfg)
     with log.open("w", encoding="utf-8", errors="replace") as fh:
-        rc = subprocess.run(launch_argv(launch_prompt(num)), cwd=root,
+        rc = subprocess.run(launch_argv(launch_prompt(num)), cwd=launch_cwd,
                             env=launch_env(), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     # produced_work stays the thing that decides. Capturing output must not
@@ -778,6 +779,33 @@ def launch_prompt(num: str) -> str:
             f"on every push, which is the gate. Never background a command and "
             f"wait for it: this session ends when your turn does, so a "
             f"backgrounded run never reports and the sortie dies uncommitted.")
+
+
+def loop_worktree(root: Path, cfg: dict) -> Path:
+    """Where the launch runs — never ROOT (#9). One persistent worktree at
+    `.qops/wt/loop`, reused by every sortie rather than one per run: nothing
+    is ever abandoned, so there is no prune path to get wrong, and the cap in
+    `max_worktrees` (enforced at `qops/guard.py:263`) was sized for exactly
+    this — owner tree plus loop tree.
+
+    Detached at the default branch rather than a named one, so `git worktree
+    add` never collides with whatever branch is checked out at ROOT, and a
+    sortie is free to `checkout -b` its own branch inside it. Reused on a
+    later run, it is reset back to that same detached state first: the prior
+    sortie's branch and any leftovers from a killed run must not leak into
+    the next issue's launch."""
+    base = cfg.get("default_branch", "master")
+    wt = Path(root) / ".qops" / "wt" / "loop"
+    if not wt.exists():
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "worktree", "add", "--detach", str(wt), base],
+                       cwd=root, capture_output=True, text=True)
+    else:
+        subprocess.run(["git", "checkout", "--detach", base],
+                       cwd=wt, capture_output=True, text=True)
+        subprocess.run(["git", "clean", "-fdx"], cwd=wt, capture_output=True, text=True)
+        subprocess.run(["git", "reset", "--hard", base], cwd=wt, capture_output=True, text=True)
+    return wt
 
 
 def launch_argv(prompt: str) -> list[str]:
