@@ -83,6 +83,22 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: qvajda/qops
     steps:
+      # Only this job's new section needs the tree and the interpreter — it
+      # names rows `install.states_an_outcome()` (imported by
+      # `scripts/qops_pickup.py`) judges false, and that judgement lives in
+      # Python, not a second regex written into this shell script (#125).
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt
+          elif [ -f pyproject.toml ]; then pip install -e .
+          else pip install pyyaml; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
       - name: render
         run: |
           {
@@ -110,6 +126,15 @@ jobs:
             gh issue list --repo "$REPO" --state open --limit 20 \
               --label state:blocked --json number,title \
               --template '{{ range . }}- #{{ .number }} {{ .title }}{{ "\n" }}{{ end }}'
+            echo
+            # #125: a `state:triage` row that states no outcome is invisible
+            # to the planner (`states_an_outcome()` gates it out before ADR-
+            # 0027's split duty even sees it) — filed, and stuck there until
+            # someone states one. Only these, never the whole triage queue:
+            # most of it is plannable and simply waiting its turn, and a
+            # section listing all of it says nothing and gets skimmed past.
+            echo "Filed but unreachable (state:triage, states no outcome):"
+            python scripts/qops_pickup.py --unreached-triage
             echo
             echo "Awaiting the owner:"
             gh pr list --repo "$REPO" --state open --limit 10 \
