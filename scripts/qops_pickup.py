@@ -43,10 +43,9 @@ and a blanket bypass (`--dangerously-skip-permissions`) is never passed.
 
 import json
 import os
-import re
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 # The substrate that ships with this root, ahead of whatever is installed on
@@ -66,10 +65,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qops import config as qconfig, install, ledger, review  # noqa: E402
 
-# eligible(), unwritable() and UNWRITABLE live in qops/install.py (#71): doctor
-# needs the same predicates pickup-loop uses, and qops/ may not import from
-# scripts/, so the dependency runs the other way and this re-exports them.
-from qops.install import BLOCKING_FLAGS, UNWRITABLE, eligible, unwritable  # noqa: E402,F401
+# eligible(), unwritable(), UNWRITABLE, plannable(), decomposable(),
+# interviewed(), strikes() and struck_out() live in qops/install.py (#71,
+# #131): doctor and `qops pending` need the same predicates pickup-loop uses,
+# and qops/ may not import from scripts/, so the dependency runs the other way
+# and this re-exports them.
+from qops.install import (BLOCKING_FLAGS, STRIKES, STRIKE_WINDOW_DAYS,  # noqa: E402,F401
+                          UNWRITABLE, decomposable, eligible, interviewed,
+                          plannable, strikes, struck_out, unwritable)
 
 # The coder role's tools (.claude/agents/coder.md), verbatim. A sortie branches,
 # edits, commits and opens a PR with these; anything wider is #123's question,
@@ -107,59 +110,6 @@ def candidates(root: Path) -> list[dict] | None:
     """The rows the loop may *build*: `install.eligible()` over the backlog."""
     rows = backlog(root)
     return None if rows is None else [i for i in rows if eligible(i)]
-
-
-def plannable(issue: dict) -> bool:
-    """The rows the loop may *plan* (#82, ADR-0029 §1).
-
-    `state:triage` and nothing else: planning is the act that leaves triage, so
-    a row anywhere else has already had it. The filing bar is the gate — a row
-    whose body states no outcome cannot be planned into criteria, and guessing
-    at one is how a plan invents work the owner never licensed (ADR-0028).
-
-    `type:epic` is refused here rather than planned badly: an epic is where
-    direction only the owner holds gets set, so it gets an interview and then
-    #84's decomposition, never a plan instead of one (ADR-0029 §4).
-
-    `no-auto` and `blocked` veto planning for the same reason they veto
-    building — the flag says the owner is handling this one.
-    """
-    labels = {l["name"] for l in issue.get("labels", [])}
-    if "state:triage" not in labels or "type:epic" in labels:
-        return False
-    if labels & BLOCKING_FLAGS:
-        return False
-    return install.states_an_outcome(issue.get("body") or "")
-
-
-# ADR-0029 §4: the interview stays the owner's; what happens under it does not.
-# The trigger for decomposition must be a fact on the row, not an assumption
-# that a `type:epic` row was interviewed just because it exists. The interview
-# skill's own rule is that it "ends in something written down" - an ADR, for a
-# Mission-routed row - so a reference to an ADR that actually exists on disk is
-# that fact, checked mechanically rather than inferred from a label an
-# unattended session could apply to itself.
-ADR_REF = re.compile(r"docs/adr/\d+-[\w-]+\.md")
-
-
-def interviewed(root: Path, issue: dict) -> bool:
-    """The epic's body names an ADR file that exists in this repo."""
-    for m in ADR_REF.finditer(issue.get("body") or ""):
-        if (Path(root) / m.group(0)).exists():
-            return True
-    return False
-
-
-def decomposable(root: Path, issue: dict) -> bool:
-    """The rows the loop may *decompose* (#84, ADR-0029 §4).
-
-    `type:epic` and interviewed, same veto flags as `plannable()` - `no-auto`
-    and `blocked` still mean the owner is handling this one.
-    """
-    labels = {l["name"] for l in issue.get("labels", [])}
-    if "type:epic" not in labels or labels & BLOCKING_FLAGS:
-        return False
-    return interviewed(root, issue)
 
 
 def repo_root(argv: list[str]) -> Path:
@@ -225,59 +175,9 @@ def report_unlaunchable(root: Path, num: str, paths: list[str]) -> None:
 # state:building where no later fire can reach it. Both are right, and together
 # they mean a row that fails DETERMINISTICALLY is picked every hour forever -
 # #47 burned four sessions an hour apart and nothing counted (#49).
-STRIKES = 3
-
-# A ledger grows forever, and an enablement six weeks ago is not this week's
-# evidence. Releases older than this do not count toward a strike-out.
-STRIKE_WINDOW_DAYS = 14
-
-
-def strikes(root: Path, num: str, labels: frozenset[str] = frozenset(),
-            now: str | None = None) -> int:
-    """Consecutive failed runs on this row, most recent last.
-
-    Consecutive, not cumulative: a `pickup` with no `pickup_release` after it
-    is a run that worked, and it resets the count. The off-by-one here fails
-    open - it keeps burning sessions - so the interleaved case is the one the
-    tests lean on. A `pickup_skip` (#48) is not a strike: nothing was spent and
-    no session ever attempted the row.
-
-    `no-auto` absent means the owner cleared a prior strike-out (#99): the
-    count then starts after the last `pickup_struck_out` event rather than
-    from the top of the ledger, so the row gets a fresh budget instead of
-    reading as struck out for the rest of `STRIKE_WINDOW_DAYS`. While
-    `no-auto` is on the row, nothing has been cleared and the full history
-    still counts.
-    """
-    cutoff = (datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
-              ) - timedelta(days=STRIKE_WINDOW_DAYS)
-    records = [rec for rec in ledger.read(root) if str(rec.get("issue")) == str(num)]
-    if "no-auto" not in labels:
-        last_strike_out = max(
-            (i for i, rec in enumerate(records) if rec.get("event") == "pickup_struck_out"),
-            default=None)
-        if last_strike_out is not None:
-            records = records[last_strike_out + 1:]
-    count, open_attempt = 0, False
-    for rec in records:
-        try:
-            if datetime.fromisoformat(rec["ts"]) < cutoff:
-                continue
-        except (KeyError, ValueError):
-            continue
-        if rec.get("event") == "pickup":
-            if open_attempt:      # the previous claim never released: it worked
-                count = 0
-            open_attempt = True
-        elif rec.get("event") == "pickup_release":
-            count += 1
-            open_attempt = False
-    return count
-
-
-def struck_out(root: Path, num: str, labels: frozenset[str] = frozenset(),
-               now: str | None = None) -> bool:
-    return strikes(root, num, labels, now) >= STRIKES
+#
+# `STRIKES`/`STRIKE_WINDOW_DAYS`/`strikes()`/`struck_out()` live in
+# qops/install.py (#131) and are re-exported above.
 
 
 def strike_out(root: Path, num: str, count: int, why: str) -> None:

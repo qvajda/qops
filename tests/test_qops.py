@@ -4124,3 +4124,115 @@ def test_init_prints_the_contracts_owner_only_next_steps():
                   "Automatically delete head branches", "trust this workspace",
                   "enable the loop"):
         assert phrase in text, f"{phrase!r} missing from the printed next steps"
+
+
+# --------------------------------------------------------------------------
+# pending — #131. What is waiting on the owner, and what the loop takes next.
+# --------------------------------------------------------------------------
+
+from qops import pending as pendingmod  # noqa: E402
+
+
+def test_pending_names_the_owner_actions_and_the_loop_queue(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+
+    build_row = {"number": 1, "title": "build me", "updatedAt": "2026-08-01T00:00:00Z",
+                "body": "## Acceptance\n- `tests/test_qops.py::test_x` passes.\n",
+                "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                          {"name": "ready:auto"}]}
+    plan_row = {"number": 2, "title": "plan me", "updatedAt": "2026-08-02T00:00:00Z",
+               "body": "## Acceptance\n- it works.\n",
+               "labels": [{"name": "state:triage"}, {"name": "gate:machine"}]}
+    _with_adr(root)
+    decompose_row = {"number": 3, "title": "decompose me",
+                     "updatedAt": "2026-08-03T00:00:00Z", "body": _INTERVIEWED_EPIC_BODY,
+                     "labels": [{"name": "type:epic"}, {"name": "gate:machine"}]}
+    taste_row = {"number": 4, "title": "judge me", "updatedAt": "2026-08-04T00:00:00Z",
+                "body": "n/a", "labels": [{"name": "gate:taste"}, {"name": "state:planned"}]}
+    review_row = {"number": 5, "title": "review me", "updatedAt": "2026-08-05T00:00:00Z",
+                 "body": "n/a", "labels": [{"name": "state:review"}, {"name": "gate:machine"}]}
+    no_auto_row = {"number": 6, "title": "hand-held", "updatedAt": "2026-08-06T00:00:00Z",
+                  "body": "n/a", "labels": [{"name": "state:planned"},
+                                            {"name": "gate:machine"}, {"name": "no-auto"}]}
+    struck_row = {"number": 7, "title": "gave up on me", "updatedAt": "2026-08-07T00:00:00Z",
+                 "body": "## Acceptance\n- `tests/test_qops.py::test_x` passes.\n",
+                 "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                           {"name": "ready:auto"}]}
+    done_open_row = {"number": 8, "title": "stuck done", "updatedAt": "2026-08-08T00:00:00Z",
+                     "body": "n/a", "labels": [{"name": "state:done"}, {"name": "gate:machine"}]}
+    rows = [build_row, plan_row, decompose_row, taste_row, review_row,
+           no_auto_row, struck_row, done_open_row]
+
+    for _ in range(install.STRIKES):
+        ledger.append(root, "pickup", {"issue": "7"})
+        ledger.append(root, "pickup_release", {"issue": "7"})
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        assert cmd[:3] == ["gh", "issue", "list"]
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+    monkeypatch.setattr(pendingmod.subprocess, "run", fake_run)
+
+    doctor_calls = []
+
+    def fake_doctor(r, c, issues=None):
+        doctor_calls.append(issues)
+        return ["fake doctor problem"]
+    monkeypatch.setattr(pendingmod.install, "doctor", fake_doctor)
+
+    lines, rc = pendingmod.render(root, cfg)
+    assert rc == 0
+    text = "\n".join(lines)
+
+    # One tracker query, and doctor is handed the same rows rather than
+    # reading the tracker a second time.
+    assert len(calls) == 1
+    assert doctor_calls == [rows]
+
+    assert "#4" in text and "gate:taste" in text
+    assert "#5" in text and "state:review" in text
+    assert "#6" in text and "no-auto" in text
+    assert "#7" in text and "struck out" in text
+    assert "#8" in text and "cannot close itself" in text
+    assert "fake doctor problem" in text
+
+    # The queue order matches scripts/qops_pickup.py's own picks over the
+    # same fixture — the predicate is not reimplemented, only assembled.
+    build_pick = qops_pickup.first_launchable(root, [r for r in rows if install.eligible(r)])
+    plan_pick = qops_pickup.first_plannable(root, [r for r in rows if install.plannable(r)])
+    assert f"build: #{build_pick['number']}" in text
+    assert f"plan: #{plan_pick['number']}" in text
+    assert "decompose: #3" in text
+
+
+def test_pending_says_an_empty_queue_and_an_unreadable_tracker_apart(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    monkeypatch.setattr(pendingmod.install, "doctor", lambda *a, **k: [])
+
+    monkeypatch.setattr(pendingmod, "backlog", lambda repo: [])
+    lines, rc = pendingmod.render(root, cfg)
+    assert rc == 0
+    text = "\n".join(lines)
+    assert "build: empty" in text and "plan: empty" in text and "decompose: empty" in text
+
+    monkeypatch.setattr(pendingmod, "backlog", lambda repo: None)
+    lines, rc = pendingmod.render(root, cfg)
+    assert rc == 1
+    assert "UNKNOWN" in "\n".join(lines)
+
+
+def test_pending_writes_no_label_no_comment_and_no_ledger(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = {"number": 9, "title": "just sitting there",
+          "updatedAt": "2026-08-01T00:00:00Z", "body": "n/a",
+          "labels": [{"name": "gate:taste"}]}
+    monkeypatch.setattr(pendingmod, "backlog", lambda repo: [row])
+    monkeypatch.setattr(pendingmod.install, "doctor", lambda *a, **k: [])
+    before = ledger.read(root)
+    assert pendingmod.main([], root, cfg) == 0
+    assert ledger.read(root) == before

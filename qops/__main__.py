@@ -1,4 +1,4 @@
-"""qops — the per-project ways-of-working layer. One CLI, ten verbs.
+"""qops — the per-project ways-of-working layer. One CLI, eleven verbs.
 
     qops brief      what a session gets at SessionStart, <=400 tokens
     qops ledger     append a session event (hook payload on stdin)
@@ -12,13 +12,14 @@
     qops reconcile  advance the row of every merged sortie whose PR landed
     qops migrate    propose a taxonomy migration over open rows, apply nothing
                     until --execute (--dry-run/--execute/--verify, ADR-0030)
+    qops pending    what is waiting on the owner, and what the loop takes next
 """
 
 import sys
 from pathlib import Path
 
 from . import (brief, close, config, guard, init, install, ledger, metrics,
-               migrate, reconcile, review)
+               migrate, pending, reconcile, review)
 
 VERBS = {
     "brief": (brief.main, "session brief for SessionStart (<=400 tokens)"),
@@ -33,6 +34,7 @@ VERBS = {
     "metrics": (metrics.main, "S1/S2/S4/S9/S10; --state writes the state report"),
     "reconcile": (reconcile.main, "advance merged sorties whose row is not state:done"),
     "migrate": (migrate.main, "--dry-run/--execute/--verify a taxonomy migration"),
+    "pending": (pending.main, "waiting on you, and what the loop takes next; read-only"),
 }
 
 # init runs before any .qops/config.yml exists — the one verb that must not
