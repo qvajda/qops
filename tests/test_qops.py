@@ -2003,6 +2003,10 @@ def test_an_unplannable_row_gets_one_clarification_and_stops(tmp_path, monkeypat
     monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: False)
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
     monkeypatch.setattr(qops_pickup, "backlog", lambda r: [_row(5)])
+    # This root names a tracker, so the alert pass reads it too. Stub that
+    # read: `qops.pending` binds its own `subprocess`, so patching this
+    # module's does not reach it.
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [])
 
     assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
     # Not a failure: no release comment, and the strike budget is untouched, so
@@ -2216,6 +2220,10 @@ def test_a_clarification_clears_its_parent_or_marks_it_taste(tmp_path, monkeypat
     monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
     monkeypatch.setattr(qops_pickup, "backlog", lambda r: [child])
+    # This root names a tracker, so the alert pass reads it too. Stub that
+    # read: `qops.pending` binds its own `subprocess`, so patching this
+    # module's does not reach it.
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [])
 
     # 1. answered: the child closes, the parent's body grows and leaves
     # `state:blocked` for `state:triage`. Not a strike.
@@ -3678,11 +3686,15 @@ def test_the_verdict_pass_rides_the_registered_run(monkeypatch, tmp_path):
     ran = []
     monkeypatch.setattr(qops_pickup, "repo_root", lambda argv: tmp_path)
     monkeypatch.setattr(qops_pickup, "_run", lambda argv, root: ran.append("pick") or 0)
+    monkeypatch.setattr(qops_pickup, "_alert",
+                        lambda argv, root, cfg: ran.append("alert") or 0)
     monkeypatch.setattr(qops_pickup, "_review", lambda root: ran.append("review") or 0)
     monkeypatch.setattr(qops_pickup.ledger, "append", lambda *a, **k: None)
+    monkeypatch.setattr(qops_pickup.qconfig, "load", lambda root: {})
 
     assert qops_pickup.main(["--root", str(tmp_path), "--launch"]) == 0
-    assert ran == ["pick", "review"], ran   # after, so a new PR is judged now
+    # The verdict runs after both, so a PR this run opened is judged this run.
+    assert ran == ["pick", "alert", "review"], ran
 
     ran.clear()
     assert qops_pickup.main(["--review"]) == 0
@@ -3690,7 +3702,8 @@ def test_the_verdict_pass_rides_the_registered_run(monkeypatch, tmp_path):
 
     ran.clear()
     assert qops_pickup.main(["--root", str(tmp_path)]) == 0
-    assert ran == ["pick"], ran             # a dry run writes nothing anywhere
+    # A dry run writes nothing anywhere, and the verdict does not ride it.
+    assert ran == ["pick", "alert"], ran
 
 
 def test_the_filing_bar_does_not_judge_a_finished_row():
@@ -4949,3 +4962,138 @@ def test_loops_records_that_a_role_edit_needs_a_restart():
                      .read_text(encoding="utf-8").lower().split())
     assert "a role edit is not live until the session restarts" in loops
     assert "nothing in this repo can change it" in loops
+
+
+# --------------------------------------------------------------------------
+# #120, ADR-0031 - the alert pass launches a remote-control session for a row
+# waiting on the owner, so `state:blocked` and the rest of
+# `pending.waiting_on_owner()` are a real unattended outcome instead of a
+# silence only someone already looking at the tracker would notice.
+# --------------------------------------------------------------------------
+
+def _alert_row(number, extra=("gate:taste",), state="state:planned"):
+    labels = [{"name": state}, {"name": "gate:machine"}, *({"name": n} for n in extra)]
+    return {"number": number, "title": f"row {number}", "labels": labels,
+            "body": "n/a", "updatedAt": "2026-08-01T00:00:00Z"}
+
+
+def test_an_attention_row_launches_one_remote_session(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _alert_row(40)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+
+    launched = []
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda argv, **kw: launched.append(argv))
+    edits = []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert len(launched) == 1
+    argv = launched[0]
+    assert "--remote-control" in argv
+    name = argv[argv.index("--remote-control") + 1]
+    assert "#40" in name and "gate:taste" in name
+
+    # Claimed before the launch: one `gh issue edit` call, ahead of `Popen`.
+    assert len(edits) == 1
+    claim = edits[0]
+    assert claim[:3] == ["gh", "issue", "edit"]
+    assert "state:building" in claim and "no-auto" in claim
+
+    # A second pass over the now-claimed row (state:building + no-auto)
+    # launches nothing - `is_claimed()` removes it, no local state consulted.
+    row["labels"] = [{"name": "state:building"}, {"name": "no-auto"},
+                     {"name": "gate:taste"}]
+    launched.clear()
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert launched == []
+
+
+def test_nothing_waiting_launches_nothing_and_says_what_it_read(tmp_path, monkeypatch, capsys):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    ordinary = _alert_row(41, extra=(), state="state:planned")
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [ordinary])
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert "nothing waiting" in capsys.readouterr().out
+
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: None)
+    assert qops_pickup._alert(["--launch"], root, cfg) == 1
+    assert "UNKNOWN" in capsys.readouterr().err
+
+
+def test_a_config_naming_no_tracker_does_not_fail_the_run(tmp_path, monkeypatch, capsys):
+    """`repo` is required (the contract marks it so) and `doctor` is what
+    reports it missing. This pass rides the pickup run's exit code, so a
+    config defect must not surface here as an hourly picker failure - `_run`
+    carries on past the same config, printing `(none in config)`."""
+    root = _root(tmp_path)
+    monkeypatch.setattr(qops_pickup.pending, "backlog",
+                        lambda repo: (_ for _ in ()).throw(AssertionError("read")))
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, {"project": "x"}) == 0
+    assert "names no tracker" in capsys.readouterr().out
+
+
+def test_alert_dry_run_writes_nothing(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _alert_row(42)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("gh called")))
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    logged = []
+    monkeypatch.setattr(qops_pickup.ledger, "append",
+                        lambda *a, **k: logged.append(a) or {})
+    assert qops_pickup._alert([], root, cfg) == 0
+    assert logged == []
+
+
+def test_a_launch_failure_leaves_a_reason_and_fails_once(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _alert_row(43)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+
+    def fail_popen(*a, **k):
+        raise OSError("no such executable")
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen", fail_popen)
+
+    reasons = []
+    monkeypatch.setattr(qops_pickup.ledger, "append",
+                        lambda root, event, data=None: reasons.append((event, data)))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 1
+    assert reasons and reasons[0][0] == "alert_failed"
+
+
+def test_the_alerter_holds_no_trigger_predicate():
+    """ADR-0031 §1: the set is `pending.waiting_on_owner()`, never
+    re-derived. No `gate:` literal anywhere, and no `state:` literal other
+    than the single `state:building` the claim writes; `no-auto` appears
+    only in that same claim."""
+    import inspect
+    import re
+    src = "\n".join(inspect.getsource(fn) for fn in (
+        qops_pickup._alert, qops_pickup.alert_argv,
+        qops_pickup.alert_prompt, qops_pickup.alert_session_name))
+    assert not re.findall(r"gate:\w+", src)
+    assert re.findall(r"state:\w+", src) == ["state:building"]
+    assert src.count("no-auto") == 1
+
+
+def test_digest_template_carries_no_telegram_step():
+    tmpl = (REPO / "qops" / "templates" / "digest.yml.tmpl").read_text(encoding="utf-8")
+    assert "TELEGRAM" not in tmpl and "telegram" not in tmpl
