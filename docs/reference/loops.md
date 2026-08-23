@@ -321,6 +321,21 @@ waited on an approval nobody was there to give. Three repairs:
   guard` refuses that flag when it is set. An owner at a keyboard may still
   make that call; a loop with nobody reading may not.
 
+**Amended 2026-08-23 (#9):** the launch no longer runs with `cwd=ROOT`. A
+sortie branches, so a launch sharing the owner's checkout switched the branch
+underneath a live owner session — observed once, harmless only because the
+tree happened to be clean. `loop_worktree()` gives the launch its own
+persistent worktree at `.qops/wt/loop` instead: created once, detached at
+`default_branch`, and reused by every later sortie rather than one per run.
+Reuse rather than per-run creation was the deciding property — nothing is ever
+abandoned, so there is no prune path to get wrong, and `max_worktrees: 2`
+(`qops/guard.py:263`) was already sized for owner tree plus loop tree. On
+reuse the worktree is reset to a clean detached `default_branch` first, so a
+prior sortie's branch or a killed run's leftovers cannot leak into the next
+launch. `git branch`/`git rev-list` in `launch_evidence()` still run with
+`cwd=ROOT`: refs are shared across a repo's worktrees, so ROOT sees a branch
+created in the loop worktree without ROOT's own checkout ever moving.
+
 ## automerge-loop
 
 **Trigger:** any pull-request event — opened, reopened, synchronised, labelled,
