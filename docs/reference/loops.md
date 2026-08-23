@@ -261,6 +261,18 @@ reference is skipped and says why (`interviewed()`, `decomposable()` in
   plan.
 - **Success is measured, not assumed**: the epic's sub-issue count grew.
 
+### It alerts the owner when a row is waiting on him (#120, ADR-0031)
+
+A `--launch` run, after `_run` and before the reviewer's verdict pass, reads
+`pending.waiting_on_owner()` — the same set `qops pending` renders, never
+re-derived — and if a row has just entered it, claims it
+(`state:building` + `no-auto`) and launches `claude --remote-control` on the
+host with the row plus a drafted proposal, never the full render. One launch
+per pass; the claim is the record of having fired, so a claimed row is silent
+on the next pass with no local state consulted. Retired the dead Telegram step
+in `digest.yml.tmpl` in the same change — `qvajda/qops` has never carried that
+secret, so the step had been a silent no-op since extraction.
+
 ### The reviewer's verdict rides this run (#80)
 
 A `--launch` run, after it has picked, judges every **ready** (non-draft) open
