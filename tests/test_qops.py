@@ -188,8 +188,12 @@ def test_the_scribe_writes_only_under_docs_and_the_ledger():
     cfg = qconfig.load(REPO)
     assert guard.check("Write", {"file_path": "qops/guard.py", "content": "x"},
                        ctx, cfg)
-    assert guard.check("Write", {"file_path": "docs/adr/0099-x.md", "content": "x"},
-                       ctx, cfg) is None
+    # A real ADR path, and it has to be: `guard.check` scopes by the shape of
+    # the path and never reads the file, but `broken_doc_links` scans `tests/`
+    # too — an invented `docs/**.md` fixture fails `test`, `gate` and `guard`
+    # at once, all three on the same line.
+    assert guard.check("Write", {"file_path": "docs/adr/0021-the-guard-reads-argv.md",
+                                 "content": "x"}, ctx, cfg) is None
     assert guard.check("Edit", {"file_path": ".qops/ledger.jsonl",
                                 "new_string": "x"}, ctx, cfg) is None
     # A coder writing the same tree file is untouched by the scribe's scope.
