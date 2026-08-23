@@ -2003,6 +2003,10 @@ def test_an_unplannable_row_gets_one_clarification_and_stops(tmp_path, monkeypat
     monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: False)
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
     monkeypatch.setattr(qops_pickup, "backlog", lambda r: [_row(5)])
+    # This root names a tracker, so the alert pass reads it too. Stub that
+    # read: `qops.pending` binds its own `subprocess`, so patching this
+    # module's does not reach it.
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [])
 
     assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
     # Not a failure: no release comment, and the strike budget is untouched, so
@@ -2216,6 +2220,10 @@ def test_a_clarification_clears_its_parent_or_marks_it_taste(tmp_path, monkeypat
     monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
     monkeypatch.setattr(qops_pickup, "backlog", lambda r: [child])
+    # This root names a tracker, so the alert pass reads it too. Stub that
+    # read: `qops.pending` binds its own `subprocess`, so patching this
+    # module's does not reach it.
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [])
 
     # 1. answered: the child closes, the parent's body grows and leaves
     # `state:blocked` for `state:triage`. Not a strike.
@@ -3678,11 +3686,15 @@ def test_the_verdict_pass_rides_the_registered_run(monkeypatch, tmp_path):
     ran = []
     monkeypatch.setattr(qops_pickup, "repo_root", lambda argv: tmp_path)
     monkeypatch.setattr(qops_pickup, "_run", lambda argv, root: ran.append("pick") or 0)
+    monkeypatch.setattr(qops_pickup, "_alert",
+                        lambda argv, root, cfg: ran.append("alert") or 0)
     monkeypatch.setattr(qops_pickup, "_review", lambda root: ran.append("review") or 0)
     monkeypatch.setattr(qops_pickup.ledger, "append", lambda *a, **k: None)
+    monkeypatch.setattr(qops_pickup.qconfig, "load", lambda root: {})
 
     assert qops_pickup.main(["--root", str(tmp_path), "--launch"]) == 0
-    assert ran == ["pick", "review"], ran   # after, so a new PR is judged now
+    # The verdict runs after both, so a PR this run opened is judged this run.
+    assert ran == ["pick", "alert", "review"], ran
 
     ran.clear()
     assert qops_pickup.main(["--review"]) == 0
@@ -3690,7 +3702,8 @@ def test_the_verdict_pass_rides_the_registered_run(monkeypatch, tmp_path):
 
     ran.clear()
     assert qops_pickup.main(["--root", str(tmp_path)]) == 0
-    assert ran == ["pick"], ran             # a dry run writes nothing anywhere
+    # A dry run writes nothing anywhere, and the verdict does not ride it.
+    assert ran == ["pick", "alert"], ran
 
 
 def test_the_filing_bar_does_not_judge_a_finished_row():
@@ -5015,6 +5028,20 @@ def test_nothing_waiting_launches_nothing_and_says_what_it_read(tmp_path, monkey
     monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: None)
     assert qops_pickup._alert(["--launch"], root, cfg) == 1
     assert "UNKNOWN" in capsys.readouterr().err
+
+
+def test_a_config_naming_no_tracker_does_not_fail_the_run(tmp_path, monkeypatch, capsys):
+    """`repo` is required (the contract marks it so) and `doctor` is what
+    reports it missing. This pass rides the pickup run's exit code, so a
+    config defect must not surface here as an hourly picker failure - `_run`
+    carries on past the same config, printing `(none in config)`."""
+    root = _root(tmp_path)
+    monkeypatch.setattr(qops_pickup.pending, "backlog",
+                        lambda repo: (_ for _ in ()).throw(AssertionError("read")))
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, {"project": "x"}) == 0
+    assert "names no tracker" in capsys.readouterr().out
 
 
 def test_alert_dry_run_writes_nothing(tmp_path, monkeypatch):

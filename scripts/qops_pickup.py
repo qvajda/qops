@@ -333,9 +333,14 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     """
     repo = cfg.get("repo", "")
     if not repo:
-        print("pickup-loop: .qops/config.yml names no `repo` - cannot alert.",
-              file=sys.stderr)
-        return 1
+        # A config naming no tracker is a config defect, and `doctor` is where
+        # it is reported. This pass rides the pickup run's exit code, so
+        # failing here would report that defect as a picker failure, hourly,
+        # forever - and `_run` carries on past the same config for the same
+        # reason, printing `(none in config)`.
+        print("pickup-loop: .qops/config.yml names no tracker - "
+              "nothing to alert on.")
+        return 0
     rows = pending.backlog(repo)
     if rows is None:
         print("pickup-loop: could not read the backlog for alerting - queue "

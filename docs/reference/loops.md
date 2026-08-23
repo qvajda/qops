@@ -269,7 +269,10 @@ re-derived — and if a row has just entered it, claims it
 (`state:building` + `no-auto`) and launches `claude --remote-control` on the
 host with the row plus a drafted proposal, never the full render. One launch
 per pass; the claim is the record of having fired, so a claimed row is silent
-on the next pass with no local state consulted. Retired the dead Telegram step
+on the next pass with no local state consulted. A config naming no `repo`
+**skips** the pass rather than failing the run — a missing required key is
+`doctor`'s report, and this pass rides the picker's exit code, where it would
+read as an hourly picker failure instead. Retired the dead Telegram step
 in `digest.yml.tmpl` in the same change — `qvajda/qops` has never carried that
 secret, so the step had been a silent no-op since extraction.
 
