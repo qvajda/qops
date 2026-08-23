@@ -116,20 +116,55 @@ Disable-ScheduledTask -TaskName $name        # registering never enables
   name is still machine-global and nothing checks the registration against what
   the config would render. That is #12's remaining scope.
 
+### It answers a clarification when there is nothing to build (#85, ADR-0029 §5)
+
+#83 makes a stuck planner file a `type:research` clarification and block the
+parent — that terminates the planner's own idle, but nothing cleared the
+clarification itself, so the backlog filled with questions nobody answered
+and the loop idled behind them, one label further along. A `--launch` run
+that finds nothing to build answers **one** clarification instead, ahead of
+planning: the loop clears its own debt before it takes a new row.
+
+- **A clarification is a fact on the row, not the label alone.** `type:research`,
+  not `no-auto`/`blocked`, and its *native* parent (the same sub-issue edge
+  `qops/reconcile.py:derive_origin` reads the other side of, #81) is
+  `state:blocked` (`clarification()` in `scripts/qops_pickup.py`). An ordinary
+  `type:research` sortie with no such parent stays on the plan/build path.
+- **Runs ahead of the plan pass, behind the build pass.** Building still wins
+  over everything (#82); a clarification and a plannable row never compete for
+  the same run.
+- **One clarification per pass**, same reasoning as the plan and decompose
+  passes: the owner's review attention is not spent in a single burst.
+- **Two outcomes, both correct.** Answered: the answer is appended to the
+  parent's body, `state:blocked` comes off, `state:triage` goes back on, and
+  the child closes — the parent returns to the planner on a later pass. Taste:
+  the parent gets `gate:taste` and *stays* `state:blocked` — `plannable()`
+  already keeps a `state:blocked` row out of the planner's reach, so no new
+  label or predicate does that work.
+- **What it never writes**: `ready:auto`, `no-auto`, on either issue. A session
+  that cannot honestly answer and cannot honestly call it taste writes nothing
+  and stops — the same refusal `plan_prompt()`'s unplannable clause already
+  licenses, moved one row across.
+- **Success is measured, not assumed**: the child is closed, the parent's body
+  grew, and the parent carries exactly one of the two label shapes above
+  (`produced_answer()`). Anything else releases and spends the row's #49
+  strike budget, same account a failed plan spends.
+
 ### It plans when it has nothing to build (#82, ADR-0029 §1)
 
 `state:triage -> state:planned` was the last act in the chain that only an
 owner session performed, so the backlog could hold 18 rows and the loop still
 report an idle queue — the rows were filed, and nothing turned them into work.
 
-A `--launch` run that finds nothing to build plans **one** row instead: the
-least-recently-updated `state:triage` row that passes the filing bar, through
-the `planner` role (`.claude/agents/planner.md`), with the toolset and model
-`.qops/config.yml` declares for it.
+A `--launch` run that finds nothing to build, and nothing to answer either
+(#85, above), plans **one** row instead: the least-recently-updated
+`state:triage` row that passes the filing bar, through the `planner` role
+(`.claude/agents/planner.md`), with the toolset and model `.qops/config.yml`
+declares for it.
 
-- **Building is never starved by planning.** The plan pass runs only where the
-  run would previously have stopped — nothing eligible, or nothing eligible the
-  launch may write.
+- **Building is never starved by planning, and answering runs ahead of it.**
+  The plan pass runs only where the run would previously have stopped —
+  nothing eligible to build, nothing to write eligibly, and nothing to answer.
 - **One row per pass.** Planning the whole backlog in one burst spends the
   owner's review attention all at once, and a wrong planner would spend it
   before anyone read the first plan.

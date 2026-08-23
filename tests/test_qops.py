@@ -2040,6 +2040,125 @@ def test_every_run_names_the_root_and_the_tracker_it_read(tmp_path, monkeypatch,
 
 
 # --------------------------------------------------------------------------
+# #85 / ADR-0029 §5's second half — the loop answers a `type:research`
+# clarification's parent when there is nothing to build, ahead of planning:
+# clearing its own debt before it takes a new row.
+# --------------------------------------------------------------------------
+
+_CLARIFICATION_PARENT = "50"
+_CLARIFICATION_CHILD = "60"
+
+
+def _clarification_row(number=int(_CLARIFICATION_CHILD), state="state:triage",
+                       extra=(), body="what should X be?"):
+    labels = [{"name": state}, {"name": "type:research"}, {"name": "gate:machine"},
+              {"name": "origin:owner"}, *({"name": n} for n in extra)]
+    return {"number": number, "title": f"row {number}", "labels": labels,
+            "body": body, "updatedAt": "2026-08-01T00:00:00Z"}
+
+
+def _clarification_fake_run(parent_labels_after, parent_body_after,
+                            child_state_after, parent_labels_before=("state:blocked",)):
+    """A `gh` double routed by endpoint and issue number, covering every call
+    the answer pass makes: the native `parent` edge (read twice - once by
+    `clarification()`'s filter, once by `_answer()` after picking), the
+    parent's body before the run, and the child's + parent's state after."""
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/parent"):
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                {"number": int(_CLARIFICATION_PARENT),
+                 "labels": [{"name": n} for n in parent_labels_before]}), "")
+        if cmd[:3] == ["gh", "issue", "view"] and cmd[3] == _CLARIFICATION_PARENT:
+            fields = cmd[cmd.index("--json") + 1]
+            if fields == "body":
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"body": "before"}), "")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(
+                {"labels": [{"name": n} for n in parent_labels_after],
+                 "body": parent_body_after}), "")
+        if cmd[:3] == ["gh", "issue", "view"] and cmd[3] == _CLARIFICATION_CHILD:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"state": child_state_after}), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    return fake_run, calls
+
+
+def test_a_clarification_clears_its_parent_or_marks_it_taste(tmp_path, monkeypatch):
+    """Four cases (#85's acceptance): answered, taste, a no-progress run that
+    releases and strikes, and a row to build still winning over the answer
+    pass entirely."""
+    root = _root(tmp_path)
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/r\n", encoding="utf-8")
+    child = _clarification_row()
+    monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [child])
+
+    # 1. answered: the child closes, the parent's body grows and leaves
+    # `state:blocked` for `state:triage`. Not a strike.
+    fake_run, _ = _clarification_fake_run(
+        parent_labels_after=["state:triage", "gate:machine"],
+        parent_body_after="after", child_state_after="CLOSED")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert qops_pickup.strikes(root, _CLARIFICATION_CHILD) == 0
+
+    # 2. taste: the child closes, the parent's body grows, but it carries
+    # `gate:taste` and stays `state:blocked` - a correct outcome, not a
+    # failure, and still not a strike.
+    fake_run, _ = _clarification_fake_run(
+        parent_labels_after=["state:blocked", "gate:taste"],
+        parent_body_after="after taste", child_state_after="CLOSED")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert qops_pickup.strikes(root, _CLARIFICATION_CHILD) == 0
+
+    # 3. no progress: the child never closes, so `produced_answer()` is
+    # False - released, and it counts one strike, the same account a failed
+    # build or plan spends.
+    fake_run, calls = _clarification_fake_run(
+        parent_labels_after=["state:blocked", "gate:machine"],
+        parent_body_after="before", child_state_after="OPEN")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 1
+    assert qops_pickup.strikes(root, _CLARIFICATION_CHILD) == 1
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert not any("state:planned" in c for c in edits), edits
+
+    # 4. a row to build still wins - the answer pass never runs.
+    answered = []
+    monkeypatch.setattr(qops_pickup, "_answer",
+                        lambda *a, **k: answered.append(1) or 0)
+    buildable = _row(61, state="state:planned", extra=("ready:auto",),
+                     body="## Acceptance\n- `tests/test_qops.py::test_x` passes.\n")
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [child, buildable])
+    monkeypatch.setattr(qops_pickup, "launch_evidence", lambda *a, **k: {})
+    monkeypatch.setattr(qops_pickup, "produced_work", lambda *a, **k: True)
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert answered == []
+
+
+def test_a_research_row_with_no_blocked_parent_is_not_a_clarification(tmp_path, monkeypatch):
+    """The parent edge is what tells a clarification apart from an ordinary
+    `type:research` sortie, not the label alone - it stays on the plan/build
+    path when there is no such edge."""
+    root = _root(tmp_path)
+    ordinary = _clarification_row(number=62)
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "404 Not Found"))
+    assert not qops_pickup.clarification(root, "o/r", ordinary)
+
+    blocked_parent, _ = _clarification_fake_run(
+        parent_labels_after=["state:blocked"], parent_body_after="x",
+        child_state_after="OPEN", parent_labels_before=["state:blocked"])
+    monkeypatch.setattr(qops_pickup.subprocess, "run", blocked_parent)
+    assert qops_pickup.clarification(root, "o/r", ordinary)
+
+
+# --------------------------------------------------------------------------
 # reconcile — #150. `advance` fires on the `closed` pull-request event, and
 # GitHub raises no such event for a merge its own GITHUB_TOKEN caused, so the
 # unattended path advanced nothing. This reads state instead of an event.

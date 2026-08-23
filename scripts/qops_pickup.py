@@ -289,7 +289,8 @@ def _run(argv: list[str], root: Path) -> int:
               "the queue state is UNKNOWN, which is not the same as empty.",
               file=sys.stderr)
         return 1
-    picks = [i for i in rows if eligible(i)]
+    repo = cfg.get("repo", "")
+    picks = [i for i in rows if eligible(i) and not clarification(root, repo, i)]
     # **Building is never starved by planning** (#82). The plan pass runs only
     # where the run would previously have stopped: nothing eligible, or nothing
     # eligible that the launch may write.
@@ -304,7 +305,7 @@ def _run(argv: list[str], root: Path) -> int:
         else:
             print("pickup-loop: every eligible row names a path the launch may not "
                   "write - nothing was built, and this is NOT an idle queue (#48).")
-        return _plan(argv, root, cfg, rows)
+        return _answer(argv, root, cfg, rows)
     print(f"pickup-loop: #{issue['number']} {issue['title']}")
     if "--launch" not in argv:
         print("pickup-loop: dry run, not launching. Pass --launch to start an agent.")
@@ -345,6 +346,169 @@ def _run(argv: list[str], root: Path) -> int:
     return 0
 
 
+def native_parent(root: Path, repo: str, num: str) -> dict | None:
+    """The issue's native parent, through the REST `parent` endpoint
+    `qops/reconcile.py:parent_origin` already reads the other side of (#81) -
+    so the child inherits the parent's licence the same way, with no second
+    read of the edge.
+
+    No link (404) reads as no parent. So does any other failure: this is a
+    veto predicate (`clarification()`), and erring toward "not a
+    clarification" leaves the row on the ordinary plan/build path rather than
+    stalling it silently on an outage `clarification()` cannot itself report.
+    """
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/parent"],
+                         cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if out.returncode:
+        return None
+    try:
+        return json.loads(out.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+
+
+def clarification(root: Path, repo: str, issue: dict) -> bool:
+    """A `type:research` row the **answer** pass may work (#85, ADR-0029 §5's
+    second half): open, not `no-auto`/`blocked`, and its native parent is
+    `state:blocked`.
+
+    Two tracker facts, read off the tracker and never off prose - the same
+    rule `clarified()` follows for the planner's own side of this edge. A
+    `type:research` row with no blocked parent is an ordinary research
+    sortie and stays on the plan/build path; the parent edge is what tells
+    the two apart, not the label alone.
+    """
+    labels = {l["name"] for l in issue.get("labels", [])}
+    if "type:research" not in labels or labels & BLOCKING_FLAGS or not repo:
+        return False
+    parent = native_parent(root, repo, str(issue["number"]))
+    if parent is None:
+        return False
+    parent_labels = {l["name"] for l in parent.get("labels", [])}
+    return "state:blocked" in parent_labels
+
+
+def first_answerable(root: Path, rows: list[dict]) -> dict | None:
+    """Least-recently-updated first, skipping a struck-out clarification -
+    the same order and the same #49 budget the build and plan passes use."""
+    for row in sorted(rows, key=lambda i: i["updatedAt"]):
+        num = str(row["number"])
+        labels = {l["name"] for l in row.get("labels", [])}
+        if struck_out(root, num, labels):
+            print(f"pickup-loop: skipping #{num} - struck out after "
+                  f"{STRIKES} failed runs (#49).")
+            continue
+        return row
+    return None
+
+
+def issue_body(root: Path, num: str) -> str:
+    out = subprocess.run(["gh", "issue", "view", num, "--json", "body"],
+                         cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if out.returncode:
+        return ""
+    return json.loads(out.stdout or "{}").get("body") or ""
+
+
+def answer_prompt(num: str, parent: str) -> str:
+    """The rules from ADR-0029 §5's second half, inlined rather than a second
+    role file under `.claude/` this sortie may not write - the same reason
+    `decompose_prompt()` is inlined for #84. No new agent role (ADR-0018 sizes
+    the role set at six): this reuses the planner's toolset and model, since
+    answering is `gh issue edit`/`gh issue comment`, which the planner's
+    `Bash` already reaches."""
+    return (
+        f"Read issue #{num} on this repo's tracker - a `type:research` "
+        f"clarification whose native parent is #{parent}, `state:blocked` on "
+        f"the question #{num} asks. Answer it from what this repo and this "
+        f"tracker actually show - inventing a plausible-sounding answer is "
+        f"the same failure as a planner guessing, moved one row across, and "
+        f"is not licensed here. If you can honestly answer it: append the "
+        f"answer to #{parent}'s body under a marker, never replacing what the "
+        f"owner or a prior pass wrote, remove `state:blocked` and add "
+        f"`state:triage` on #{parent}, then close #{num}. If the "
+        f"investigation instead concludes the ambiguity is genuinely the "
+        f"owner's preference: append that conclusion to #{parent}'s body, "
+        f"swap its `gate:` label for `gate:taste`, leave #{parent} "
+        f"`state:blocked`, and close #{num} - that is a correct outcome, not "
+        f"a failure. Never write `ready:auto` or `no-auto` on either issue. "
+        f"If you cannot honestly answer the question and it is not the "
+        f"owner's preference either, write nothing and stop - do not guess.")
+
+
+def produced_answer(root: Path, num: str, parent: str, before: str) -> bool:
+    """Measurement, not the exit code (CLAUDE.md): the child is closed, the
+    parent's body grew, and the parent is either back at `state:triage` with
+    `state:blocked` gone, or carries `gate:taste` and is still
+    `state:blocked` - the two shapes `answer_prompt()` licenses, and nothing
+    else."""
+    child = subprocess.run(["gh", "issue", "view", num, "--json", "state"],
+                           cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if child.returncode or json.loads(child.stdout or "{}").get("state") != "CLOSED":
+        return False
+    out = subprocess.run(["gh", "issue", "view", parent, "--json", "labels,body"],
+                         cwd=root, capture_output=True, text=True, encoding="utf-8")
+    if out.returncode:
+        return False
+    data = json.loads(out.stdout or "{}")
+    if (data.get("body") or "") == before:
+        return False
+    labels = {l["name"] for l in data.get("labels", [])}
+    if "gate:taste" in labels:
+        return "state:blocked" in labels
+    return "state:triage" in labels and "state:blocked" not in labels
+
+
+def _answer(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
+    """Clear one blocked parent's clarification, when there was nothing to
+    build (#85, ADR-0029 §5's second half).
+
+    Runs ahead of `_plan()`: the loop clears its own debt - a blocked parent
+    waiting on a question - before it takes a new row to plan. Same
+    machinery as the plan and decompose passes: one run log, the same #49
+    strike budget, the same `--launch` rule that a dry run writes nothing
+    anywhere, and it falls through to `_plan()` when there is nothing to
+    answer.
+    """
+    repo = cfg.get("repo", "")
+    child = first_answerable(root, [i for i in rows if clarification(root, repo, i)])
+    if child is None:
+        return _plan(argv, root, cfg, rows)
+    num = str(child["number"])
+    parent = native_parent(root, repo, num)
+    if parent is None:
+        # The edge that made this row a candidate is gone by the time it was
+        # picked (removed by hand between the two reads) - not this pass's
+        # failure to report as one.
+        return _plan(argv, root, cfg, rows)
+    parent_num = str(parent["number"])
+    print(f"pickup-loop: answering #{num} {child['title']}")
+    if "--launch" not in argv:
+        print("pickup-loop: dry run, not answering. Pass --launch to start an agent.")
+        return 0
+    log = run_log_path(root, num)
+    ledger.append(root, "pickup", {"issue": num, "log": str(log), "mode": "answer"})
+    print(f"pickup-loop: run log {log}")
+    before = issue_body(root, parent_num)
+    with log.open("w", encoding="utf-8", errors="replace") as fh:
+        rc = subprocess.run(plan_argv(answer_prompt(num, parent_num), cfg), cwd=root,
+                            env=launch_env(), stdout=fh,
+                            stderr=subprocess.STDOUT).returncode
+    if rc or not produced_answer(root, num, parent_num, before):
+        why = f"exit {rc}" if rc else "the parent was not cleared"
+        # `relabel=False`: answering never claims a state label on the child -
+        # the child is closed by the run itself or not at all, and #49's
+        # release protocol only ever swaps `state:building` for
+        # `state:planned`, which this row never carried.
+        release(root, num, why, log, relabel=False)
+        labels = {l["name"] for l in child.get("labels", [])}
+        if struck_out(root, num, labels):
+            strike_out(root, num, strikes(root, num, labels), why)
+        return rc or 1
+    print(f"pickup-loop: #{num} answered, parent #{parent_num} cleared.")
+    return 0
+
+
 def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     """Plan one `state:triage` row, when there was nothing to build (#82).
 
@@ -359,7 +523,9 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     attention in a single burst, and a wrong planner would do it before anyone
     saw the first plan.
     """
-    row = first_plannable(root, [i for i in rows if plannable(i)])
+    repo = cfg.get("repo", "")
+    row = first_plannable(root, [i for i in rows
+                                 if plannable(i) and not clarification(root, repo, i)])
     if row is None:
         # A skip that names nothing is why #6 went four days unseen (#125) -
         # nothing extra when the set is empty, since an idle queue and a
