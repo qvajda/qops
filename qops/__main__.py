@@ -43,6 +43,11 @@ NO_CONFIG = {"init"}
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ADR-0009: nothing assumes the host. The cron host's stdout/stderr are
+    # cp1252; every verb's non-ASCII text (em dashes, etc.) must render
+    # regardless, without asking the terminal to adapt.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
