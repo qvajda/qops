@@ -50,6 +50,7 @@ session's, so they live here now and they travel with it.
 | R6 | **`no-auto` on anything whose completion path calls an endpoint the project forbids, spends, publishes, grants or acts in the owner's name.** That is *authority*, not judgement, so the flag carries it and the gate says nothing about it — a row may be `gate:machine` + `no-auto` (ADR-0026). |
 | R7 | `ready:auto` requires `state:planned`. Triage alone cannot fill the auto queue. |
 | R8 | **`ready:auto` requires a named test.** An issue is auto-eligible only if a test file it touches proves it done, and the issue says which one. |
+| R9 | **`priority:parked` is the owner's to set, never the triager's.** It is a namespace of its own (ADR-0034), separate from `gate:` — parking is priority, not judgement. The triager does not apply it; it does not decide priority. |
 
 **R8 is the size rule, and it is about the runtime rather than about quality.**
 The full suite runs longer than a single Bash call may, and a `claude -p`
