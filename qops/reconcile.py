@@ -266,8 +266,18 @@ def strike_stale_blockers(repo: str, limit: int = 50, run=gh) -> dict:
 
 def merged_prs(repo: str, limit: int, run=gh) -> list[dict]:
     out = run(["pr", "list", "--repo", repo, "--state", "merged",
-               "--limit", str(limit), "--json", "number,headRefName"])
+               "--limit", str(limit), "--json", "number,headRefName,mergedBy"])
     return json.loads(out or "[]")
+
+
+def _merged_by_bot(pr: dict) -> bool:
+    """Missing `mergedBy` (every pre-#126 fake) reads as the bot, same as
+    today - only a merger the API names and marks `is_bot: false` counts as
+    the owner (#126)."""
+    merged_by = pr.get("mergedBy")
+    if not merged_by:
+        return True
+    return bool(merged_by.get("is_bot", True))
 
 
 def open_prs(repo: str, limit: int, run=gh) -> list[dict]:
@@ -343,10 +353,14 @@ def advance_behind(repo: str, limit: int = 50, run=gh) -> dict:
     return report
 
 
-def _closeable(labels: set[str]) -> bool:
+def _closeable(labels: set[str], merged_by_bot: bool = True) -> bool:
     """ADR-0025: the gate already judged this row, so closing it judges
-    nothing new. `gate:taste` and `no-auto` both withhold that."""
-    return "gate:machine" in labels and "no-auto" not in labels
+    nothing new. `gate:taste` withholds that, always. `no-auto` withholds it
+    only when the loop is the one that merged - an owner who merged the PR
+    themselves already exercised the authority `no-auto` protects (#126)."""
+    if "gate:machine" not in labels:
+        return False
+    return "no-auto" not in labels or not merged_by_bot
 
 
 def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
@@ -364,6 +378,7 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
         if not issue:
             report["skipped"].append((str(num), "branch names no issue"))
             continue
+        merged_by_bot = _merged_by_bot(pr)
         try:
             data = json.loads(run(["issue", "view", issue, "--repo", repo,
                                    "--json", "state,labels"]))
@@ -371,21 +386,32 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
             if data.get("state") == "CLOSED":
                 report["skipped"].append((issue, "issue already closed"))
                 continue
-            if "no-auto" in labels:
+            owner_override = "no-auto" in labels and not merged_by_bot
+            if "no-auto" in labels and not owner_override:
                 # #12: a PR merged against this issue's branch number does not
                 # mean this issue's full scope shipped - a partial fix (#32)
                 # got re-labelled state:done on the next reconcile run,
                 # clobbering a deliberate correction back to state:planned.
                 # no-auto already means "the owner is handling this one"; it
-                # now vetoes the relabel too, not just the merge.
+                # now vetoes the relabel too, not just the merge - unless the
+                # owner is who merged it, in which case the authority it
+                # withholds was already exercised (#126).
                 report["skipped"].append((issue, "no-auto"))
                 continue
+            close_comment = (
+                f"Closed by `qops reconcile` because you merged PR #{num} "
+                f"(`{branch}`) yourself — `gate:machine` leaves nothing left "
+                f"to judge (ADR-0025, #126). Reopen if the merge only "
+                f"covered part of this row's scope."
+                if owner_override else
+                f"Closed by `qops reconcile`: `gate:machine`, already "
+                f"`state:done`, PR #{num} (`{branch}`) is merged — nothing "
+                f"left to judge (ADR-0025)."
+            )
             if DONE in labels:
-                if _closeable(labels):
-                    run(["issue", "close", issue, "--repo", repo, "--comment",
-                         f"Closed by `qops reconcile`: `gate:machine`, "
-                         f"already `state:done`, PR #{num} (`{branch}`) is "
-                         f"merged — nothing left to judge (ADR-0025)."])
+                if _closeable(labels, merged_by_bot):
+                    run(["issue", "close", issue, "--repo", repo,
+                         "--comment", close_comment])
                     report["closed"].append((issue, str(num)))
                 else:
                     report["skipped"].append((issue, "already state:done"))
@@ -395,11 +421,15 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
             for label in STATE_LABELS:
                 edit += ["--remove-label", label]
             run(edit)
-            if _closeable(labels):
-                run(["issue", "close", issue, "--repo", repo, "--comment",
-                     f"Advanced to `state:done` and closed by `qops "
-                     f"reconcile`: PR #{num} (`{branch}`) is merged, "
-                     f"`gate:machine` — nothing left to judge (ADR-0025)."])
+            if _closeable(labels, merged_by_bot):
+                advance_comment = (
+                    close_comment if owner_override else
+                    f"Advanced to `state:done` and closed by `qops "
+                    f"reconcile`: PR #{num} (`{branch}`) is merged, "
+                    f"`gate:machine` — nothing left to judge (ADR-0025)."
+                )
+                run(["issue", "close", issue, "--repo", repo,
+                     "--comment", advance_comment])
                 report["closed"].append((issue, str(num)))
             else:
                 run(["issue", "comment", issue, "--repo", repo, "--body",
