@@ -663,8 +663,17 @@ def test_the_repo_itself_is_installed_and_undrifted():
 # --------------------------------------------------------------------------
 
 def _other_cfg(**over):
+    """A consuming project's config, not this one's.
+
+    The pickup keys are dropped rather than inherited: they are this repo's own
+    answers, and a test that asserts what the *default* is must not read them
+    from a config that has taken a side. Flipping `pickup_launch` here broke
+    the default assertion in CI and nowhere else (#12).
+    """
     cfg = dict(qconfig.load(REPO))
     cfg.update({"project": "someone-elses-project", "python": "py -3"})
+    for key in ("pickup_task", "pickup_launch"):
+        cfg.pop(key, None)
     cfg.update(over)
     return cfg
 
