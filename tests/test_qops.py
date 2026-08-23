@@ -627,7 +627,11 @@ def test_install_renders_the_seven_workflows(tmp_path):
     written = install.render_all(tmp_path, qconfig.load(REPO))
     names = {Path(p).name for p in written}
     assert names == {"test.yml", "gate.yml", "guard.yml", "digest.yml",
-                     "groom.yml", "automerge.yml", "reviewer.yml"}
+                     "groom.yml", "automerge.yml", "reviewer.yml",
+                     # #158: `settings.json` is a rendering too, and it is
+                     # rendered by the same call — a second renderer is what
+                     # let the scaffold and the template drift apart.
+                     "settings.json"}
     import re
     for p in written:
         # `${{ secrets.X }}` is GitHub's own syntax and stays; qops placeholders
@@ -650,6 +654,87 @@ def test_doctor_detects_drift(tmp_path):
 
 def test_the_repo_itself_is_installed_and_undrifted():
     assert install.drift(REPO, qconfig.load(REPO)) == []
+
+
+# --------------------------------------------------------------------------
+# `.claude/settings.json` is a rendering, not a scaffold (#158)
+#
+# It used to be written once by `init` and never re-read, so this repo's copy
+# and the template drifted — six interpreter allows and a whole `$comment`
+# paragraph lived on one side only, and nothing compared them. The temp roots
+# below carry no `pyproject.toml` and no `.github/`, which is the ADR-0024
+# exercise: the render has to hold in a repo shaped unlike the one that wrote
+# it.
+# --------------------------------------------------------------------------
+
+def _cfg_with(**over):
+    cfg = dict(qconfig.load(REPO))
+    cfg.update(over)
+    return cfg
+
+
+def test_settings_json_merges_the_project_s_extra_permissions(tmp_path):
+    """R8 for #158. A project may widen the standard set and may narrow it —
+    it may not hand itself back something the substrate denied."""
+    cfg = _cfg_with(permissions={"extra": {
+        "allow": ["Bash(psql:*)",
+                  # Already denied by the template. The whole row rests on
+                  # this one not coming back (ADR-0016/0020).
+                  "Bash(gh api -X:*)"],
+        "deny": ["Bash(terraform apply:*)"],
+    }})
+    perms = json.loads(install.render_settings(cfg))["permissions"]
+    assert "Bash(sleep:*)" in perms["allow"], "standard set lost"
+    assert "Bash(psql:*)" in perms["allow"], "the project's own allow is absent"
+    assert "Bash(gh api -X:*)" not in perms["allow"], \
+        "an extra allow beat a template deny"
+    assert "Bash(gh api -X:*)" in perms["deny"]
+    assert "Bash(terraform apply:*)" in perms["deny"]
+
+
+def test_settings_json_renders_the_configured_interpreter(tmp_path):
+    """ADR-0009: `python:` exists so nothing guesses an interpreter, and a
+    hardcoded `py -3` in the template is a guess. Where the two collapse, the
+    dedupe is what keeps one rule from shipping twice."""
+    allow = json.loads(install.render_settings(
+        _cfg_with(python="py -3")))["permissions"]["allow"]
+    assert "Bash(py -3 -m qops brief:*)" in allow
+    allow = json.loads(install.render_settings(
+        _cfg_with(python="python")))["permissions"]["allow"]
+    assert allow.count("Bash(python -m qops brief:*)") == 1
+    assert allow.count("Bash(python -m pytest:*)") == 1
+
+
+def test_a_config_without_permissions_renders_the_standard_set(tmp_path):
+    cfg = _cfg_with()
+    cfg.pop("permissions", None)
+    perms = json.loads(install.render_settings(cfg))["permissions"]
+    assert "Bash(sleep:*)" in perms["allow"]
+    assert "Bash(gh api -X:*)" in perms["deny"]
+
+
+def test_drift_reports_a_hand_edited_settings_json(tmp_path):
+    """And names the migration. This fires on every consumer scaffolded before
+    #158 — they hand-edited a file the scaffold invited them to hand-edit, so
+    the message has to say where the additions go now."""
+    cfg = qconfig.load(REPO)
+    install.render_all(tmp_path, cfg)
+    assert install.drift(tmp_path, cfg) == []
+    settings = tmp_path / ".claude" / "settings.json"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    data["permissions"]["allow"].append("Bash(psql:*)")
+    settings.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    problems = " ".join(install.drift(tmp_path, cfg))
+    assert "settings.json" in problems
+    assert "permissions.extra" in problems
+
+
+def test_init_does_not_render_a_second_copy_of_settings_json():
+    """The defect #158 closes is the second renderer, not the missing key: a
+    copy `init` writes from `values` can never see `permissions.extra`, and
+    drifts from the template the moment either side changes."""
+    src = (REPO / "qops" / "init.py").read_text(encoding="utf-8")
+    assert "settings.json.tmpl" not in src
 
 
 # --------------------------------------------------------------------------
