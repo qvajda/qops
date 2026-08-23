@@ -82,6 +82,14 @@ is the defect the fix would have introduced.
 
 ## Consequences
 
+- **The interpreter is resolved on the host at install time**, so the
+  registered task carries an absolute path even though the repo names none. A
+  registered task does not resolve its executable the way a shell does: no
+  PATHEXT, and not the user's PATH. This is not the hardcoding this decision
+  set out to remove — what was wrong there was an absolute path *nothing
+  generated*, written by hand, unable to follow `python:`, invalidated by a
+  config change with nothing to notice. This one is re-derived from `python:`
+  on every install, on whatever host installs, and `doctor` checks it.
 - The naming scheme binds every future project on the machine, which is why
   this is an ADR and not a commit message. `\qops\` is now reserved.
 - **The name derives from `project:`, not from the root**, so two checkouts of

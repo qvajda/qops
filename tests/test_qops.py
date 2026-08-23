@@ -684,9 +684,19 @@ def test_a_second_checkout_gets_a_second_task(tmp_path):
     assert first["arguments"] != second["arguments"]
 
 
-def test_the_task_command_carries_no_absolute_interpreter(tmp_path):
+def test_the_task_command_carries_no_absolute_interpreter(tmp_path, monkeypatch):
+    # A registered task resolves its executable neither through PATHEXT nor
+    # through the user's PATH, so `python:` is resolved on the host at install
+    # time and the task carries what it finds. Both halves are asserted: what
+    # the host answers is used, and a host that answers nothing still gets a
+    # name a scheduler can look up.
+    monkeypatch.setattr(install.shutil, "which", lambda t: r"C:\Somewhere\py.EXE")
+    assert install.task_spec(tmp_path, _other_cfg())["execute"] == r"C:\Somewhere\py.EXE"
+    monkeypatch.setattr(install.shutil, "which", lambda t: None)
+    assert install.task_spec(tmp_path, _other_cfg())["execute"] == "py.exe"
+    assert install.task_spec(tmp_path, _other_cfg(python="py.exe -3"))["execute"] == "py.exe"
+
     spec = install.task_spec(tmp_path, _other_cfg())
-    assert spec["execute"] == "py"
     assert spec["arguments"].startswith("-3 ")
     assert str(Path(tmp_path).resolve()) in spec["arguments"]
     assert "qops_pickup.py" in spec["arguments"]

@@ -95,7 +95,7 @@ python -m qops install --unregister-task  # removes it, leaving no orphan
 | | |
 |---|---|
 | **Name** | `\qops\<project>\pickup-loop`, `<project>` from the config. A folder, so `Get-ScheduledTask -TaskPath '\qops\*'` lists every project's loop at once |
-| **Command** | `python:` from the config (`py -3`), the root's `scripts/qops_pickup.py`, `--root <root>`, and `--launch` only when `pickup_launch: true` |
+| **Command** | `python:` from the config (`py -3`) **resolved on the host at install time**, the root's `scripts/qops_pickup.py`, `--root <root>`, and `--launch` only when `pickup_launch: true` |
 | **WorkingDirectory** | the root |
 | **Trigger** | once at 07:23, repeating hourly |
 | **State** | disabled on a fresh registration; a re-install never enables, and never disables one the owner enabled |
@@ -120,6 +120,13 @@ python -m qops install --unregister-task  # removes it, leaving no orphan
   the config renders is a problem; the enabled/disabled state is *reported* and
   is never a problem and never changed. On a host with no scheduler the query
   answers unknown rather than clean.
+- **The interpreter is resolved, not just named.** A registered task does not
+  resolve its executable the way a shell does — no PATHEXT, and not the user's
+  PATH either. `py` and `py.exe` both register fine and then fail every fire
+  with `0x80070002` where the launcher is a per-user install. `qops install`
+  resolves `python:` on the host and registers the resolved path. That is not
+  the hardcoding #12 named: what was wrong was an absolute path *nothing
+  generated*, unable to follow the config and invalidated by it in silence.
 - **A project may decline it entirely** — `pickup_task: false` and no install
   touches the host's scheduler. Removal still works with it false, and `doctor`
   names a task left standing against it.
@@ -132,6 +139,30 @@ python -m qops install --unregister-task  # removes it, leaving no orphan
 - **The old flat task is not migrated by code.** A machine that still holds
   `qops-pickup-loop` or `qops-pickup-loop-<project>` fires two pickers at one
   root; removing it is one `Unregister-ScheduledTask` by the owner.
+
+### The schedule itself, observed 2026-08-23 (#12)
+
+Registration is `qops install`'s now, so the schedule could finally be fired
+rather than reasoned about — and firing it is what found the defect. Three
+attempts, on this machine:
+
+| Registered `Execute` | `LastTaskResult` | |
+|---|---|---|
+| `py` | `2147942402` | `0x80070002`, file not found — no PATHEXT for a task |
+| `py.exe` | `2147942402` | still not found: the launcher is a per-user install, outside the machine PATH |
+| the resolved absolute path | `0` | ran |
+
+The third left the evidence that matters, which a return code alone would not
+have: `{"ts": "2026-08-23T11:37:19+00:00", "event": "pickup_ran", "rc": 0}` in
+the ledger, from a run nobody started by hand. The picker read the right root,
+named the right tracker, picked a real row and — `pickup_launch` being false —
+spent nothing.
+
+Two of those three states would have failed hourly and silently. Nothing in
+the repo could have caught them: `doctor` compares the registration against
+what the config renders, and all three *were* what the config rendered. Only
+firing it and reading the result found it, which is CLAUDE.md's rule about
+measurement rather than status codes, applied to the scheduler itself.
 
 ### It answers a clarification when there is nothing to build (#85, ADR-0029 §5)
 
@@ -283,8 +314,9 @@ keystroke between the pick and the reconcile.**
 Three things it does *not* prove, stated because a criterion that swallows its
 own caveats is not a criterion:
 
-- **The schedule is still unexercised.** The task is registered
-  and **disabled**; this run was hand-launched and watched, because #9 is open.
+- **The schedule was still unexercised** at the time of this run: the task was
+  registered and disabled, and the run was hand-launched and watched. **Closed
+  2026-08-23**, below.
 - **The reconciler was dispatched, not scheduled.** `advance` did not fire, for
   the documented reason: GitHub raises no workflow run from an event its own
   `GITHUB_TOKEN` caused. The `reconcile` job in `digest.yml` is the backstop and

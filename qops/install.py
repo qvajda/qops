@@ -122,6 +122,29 @@ TASK_START = "07:23"
 TASK_SCRIPT = ("scripts", "qops_pickup.py")
 
 
+def _resolve_interpreter(token: str) -> str:
+    """The config's interpreter, as the scheduler will have to find it.
+
+    A registered task does NOT resolve its executable the way a shell does:
+    no PATHEXT, and not the user's PATH either. `py` and even `py.exe` register
+    fine here and then fail every fire with 0x80070002, "cannot find the file
+    specified" — because the launcher is a per-user install and lives outside
+    the machine PATH. Hourly, silently, on a host whose whole failure mode is
+    silence (ADR-0009); found only by firing the task and reading its result.
+
+    So the path is resolved **on the host, at install time**, and that is not
+    the defect #12 named. What was wrong before was an absolute path *nothing
+    generated*: written by hand, unable to follow `python:`, invalidated by a
+    config change with nothing to notice. This one is derived from `python:`
+    every install, re-derived on every host, and checked by `doctor`. The repo
+    still names no interpreter but the one in the config.
+    """
+    found = shutil.which(token)
+    if found:
+        return found
+    return token if Path(token).suffix else token + ".exe"
+
+
 def _quote(arg: str) -> str:
     return f'"{arg}"' if " " in arg else arg
 
@@ -135,6 +158,7 @@ def task_spec(root: Path, cfg: dict) -> dict:
     """
     root = Path(root).resolve()
     interpreter = str(cfg["python"]).split()
+    interpreter[0] = _resolve_interpreter(interpreter[0])
     args = interpreter[1:] + [str(root.joinpath(*TASK_SCRIPT)), "--root", str(root)]
     # Default off, and that is the safety valve: the flagless form prints what
     # it would have picked and spends nothing, so the wiring can be proved
