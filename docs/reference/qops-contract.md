@@ -126,6 +126,7 @@ malformed or refused.
 | `reconcile` | `--limit N` | Advances the row of every merged sortie whose issue is not `state:done`. | 0/1; 2 if no `repo:` |
 | `migrate` | `--dry-run` \| `--execute` \| `--verify` | `--dry-run` reads open rows and writes `.qops/migrate-plan.json`, touching no issue. `--execute` applies that plan whole or not at all, refusing if the corpus moved since. `--verify` re-reads the tracker and asserts every planned row landed (ADR-0030). | 0/1; 2 if no `repo:` or no flag given |
 | `review` | —; reads `PR_NUMBER` + `PR_HEAD_SHA` | The CI half of the reviewer gate: reads the host's verdict comment for **this** head SHA. Calls no model, needs no secret. Every non-verdict outcome is green and says why. | 0; **1 only on `does-not-serve`** |
+| `pending` | — | Read-only: what is waiting on the owner (`gate:taste`, `state:review`, `no-auto`, struck-out rows, a `gate:machine` row whose merged PR left it open, `doctor` problems) and what the loop takes next (the build/plan/decompose queues, in pickup order). Writes no label, no comment, no ledger row. One `gh issue list` call. | 0/1; 1 if the tracker could not be read or no `repo:` |
 
 Two scripts sit outside the CLI, both rooted the same way:
 
