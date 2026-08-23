@@ -291,10 +291,15 @@ def git_refusal(toks: list[str], ctx: dict, cfg: dict) -> str | None:
 
 
 def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
-    """Return a refusal reason, or None to allow. Pure - ctx carries git state."""
-    if tool_name == "Bash":
-        cmd = tool_input.get("command", "")
+    """Return a refusal reason, or None to allow. Pure - ctx carries git state.
 
+    Judged by what the payload carries, not by `tool_name` (#123): a shell
+    tool under any name still carries a `command` string, so a matcher that
+    reaches this function needs no second, hand-maintained list of names to
+    stay in sync with the one on the hook's `matcher`.
+    """
+    cmd = tool_input.get("command")
+    if cmd is not None:
         # #122: a denied unattended session retried with the sandbox off. An
         # owner at a keyboard can still make that call; a pickup-loop launch
         # (which sets QOPS_UNATTENDED) cannot, because nobody is reading.
@@ -315,7 +320,7 @@ def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
                 return hit
         return None
 
-    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+    if any(f in tool_input for f in _TEXT_FIELDS) or "edits" in tool_input:
         path_hint = tool_input.get("file_path", "")
         norm = path_hint.replace("\\", "/")
         excluded = tuple(cfg.get("scan_exclude", []))
@@ -417,7 +422,7 @@ def hook(root: Path, cfg: dict) -> int:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     ctx = git_context(root)
-    if tool_name == "Bash":
+    if "command" in tool_input:
         ctx["other_roots"] = other_git_roots(tool_input.get("command", ""), root)
     reason = check(tool_name, tool_input, ctx, cfg)
     if reason:
