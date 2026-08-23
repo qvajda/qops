@@ -97,11 +97,19 @@ native, a lock entry outside the declared set, and a lock entry with no `ref`.
 
 ### Taxonomy
 
-`labels.type`, `labels.state`, `labels.mission`, `labels.gate`, `labels.origin`
-are namespaces —
+`labels.type`, `labels.state`, `labels.mission`, `labels.gate`, `labels.origin`,
+`labels.priority` are namespaces —
 the rendered label is `<ns>:<value>`. `labels.flags` are verbatim strings.
 `milestones` is a flat list. **Every label named anywhere else in this file must
 appear here**, asserted by `test_every_label_the_config_names_is_in_its_own_taxonomy`.
+
+`labels.priority` is optional and zero-or-one, deliberately **not** in
+`validate.require_on_open`: an unlabelled row is normal priority, so no
+existing row needs migrating. One value today, `parked` (ADR-0034) — the
+owner's to grant, never the triager's. `parked` vetoes pickup, planning and
+decomposition (`install.BLOCKING_FLAGS`) and is excluded from `qops pending`'s
+"waiting on you" section: a parked row is not waiting on the owner, it is
+parked by him.
 
 `validate.require_on_open` — namespaces every open issue needs exactly one of.
 `origin` is one of them (ADR-0023, amended by ADR-0029): it names whose licence

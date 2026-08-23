@@ -4857,6 +4857,36 @@ def test_a_claimed_row_is_with_the_owner_not_waiting_on_him(tmp_path, monkeypatc
     assert {row["number"] for row, _ in claims} == {1, 3}
 
 
+def test_parked_is_the_priority_floor(tmp_path):
+    """#161/ADR-0034: `priority:parked` vetoes pickup, planning and
+    decomposition through the one set the three predicates share, and takes
+    a row out of `waiting_on_owner` — parked by the owner, not waiting on
+    him, even though it also carries `gate:taste`."""
+    root = _root(tmp_path)
+    _with_adr(root)
+
+    parked_build = {"number": 1, "title": "parked build",
+                    "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                              {"name": "ready:auto"}, {"name": "priority:parked"}]}
+    parked_plan = {"number": 2, "title": "parked plan",
+                   "body": "## Acceptance\n- it works.\n",
+                   "labels": [{"name": "state:triage"}, {"name": "gate:machine"},
+                             {"name": "priority:parked"}]}
+    parked_epic = {"number": 3, "title": "parked epic", "body": _INTERVIEWED_EPIC_BODY,
+                   "labels": [{"name": "type:epic"}, {"name": "gate:machine"},
+                             {"name": "priority:parked"}]}
+    parked_taste = {"number": 4, "title": "parked taste",
+                    "labels": [{"name": "gate:taste"}, {"name": "state:planned"},
+                              {"name": "priority:parked"}]}
+
+    assert not install.eligible(parked_build)
+    assert not install.plannable(parked_plan)
+    assert not install.decomposable(root, parked_epic)
+
+    out = pendingmod.waiting_on_owner(root, [parked_taste])
+    assert not out
+
+
 def test_pending_says_an_empty_queue_and_an_unreadable_tracker_apart(tmp_path, monkeypatch):
     root = _root(tmp_path)
     cfg = {"repo": "o/r"}

@@ -512,7 +512,7 @@ def schema_drift(root: Path, cfg: dict | None = None,
 # A label, as written in config: `namespace:value`, no spaces. It matches
 # `qops:status` and `ready:auto` and not a prose `why:` line.
 _LABEL_LIKE = re.compile(r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_.:-]*$")
-_NAMESPACES = ("type", "state", "mission", "gate")
+_NAMESPACES = ("type", "state", "mission", "gate", "origin", "priority")
 
 
 def taxonomy(cfg: dict) -> set[str]:
@@ -552,8 +552,10 @@ def undeclared_labels(cfg: dict) -> list[str]:
 # the thing that will judge it, not that the name resolves today.
 _NAMES_A_TEST = re.compile(r"tests?[/\\][\w./\\-]*\.py|\btest_\w+")
 
-# Any flag that vetoes pickup regardless of everything else (#48/#122).
-BLOCKING_FLAGS = {"no-auto", "blocked"}
+# Any flag that vetoes pickup regardless of everything else (#48/#122). It
+# vetoes more than pickup now: `priority:parked` (#161) stops the picker, the
+# planner and the decomposer together via this one set.
+BLOCKING_FLAGS = {"no-auto", "blocked", "priority:parked"}
 
 
 def eligible(issue: dict) -> bool:

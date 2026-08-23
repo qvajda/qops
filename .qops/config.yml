@@ -141,6 +141,9 @@ labels:
   # parent is intended; `qops reconcile` derives it to the parent's `origin:`
   # from a native sub-issue link, never from a claim.
   origin: [owner, agent, pending]
+  # Optional and zero-or-one, deliberately NOT in `require_on_open`: an
+  # unlabelled row is normal priority. `critical` is #106's, not this one's.
+  priority: [parked]
   # Every label named anywhere in this file must appear here; `qops doctor`
   # asserts it. `qops:status` lived only under `ci:` in the source repo, so the
   # importer never created it and the daily digest failed for weeks (#136).

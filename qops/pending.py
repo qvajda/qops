@@ -107,6 +107,8 @@ def waiting_on_owner(root: Path, rows: list[dict]) -> list[str]:
         labels = _labels(row)
         if is_claimed(labels):
             continue
+        if "priority:parked" in labels:
+            continue
         if "gate:taste" in labels:
             out.append(f"#{num} {title} — gate:taste: a judgement is the deliverable")
         if "state:review" in labels:
@@ -155,6 +157,11 @@ def render(root: Path, cfg: dict) -> tuple[list[str], int]:
     lines = ["## Waiting on you"]
     owner_rows = waiting_on_owner(root, rows)
     lines += owner_rows if owner_rows else ["  nothing"]
+
+    parked = [r for r in rows if "priority:parked" in _labels(r)]
+    if parked:
+        lines.append(f"## Parked ({len(parked)})")
+        lines.append("  quiet, not invisible — `gh issue list --label priority:parked`")
 
     claims = claimed_rows(root, rows)
     if claims:

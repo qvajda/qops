@@ -55,7 +55,7 @@ def load_taxonomy() -> tuple[set[str], set[str]]:
     the file is ours and flat, and a dependency for five lines is not lazy."""
     text = CONFIG.read_text(encoding="utf-8")
     labels: set[str] = set()
-    for ns in ("type", "state", "mission", "gate", "origin"):
+    for ns in ("type", "state", "mission", "gate", "origin", "priority"):
         m = re.search(rf"^  {ns}: \[(.*?)\]", text, re.M)
         if m:
             labels |= {f"{ns}:{v.strip()}" for v in m.group(1).split(",")}
