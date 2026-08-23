@@ -93,7 +93,15 @@ native, a lock entry outside the declared set, and a lock entry with no `ref`.
 
 `agents.<role>` → `{model, effort, tools}` for each of the six roles
 (`planner`, `coder`, `reviewer`, `scribe`, `triager`, `interactor`).
-`delegation_cap` caps concurrent subagents.
+`agents.<role>.allow/deny` — optional per-role command classes (ADR-0033). A
+role stating neither behaves exactly as it does today; there is no reader yet.
+
+### Permissions
+
+| Key | Type | Meaning |
+|---|---|---|
+| `permissions.extra.allow` | list[str] | Project-shaped rules merged onto the substrate standard allow set when `.claude/settings.json` is rendered (#158). |
+| `permissions.extra.deny` | list[str] | Same, for the deny set. Additive in both halves, subtractive last (`qops/install.py:104-122`). |
 
 ### Taxonomy
 

@@ -128,7 +128,6 @@ agents:
     model: haiku
     effort: low
     tools: [Bash, Read]
-delegation_cap: 1
 
 # --- taxonomy --------------------------------------------------------------
 labels:
