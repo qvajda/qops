@@ -529,6 +529,30 @@ def unlaunchable_and_auto_eligible(issues: list[dict]) -> list[str]:
             if eligible(i) and unwritable(i.get("body") or "")]
 
 
+def redundant_no_auto(issues: list[dict]) -> list[str]:
+    """A row where `no-auto` buys nothing `unwritable()` was not already
+    catching for free (#127).
+
+    `no-auto` answers authority, `gate:` answers judgement (ADR-0026) — but
+    the only route in when a row names an `UNWRITABLE` path is already
+    closed by `unlaunchable_and_auto_eligible()`'s reach check, whether or
+    not `no-auto` is there. #83 carried the flag anyway and cost the owner
+    a manual merge and a manual close for a reach the substrate already knew.
+
+    Advisory only, deliberately: only the owner knows whether a given
+    `no-auto` means "the launch cannot reach this" or "I am handling this
+    one myself" — this reports the redundancy, it never removes the label.
+    """
+    return [f"#{i['number']}: `no-auto` on a `gate:machine` row that already "
+            f"cannot write {', '.join(unwritable(i.get('body') or ''))} — "
+            f"the reach check already withholds this, removing `no-auto` "
+            f"hands back the merge and the close (#127)"
+            for i in issues
+            if "no-auto" in {l["name"] for l in i.get("labels", [])}
+            and "gate:machine" in {l["name"] for l in i.get("labels", [])}
+            and unwritable(i.get("body") or "")]
+
+
 def _test_targets(body: str) -> list[str]:
     """The pytest node ids `_NAMES_A_TEST` finds in an issue body.
 
@@ -815,6 +839,7 @@ def doctor(root: Path, cfg: dict) -> list[str]:
         # run is not on a PR — identity is the scope, exactly.
         problems += issue_invariants(judged, cfg, tracker_wide=judged is issues)
         problems += unlaunchable_and_auto_eligible(judged)
+        problems += redundant_no_auto(judged)
         problems += r8_proof(root, issues)
     elif strict():
         # The reason is already printed by open_issues(), one line up. What was
