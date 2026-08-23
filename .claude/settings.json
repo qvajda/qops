@@ -49,8 +49,14 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "python -m qops brief" },
-          { "type": "command", "command": "python -m qops ledger session_start" }
+          {
+            "type": "command",
+            "command": "python -m qops brief"
+          },
+          {
+            "type": "command",
+            "command": "python -m qops ledger session_start"
+          }
         ]
       }
     ],
@@ -58,29 +64,44 @@
       {
         "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
-          { "type": "command", "command": "python -m qops guard" }
+          {
+            "type": "command",
+            "command": "python -m qops guard"
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "python -m qops ledger stop" }
+          {
+            "type": "command",
+            "command": "python -m qops ledger stop"
+          }
         ]
       }
     ],
     "PreCompact": [
       {
         "hooks": [
-          { "type": "command", "command": "python -m qops resume --write --quiet" }
+          {
+            "type": "command",
+            "command": "python -m qops resume --write --quiet"
+          }
         ]
       }
     ],
     "SessionEnd": [
       {
         "hooks": [
-          { "type": "command", "command": "python -m qops resume --write --quiet" },
-          { "type": "command", "command": "python -m qops ledger session_end" }
+          {
+            "type": "command",
+            "command": "python -m qops resume --write --quiet"
+          },
+          {
+            "type": "command",
+            "command": "python -m qops ledger session_end"
+          }
         ]
       }
     ]

@@ -38,6 +38,19 @@ def test_config_carries_every_project_specific():
     assert "master" in cfg["protected_branches"]
 
 
+def test_the_contract_documents_the_permission_and_role_keys():
+    contract = (REPO / "docs/reference/qops-contract.md").read_text(encoding="utf-8")
+    assert "delegation_cap" not in contract
+    assert "permissions.extra" in contract
+    assert "agents.<role>.allow/deny" in contract
+
+    tmpl = (REPO / "qops/templates/config.yml.tmpl").read_text(encoding="utf-8")
+    assert "delegation_cap" not in tmpl
+
+    cfg_text = (REPO / ".qops/config.yml").read_text(encoding="utf-8")
+    assert "delegation_cap" not in cfg_text
+
+
 # --------------------------------------------------------------------------
 # skills — ADR-0018. ADR-0013 made the count a mitigation a human was asked to
 # re-read; nobody did and 11 accepted became 19 installed. Here it is a check.
@@ -137,6 +150,68 @@ def test_guard_blocks_worktree_sprawl():
 ])
 def test_guard_allows_ordinary_work(command):
     assert guard.check("Bash", {"command": command}, FEATURE, qconfig.load(REPO)) is None
+
+
+# --------------------------------------------------------------------------
+# guard — per-role command rules (ADR-0033 P3, #159). `role` absent is an
+# attended owner's session and must be unaffected by every case below.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command,role", [
+    ("git push origin gl-63-thing", "scribe"),
+    ("git checkout -b gl-99-thing", "scribe"),
+    ("git commit -m 'x'", "planner"),
+    ("git checkout -b gl-99-thing", "planner"),
+    ("git worktree add ../wt", "planner"),
+    ("gh issue edit 5 --add-label state:planned", "coder"),
+    ("gh issue edit 5 --remove-label state:building", "coder"),
+])
+def test_guard_refuses_a_role_its_own_command(command, role):
+    ctx = dict(FEATURE, role=role, worktrees=0)
+    assert guard.check("Bash", {"command": command}, ctx, qconfig.load(REPO))
+
+
+@pytest.mark.parametrize("command,role", [
+    ("git push origin gl-63-thing", "coder"),
+    ("git checkout -b gl-99-thing", "coder"),
+    ("git commit -m 'x'", "scribe"),
+    ("gh issue comment 5 --body hi", "coder"),
+    ("gh issue edit 5 --add-label state:planned", "triager"),
+])
+def test_guard_allows_a_different_roles_command(command, role):
+    ctx = dict(FEATURE, role=role, worktrees=0)
+    assert guard.check("Bash", {"command": command}, ctx, qconfig.load(REPO)) is None
+
+
+def test_role_absent_matches_todays_verdict_over_the_existing_guard_lists():
+    """No `role` key is an attended owner's session - the parametrize lists
+    above this one are reused, not restated, so a case added there is covered
+    here for free."""
+    cfg = qconfig.load(REPO)
+    for command in ["git commit -m 'x'", "git push origin master"]:
+        assert guard.check("Bash", {"command": command}, CTX, cfg)
+    for command in ["git commit -m 'x'", "git push origin gl-63-thing",
+                    "python -m pytest -q", "git status --short",
+                    "git reset HEAD~1"]:
+        assert guard.check("Bash", {"command": command}, FEATURE, cfg) is None
+
+
+def test_the_scribe_writes_only_under_docs_and_the_ledger():
+    ctx = dict(FEATURE, role="scribe")
+    cfg = qconfig.load(REPO)
+    assert guard.check("Write", {"file_path": "qops/guard.py", "content": "x"},
+                       ctx, cfg)
+    # A real ADR path, and it has to be: `guard.check` scopes by the shape of
+    # the path and never reads the file, but `broken_doc_links` scans `tests/`
+    # too — an invented `docs/**.md` fixture fails `test`, `gate` and `guard`
+    # at once, all three on the same line.
+    assert guard.check("Write", {"file_path": "docs/adr/0021-the-guard-reads-argv.md",
+                                 "content": "x"}, ctx, cfg) is None
+    assert guard.check("Edit", {"file_path": ".qops/ledger.jsonl",
+                                "new_string": "x"}, ctx, cfg) is None
+    # A coder writing the same tree file is untouched by the scribe's scope.
+    assert guard.check("Write", {"file_path": "qops/guard.py", "content": "x"},
+                       dict(FEATURE, role="coder"), cfg) is None
 
 
 # A synthetic tripwire set. The substrate has to be exercised without any
@@ -627,7 +702,11 @@ def test_install_renders_the_seven_workflows(tmp_path):
     written = install.render_all(tmp_path, qconfig.load(REPO))
     names = {Path(p).name for p in written}
     assert names == {"test.yml", "gate.yml", "guard.yml", "digest.yml",
-                     "groom.yml", "automerge.yml", "reviewer.yml"}
+                     "groom.yml", "automerge.yml", "reviewer.yml",
+                     # #158: `settings.json` is a rendering too, and it is
+                     # rendered by the same call — a second renderer is what
+                     # let the scaffold and the template drift apart.
+                     "settings.json"}
     import re
     for p in written:
         # `${{ secrets.X }}` is GitHub's own syntax and stays; qops placeholders
@@ -650,6 +729,87 @@ def test_doctor_detects_drift(tmp_path):
 
 def test_the_repo_itself_is_installed_and_undrifted():
     assert install.drift(REPO, qconfig.load(REPO)) == []
+
+
+# --------------------------------------------------------------------------
+# `.claude/settings.json` is a rendering, not a scaffold (#158)
+#
+# It used to be written once by `init` and never re-read, so this repo's copy
+# and the template drifted — six interpreter allows and a whole `$comment`
+# paragraph lived on one side only, and nothing compared them. The temp roots
+# below carry no `pyproject.toml` and no `.github/`, which is the ADR-0024
+# exercise: the render has to hold in a repo shaped unlike the one that wrote
+# it.
+# --------------------------------------------------------------------------
+
+def _cfg_with(**over):
+    cfg = dict(qconfig.load(REPO))
+    cfg.update(over)
+    return cfg
+
+
+def test_settings_json_merges_the_project_s_extra_permissions(tmp_path):
+    """R8 for #158. A project may widen the standard set and may narrow it —
+    it may not hand itself back something the substrate denied."""
+    cfg = _cfg_with(permissions={"extra": {
+        "allow": ["Bash(psql:*)",
+                  # Already denied by the template. The whole row rests on
+                  # this one not coming back (ADR-0016/0020).
+                  "Bash(gh api -X:*)"],
+        "deny": ["Bash(terraform apply:*)"],
+    }})
+    perms = json.loads(install.render_settings(cfg))["permissions"]
+    assert "Bash(sleep:*)" in perms["allow"], "standard set lost"
+    assert "Bash(psql:*)" in perms["allow"], "the project's own allow is absent"
+    assert "Bash(gh api -X:*)" not in perms["allow"], \
+        "an extra allow beat a template deny"
+    assert "Bash(gh api -X:*)" in perms["deny"]
+    assert "Bash(terraform apply:*)" in perms["deny"]
+
+
+def test_settings_json_renders_the_configured_interpreter(tmp_path):
+    """ADR-0009: `python:` exists so nothing guesses an interpreter, and a
+    hardcoded `py -3` in the template is a guess. Where the two collapse, the
+    dedupe is what keeps one rule from shipping twice."""
+    allow = json.loads(install.render_settings(
+        _cfg_with(python="py -3")))["permissions"]["allow"]
+    assert "Bash(py -3 -m qops brief:*)" in allow
+    allow = json.loads(install.render_settings(
+        _cfg_with(python="python")))["permissions"]["allow"]
+    assert allow.count("Bash(python -m qops brief:*)") == 1
+    assert allow.count("Bash(python -m pytest:*)") == 1
+
+
+def test_a_config_without_permissions_renders_the_standard_set(tmp_path):
+    cfg = _cfg_with()
+    cfg.pop("permissions", None)
+    perms = json.loads(install.render_settings(cfg))["permissions"]
+    assert "Bash(sleep:*)" in perms["allow"]
+    assert "Bash(gh api -X:*)" in perms["deny"]
+
+
+def test_drift_reports_a_hand_edited_settings_json(tmp_path):
+    """And names the migration. This fires on every consumer scaffolded before
+    #158 — they hand-edited a file the scaffold invited them to hand-edit, so
+    the message has to say where the additions go now."""
+    cfg = qconfig.load(REPO)
+    install.render_all(tmp_path, cfg)
+    assert install.drift(tmp_path, cfg) == []
+    settings = tmp_path / ".claude" / "settings.json"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    data["permissions"]["allow"].append("Bash(psql:*)")
+    settings.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    problems = " ".join(install.drift(tmp_path, cfg))
+    assert "settings.json" in problems
+    assert "permissions.extra" in problems
+
+
+def test_init_does_not_render_a_second_copy_of_settings_json():
+    """The defect #158 closes is the second renderer, not the missing key: a
+    copy `init` writes from `values` can never see `permissions.extra`, and
+    drifts from the template the moment either side changes."""
+    src = (REPO / "qops" / "init.py").read_text(encoding="utf-8")
+    assert "settings.json.tmpl" not in src
 
 
 # --------------------------------------------------------------------------
@@ -1093,7 +1253,7 @@ import qops_pickup  # noqa: E402
 
 
 def test_launch_carries_a_write_grant():
-    argv = qops_pickup.launch_argv("work #116")
+    argv = qops_pickup.launch_argv("work #116", qconfig.load(REPO))
     assert "--permission-mode" in argv and argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert "--allowedTools" in argv
 
@@ -1101,15 +1261,65 @@ def test_launch_carries_a_write_grant():
 def test_the_grant_is_the_coder_toolset_and_no_wider():
     """#123 asks what each role may run. Until it answers, the launch borrows
     the coder's answer rather than inventing a second one."""
-    granted = qops_pickup.launch_argv("x")[qops_pickup.launch_argv("x").index("--allowedTools") + 1]
-    assert set(granted.split(",")) == set(qconfig.load(REPO)["agents"]["coder"]["tools"])
+    cfg = qconfig.load(REPO)
+    argv = qops_pickup.launch_argv("x", cfg)
+    granted = argv[argv.index("--allowedTools") + 1]
+    assert set(granted.split(",")) == set(cfg["agents"]["coder"]["tools"])
 
 
 def test_launch_never_passes_a_blanket_bypass():
-    argv = qops_pickup.launch_argv("x")
+    argv = qops_pickup.launch_argv("x", qconfig.load(REPO))
     for flag in qops_pickup.BLANKET_BYPASS:
         assert flag not in argv
     assert not any(a.startswith("--dangerously") for a in argv)
+
+
+def test_a_role_rule_reaches_the_launch_and_the_guard():
+    """R8, named in ADR-0033's acceptance: the config declaration reaches both
+    P2 (the launch argv) and P3 (the guard), and a config with neither key
+    renders exactly what it rendered before they existed."""
+    base = qconfig.load(REPO)
+    plain_cfg = {**base, "agents": {**base["agents"],
+                 "planner": {k: v for k, v in base["agents"]["planner"].items()
+                            if k not in ("allow", "deny")}}}
+    plain = qops_pickup.plan_argv("plan #5", plain_cfg)
+    assert "--disallowedTools" not in plain
+
+    denying = {**base, "agents": {**base["agents"],
+               "planner": {**base["agents"]["planner"], "deny": ["Write", "Edit"]}}}
+    argv = qops_pickup.plan_argv("plan #5", denying)
+    assert argv[argv.index("--disallowedTools") + 1] == "Write,Edit"
+
+    launch_plain = {**base, "agents": {**base["agents"],
+                    "coder": {k: v for k, v in base["agents"]["coder"].items()
+                             if k not in ("allow", "deny")}}}
+    assert "--disallowedTools" not in qops_pickup.launch_argv("x", launch_plain)
+
+    launch_denying = {**base, "agents": {**base["agents"],
+                      "coder": {**base["agents"]["coder"], "deny": ["MultiEdit"]}}}
+    launch = qops_pickup.launch_argv("x", launch_denying)
+    assert launch[launch.index("--disallowedTools") + 1] == "MultiEdit"
+
+    # P3: the guard, ctx-aware off the same declaration's enforcement point.
+    cfg = qconfig.load(REPO)
+    scribe_push = guard.check("Bash", {"command": "git push origin gl-63"},
+                              dict(FEATURE, role="scribe"), cfg)
+    assert scribe_push
+    coder_push = guard.check("Bash", {"command": "git push origin gl-63"},
+                             dict(FEATURE, role="coder"), cfg)
+    assert coder_push is None
+
+    # A ctx with no role produces the same verdict as today for every command
+    # the existing guard parametrize lists already cover - reused, not restated.
+    for command in ["git commit -m 'x'", "git push origin gl-63-thing",
+                    "python -m pytest -q", "git status --short",
+                    "git reset HEAD~1"]:
+        assert guard.check("Bash", {"command": command}, FEATURE, cfg) is None, command
+
+
+def test_launch_env_carries_the_role():
+    assert qops_pickup.launch_env("coder")["QOPS_ROLE"] == "coder"
+    assert "QOPS_ROLE" not in qops_pickup.launch_env()
 
 
 def _ledger_with(tmp_path, *records) -> Path:
@@ -1885,7 +2095,7 @@ def test_the_loop_plans_when_it_has_nothing_to_build(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup, "plan_argv",
                         lambda prompt, cfg: planned.append(prompt) or ["true"])
     monkeypatch.setattr(qops_pickup, "launch_argv",
-                        lambda prompt: launched.append(prompt) or ["true"])
+                        lambda prompt, cfg: launched.append(prompt) or ["true"])
     monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: True)
     monkeypatch.setattr(qops_pickup, "launch_evidence", lambda *a, **k: {})
     monkeypatch.setattr(qops_pickup, "produced_work", lambda *a, **k: True)

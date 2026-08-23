@@ -543,8 +543,8 @@ def _run(argv: list[str], root: Path) -> int:
     before = launch_evidence(root, num)
     launch_cwd = loop_worktree(root, cfg)
     with log.open("w", encoding="utf-8", errors="replace") as fh:
-        rc = subprocess.run(launch_argv(launch_prompt(num)), cwd=launch_cwd,
-                            env=launch_env(), stdout=fh,
+        rc = subprocess.run(launch_argv(launch_prompt(num), cfg), cwd=launch_cwd,
+                            env=launch_env("coder"), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     # produced_work stays the thing that decides. Capturing output must not
     # become it: an empty branch scoring as success is how #57 and #71 died.
@@ -705,7 +705,7 @@ def _answer(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     before = issue_body(root, parent_num)
     with log.open("w", encoding="utf-8", errors="replace") as fh:
         rc = subprocess.run(plan_argv(answer_prompt(num, parent_num), cfg), cwd=root,
-                            env=launch_env(), stdout=fh,
+                            env=launch_env("planner"), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     if rc or not produced_answer(root, num, parent_num, before):
         why = f"exit {rc}" if rc else "the parent was not cleared"
@@ -763,7 +763,7 @@ def _plan(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     prompt = plan_prompt(num, plan_outcomes(root))
     with log.open("w", encoding="utf-8", errors="replace") as fh:
         rc = subprocess.run(plan_argv(prompt, cfg), cwd=root,
-                            env=launch_env(), stdout=fh,
+                            env=launch_env("planner"), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     if not rc and clarified(root, cfg, num):
         # Not a failure, and deliberately not a strike: a row the planner
@@ -914,7 +914,7 @@ def _decompose(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
         # same reach a plan already has, and a new agent role is a `.claude/`
         # write this sortie is not licensed to make.
         rc = subprocess.run(plan_argv(decompose_prompt(num), cfg), cwd=root,
-                            env=launch_env(), stdout=fh,
+                            env=launch_env("planner"), stdout=fh,
                             stderr=subprocess.STDOUT).returncode
     if rc or not produced_children(root, repo, num, before):
         why = f"exit {rc}" if rc else "no new sub-issue"
@@ -1066,11 +1066,18 @@ def plan_prompt(num: str, outcomes: list[dict] | None = None) -> str:
 def plan_argv(prompt: str, cfg: dict) -> list[str]:
     """The planner's toolset and model come from `.qops/config.yml`, which is
     where this repo's one cost control lives (ADR-0009) - not from a second
-    copy of the roster in this file."""
+    copy of the roster in this file.
+
+    `agents.planner.allow`/`.deny` (ADR-0033 P2) render into
+    `--allowedTools`/`--disallowedTools` the same way `.tools` already does;
+    neither key present renders exactly what this emitted before they existed."""
     planner = (cfg.get("agents") or {}).get("planner") or {}
-    tools = ",".join(planner.get("tools") or ["Read", "Grep", "Glob", "Bash"])
+    tools = ",".join(planner.get("allow") or planner.get("tools")
+                     or ["Read", "Grep", "Glob", "Bash"])
     argv = ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
             "--allowedTools", tools]
+    if planner.get("deny"):
+        argv += ["--disallowedTools", ",".join(planner["deny"])]
     if planner.get("model"):
         argv += ["--model", str(planner["model"])]
     return argv
@@ -1133,16 +1140,33 @@ def loop_worktree(root: Path, cfg: dict) -> Path:
     return wt
 
 
-def launch_argv(prompt: str) -> list[str]:
-    return ["claude", "-p", prompt,
+def launch_argv(prompt: str, cfg: dict) -> list[str]:
+    """`agents.coder.allow`/`.deny` (ADR-0033 P2), same rendering as
+    `plan_argv`. `LAUNCH_TOOLS` stays the fallback for a config with neither
+    key, so a repo that has not adopted them yet is unaffected."""
+    coder = (cfg.get("agents") or {}).get("coder") or {}
+    tools = ",".join(coder.get("allow") or coder.get("tools")
+                     or LAUNCH_TOOLS.split(","))
+    argv = ["claude", "-p", prompt,
             "--permission-mode", "acceptEdits",
-            "--allowedTools", LAUNCH_TOOLS]
+            "--allowedTools", tools]
+    if coder.get("deny"):
+        argv += ["--disallowedTools", ",".join(coder["deny"])]
+    return argv
 
 
-def launch_env() -> dict:
+def launch_env(role: str | None = None) -> dict:
     """The launched session is unattended, and says so. `qops guard` reads this
-    to refuse a sandbox escape that an interactive owner could still allow."""
-    return {**os.environ, "QOPS_UNATTENDED": "1"}
+    to refuse a sandbox escape that an interactive owner could still allow.
+
+    `role`, when given, sets `QOPS_ROLE` (ADR-0033 P3) so the guard can tell
+    the coder's launch from the planner's - the same idiom `QOPS_UNATTENDED`
+    already proves works. Left unset, a caller gets exactly what this returned
+    before the parameter existed."""
+    env = {**os.environ, "QOPS_UNATTENDED": "1"}
+    if role:
+        env["QOPS_ROLE"] = role
+    return env
 
 
 def launch_evidence(root: Path, num: str) -> dict:
