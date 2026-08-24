@@ -120,6 +120,20 @@ def test_the_pending_skill_defers_to_the_verb():
         assert forbidden not in installed, forbidden
 
 
+def test_spec_to_issue_searches_before_it_drafts():
+    """#162: a parked row is a good idea made quiet, not gone — the skill must
+    check the backlog before drafting, or a later session re-files it fresh."""
+    paths = [
+        REPO / ".claude" / "skills" / "spec-to-issue" / "SKILL.md",
+        REPO / "qops" / "templates" / "skills" / "spec-to-issue" / "SKILL.md",
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "gh issue list --state open" in text, path
+        assert "priority:parked" in text, path
+        assert "unpark" in text.lower(), path
+
+
 # --------------------------------------------------------------------------
 # guard — the hard blocks. ADR-0001: PreToolUse exit 2 blocks for real.
 # --------------------------------------------------------------------------
