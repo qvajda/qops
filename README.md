@@ -1,7 +1,7 @@
 # qops
 
 A per-project ways-of-working substrate. One CLI, six rendered workflows, six
-loops, a label taxonomy, six agent roles and three skills.
+loops, a label taxonomy, six agent roles and four skills.
 
 A project installs qops so that its sessions start with the same brief, its
 constraints are enforced by a hook rather than by memory, its metrics are

@@ -1,7 +1,7 @@
 # qops — a ways-of-working substrate
 
 One CLI, seven rendered workflows, six loops, a label taxonomy, six agent roles
-and three native skills. It is the thing a project installs so that its sessions
+and four native skills. It is the thing a project installs so that its sessions
 start with the same brief, its constraints are enforced by a hook rather than by
 memory, and its backlog can be worked unattended.
 

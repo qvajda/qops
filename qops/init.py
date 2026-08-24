@@ -14,7 +14,7 @@ from pathlib import Path
 from . import install
 
 TEMPLATES = Path(__file__).parent / "templates"
-SKILLS = ("interview", "spec-to-issue", "triage")
+SKILLS = ("interview", "spec-to-issue", "triage", "pending")
 
 NEXT_STEPS = """
 Not done by `qops init` — the owner's or the machine's, not the package's:

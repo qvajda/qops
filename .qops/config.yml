@@ -65,7 +65,7 @@ portability_forbidden: []
 # use in a substrate repo, and `skill_drift` fails on a lock entry outside the
 # declared set — so `skills-lock.json` here is the mechanism with an empty map.
 skills:
-  native: [interview, spec-to-issue, triage]
+  native: [interview, spec-to-issue, triage, pending]
   external: []
 
 # --- hot path --------------------------------------------------------------
