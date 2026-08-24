@@ -26,6 +26,24 @@ If the work does not fit one session, say so and propose the split. Do not
 widen the issue to cover the mission, and do not fold in adjacent problems you
 noticed on the way. A sortie that no longer fits is a finding to report.
 
+## Search before you draft
+
+Read the open backlog in **one** `gh issue list --state open --json
+number,title,labels` call — the same single-call discipline `/triage` already
+keeps. A call that filters parked rows out is the failure this step exists to
+prevent: `priority:parked` is a good idea deliberately made quiet, not one
+that has stopped existing.
+
+Report near-matches by **number and title** before drafting anything. Where a
+near-match carries `priority:parked`, propose **unparking that row** — drop
+the label, update its body if the ask has grown — instead of drafting a new
+one. The outcome is one row, not two with a cross-reference.
+
+**Invocable by the model; the edit is not.** Same rule as the publish step
+below: proposing the unpark is the reflex we want, editing either row is not.
+The owner decides; this skill never edits the matched row or files a
+duplicate alongside it.
+
 ## The body
 
 ```markdown
