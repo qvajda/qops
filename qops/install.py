@@ -64,6 +64,10 @@ def context(cfg: dict) -> dict:
         "digest_posts_on_schedule":
             "true" if ci.get("digest_posts_on_schedule", True) else "false",
         "claude_md_max_lines": str(cfg["claude_md_max_lines"]),
+        # `settings.json` is the only template that uses it, and it must:
+        # ADR-0009 put `python:` in config precisely so nothing guesses an
+        # interpreter, and a hardcoded interpreter in a template is a guess.
+        "python": cfg.get("python", "python"),
         # Not from config, and deliberately: which files a repo declares its
         # dependencies in is the repo's shape, not the project's preference,
         # and the block has to handle every shape rather than be told one.
@@ -81,6 +85,43 @@ def render_one(name: str, cfg: dict) -> str:
     return text
 
 
+SETTINGS = Path(".claude") / "settings.json"
+
+
+def _merge(base: list, extra: list) -> list:
+    """Order-preserving concatenation, first occurrence wins.
+
+    `dict.fromkeys` rather than a `set` on purpose: a permission list is
+    read by humans and a reordered one reads as a rewrite. It is also what
+    makes the interpreter allows safe - where `python:` is `python` the
+    template's literal set and its rendered set are the same strings, and
+    this collapses them instead of shipping every rule twice.
+    """
+    return list(dict.fromkeys(list(base) + list(extra)))
+
+
+def render_settings(cfg: dict) -> str:
+    """`.claude/settings.json` - the substrate standard set, merged with
+    the project's own `permissions.extra` (#158).
+
+    The merge is additive in both halves and then **subtractive last**:
+    every entry in the merged `deny` is removed from the merged `allow`,
+    whichever half it came from. A project may widen the standard set and
+    may narrow it; it may not hand itself back something the substrate
+    denied. Append `extra.allow` after the subtraction and ADR-0016/0020
+    stop resting on anything, because `Bash(gh api -X:*)` becomes one
+    config edit away.
+    """
+    data = json.loads(render_one("settings.json", cfg))
+    extra = (cfg.get("permissions") or {}).get("extra") or {}
+    perms = data.setdefault("permissions", {})
+    deny = _merge(perms.get("deny", []), extra.get("deny", []))
+    allow = _merge(perms.get("allow", []), extra.get("allow", []))
+    perms["allow"] = [a for a in allow if a not in set(deny)]
+    perms["deny"] = deny
+    return json.dumps(data, indent=2) + "\n"
+
+
 def render_all(root: Path, cfg: dict) -> list[str]:
     out = Path(root) / ".github" / "workflows"
     out.mkdir(parents=True, exist_ok=True)
@@ -89,6 +130,11 @@ def render_all(root: Path, cfg: dict) -> list[str]:
         p = out / name
         p.write_text(render_one(name, cfg), encoding="utf-8", newline="\n")
         written.append(str(p))
+    settings = Path(root) / SETTINGS
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(render_settings(cfg), encoding="utf-8",
+                        newline="\n")
+    written.append(str(settings))
     return written
 
 
@@ -102,6 +148,20 @@ def drift(root: Path, cfg: dict) -> list[str]:
         if p.read_text(encoding="utf-8").replace("\r\n", "\n") != render_one(name, cfg):
             problems.append(f"{name}: hand-edited — edit .qops/config.yml or the "
                             f"template, then `qops install`")
+    # Its own message, deliberately. Every consumer scaffolded before #158
+    # was invited to hand-edit this file - it was a scaffold, written once
+    # and never re-read - so the first thing this check ever does on their
+    # repo is report a hand edit they were right to make. Naming where the
+    # additions now live is the whole point of the line.
+    settings = Path(root) / SETTINGS
+    name = SETTINGS.as_posix()
+    if not settings.exists():
+        problems.append(f"{name}: missing — run `qops install`")
+    elif (settings.read_text(encoding="utf-8").replace("\r\n", "\n")
+            != render_settings(cfg)):
+        problems.append(f"{name}: hand-edited — move your additions to "
+                        f"`permissions.extra.allow/deny` in .qops/config.yml, "
+                        f"then `qops install`")
     return problems
 
 
