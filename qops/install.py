@@ -1071,6 +1071,61 @@ def _test_targets(body: str) -> list[str]:
                               if "/" in t or "\\" in t))
 
 
+def _verbs_at(root: Path, ref: str) -> set[str] | None:
+    out = subprocess.run(["git", "show", f"{ref}:qops/__main__.py"], cwd=root,
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        return None
+    return set(re.findall(r'^\s+"(\w+)":\s*\(', out.stdout, re.MULTILINE))
+
+
+def _version_at(root: Path, ref: str) -> str | None:
+    out = subprocess.run(["git", "show", f"{ref}:pyproject.toml"], cwd=root,
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        return None
+    m = re.search(r'^version\s*=\s*"([^"]+)"', out.stdout, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def version_bump_required(root: Path, base_ref: str | None = None,
+                          head_ref: str | None = None) -> list[str]:
+    """#182: a new verb is exactly what prior releases counted as
+    version-worthy (README.md's v0.1.1 note; `qops migrate` landing 73
+    commits before any tag caught up). A consumer pins to the latest tag —
+    the only reproducible thing to pin to — so a verb that lands without a
+    version bump is invisible to that pin until someone hits the missing
+    verb by hand.
+
+    This does not cut the tag; `test_the_tag_agrees_with_the_declared_version`
+    (#40) already refuses a tag cut against a stale version. Together the two
+    close the loop the file-only check would leave open: no verb lands
+    without a bump, and no tag lands without matching the bump.
+    """
+    base_ref = base_ref if base_ref is not None else os.environ.get("GITHUB_BASE_REF")
+    head_ref = head_ref if head_ref is not None else os.environ.get("GITHUB_HEAD_REF")
+    if not base_ref or not head_ref:
+        return []
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", f"origin/{base_ref}", "HEAD"], cwd=root,
+            capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    base_verbs, head_verbs = _verbs_at(root, merge_base), _verbs_at(root, "HEAD")
+    if base_verbs is None or head_verbs is None:
+        return []
+    new_verbs = head_verbs - base_verbs
+    if not new_verbs:
+        return []
+    base_version, head_version = _version_at(root, merge_base), _version_at(root, "HEAD")
+    if base_version == head_version:
+        return [f"new verb(s) {sorted(new_verbs)} added but pyproject.toml "
+                f"version is still {head_version} — bump it before this "
+                f"merges (#182)"]
+    return []
+
+
 def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
              head_ref: str | None = None) -> list[str]:
     """ADR-0023's R8, made a proof rather than a filename regex.
@@ -1336,6 +1391,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     `qops pending` (#131) already read the backlog once and passes it back
     here, so a run of both never issues the query twice."""
     problems = drift(root, cfg)
+    problems += version_bump_required(root)
     if not wants_the_task(cfg):
         # A project that declared no picker is not drifting from one. It is
         # still checked for the opposite: a task registered under this
