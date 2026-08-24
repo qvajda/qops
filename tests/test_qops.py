@@ -4645,6 +4645,20 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
     assert not any("#13" in p or "#70" in p or "#42" in p for p in problems)
 
 
+def test_the_reach_check_is_not_a_gate_on_the_row_that_fixes_it():
+    """#173. Scoped to one PR's own row the finding is stale by construction —
+    only a human session opens a PR for a row the launch may not write, and
+    that session writes no claim, so the row still reads auto-eligible for the
+    whole life of the fix. The tracker-wide sweep still reports it."""
+    row = [{
+        "number": 57, "body": _ROLE_FILES,
+        "labels": [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "ready:auto"}],
+    }]
+    assert install.unlaunchable_and_auto_eligible(row, tracker_wide=True)
+    assert install.unlaunchable_and_auto_eligible(row, tracker_wide=False) == []
+
+
 # --------------------------------------------------------------------------
 # #127 — `no-auto` on a `gate:machine` row that names an UNWRITABLE path buys
 # nothing the reach check (`unwritable()`) was not already withholding. #83
