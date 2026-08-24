@@ -162,10 +162,17 @@ def head_moved_refusal(toks: list[str], ctx: dict) -> str | None:
     it is not a divergence - only a move this session did not make is. No
     prior record for this session (`session_branch` absent) allows through:
     a first command has nothing to have diverged from.
+
+    A recorded checkout is written before the command runs - an intent, not
+    an observation. If it failed, HEAD never left the branch this session
+    recorded just before it (`session_prior_branch`); that is a failed
+    checkout, not an external move, and is not refused (#167).
     """
     session_branch = ctx.get("session_branch")
     branch = ctx.get("branch") or ""
     if not session_branch or session_branch == branch:
+        return None
+    if branch == ctx.get("session_prior_branch"):
         return None
     if not any(verb in ("checkout", "switch") for verb, _, _ in git_commands(toks)):
         return None
@@ -482,6 +489,7 @@ def hook(root: Path, cfg: dict) -> int:
     ctx = git_context(root)
     if session_id:
         ctx["session_branch"] = ledger.last_session_branch(root, session_id)
+        ctx["session_prior_branch"] = ledger.prior_session_branch(root, session_id)
     cmd = tool_input.get("command", "")
     if "command" in tool_input:
         ctx["other_roots"] = other_git_roots(cmd, root)

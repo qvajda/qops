@@ -52,6 +52,16 @@ def last_session_branch(root: Path, session_id: str) -> str | None:
     return branch
 
 
+def prior_session_branch(root: Path, session_id: str) -> str | None:
+    """The branch recorded for this session just before its latest one - what
+    HEAD stood on when the most recent checkout was attempted (#167). A
+    checkout the guard records is an intent, written before the command runs;
+    if it failed, HEAD never left this branch."""
+    seen = [rec["branch"] for rec in read(root)
+            if rec.get("session_id") == session_id and rec.get("branch")]
+    return seen[-2] if len(seen) >= 2 else None
+
+
 def _payload() -> dict:
     """Hook payload on stdin, if the caller is a hook."""
     if sys.stdin is None or sys.stdin.isatty():
