@@ -943,8 +943,19 @@ def issue_invariants(issues: list[dict], cfg: dict,
     return problems
 
 
-def unlaunchable_and_auto_eligible(issues: list[dict]) -> list[str]:
+def unlaunchable_and_auto_eligible(issues: list[dict],
+                                   tracker_wide: bool = True) -> list[str]:
     """A row `pickup-loop` would pick and can never launch (#71).
+
+    **Only on the tracker-wide run** (#173), for #92's reason in reverse. The
+    substrate's own advice on such a row is "Work it in a session"
+    (`report_unlaunchable`) — and an interactive session writes no claim, so
+    the row is still `state:planned`, still auto-eligible, still names
+    `.claude/` for the whole life of the PR that closes it. `gate` is a
+    required status check, so reporting it on a *scoped* run holds the only
+    fix there is. Only a human session can open that PR at all, which makes
+    the finding stale by construction there. The daily sweep and a laptop
+    `doctor` still see it, and that is where it is read.
 
     `eligible()` and `unwritable()` are pickup-loop's own predicates: a row
     is only worth reporting when *both* hold — auto-eligible alone is normal,
@@ -953,6 +964,8 @@ def unlaunchable_and_auto_eligible(issues: list[dict]) -> list[str]:
     alone would either miss the contradiction (#57) or make the whole backlog
     look broken (#167's failure for the status issue).
     """
+    if not tracker_wide:
+        return []
     return [f"#{i['number']}: auto-eligible and the launch cannot write "
             f"{', '.join(unwritable(i.get('body') or ''))} — pickup-loop "
             f"will skip it forever (#71)"
@@ -1318,7 +1331,8 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         # `_rows_in_scope` returns the list it was given, unchanged, when the
         # run is not on a PR — identity is the scope, exactly.
         problems += issue_invariants(judged, cfg, tracker_wide=judged is issues)
-        problems += unlaunchable_and_auto_eligible(judged)
+        problems += unlaunchable_and_auto_eligible(judged,
+                                                   tracker_wide=judged is issues)
         problems += redundant_no_auto(judged)
         problems += r8_proof(root, issues)
     elif strict():
