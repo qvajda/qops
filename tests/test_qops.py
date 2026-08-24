@@ -777,6 +777,7 @@ def test_install_renders_the_seven_workflows(tmp_path):
 
 def test_doctor_is_green_on_a_fresh_install(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
     assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
@@ -789,6 +790,39 @@ def test_doctor_detects_drift(tmp_path):
 
 def test_the_repo_itself_is_installed_and_undrifted():
     assert install.drift(REPO, qconfig.load(REPO)) == []
+
+
+# --------------------------------------------------------------------------
+# consumer scripts land on disk too (#177) — qops_import.py/qops_pickup.py
+# are documented as required but were never written into a consumer's tree.
+# --------------------------------------------------------------------------
+
+def test_write_scripts_writes_both_consumer_scripts(tmp_path):
+    msgs = install.write_scripts(tmp_path)
+    for name in install.CONSUMER_SCRIPTS:
+        dest = tmp_path / "scripts" / name
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8") == \
+            (install.SCRIPTS_SRC / name).read_text(encoding="utf-8")
+    assert any("qops_import.py" in m for m in msgs)
+    assert any("qops_pickup.py" in m for m in msgs)
+
+
+def test_doctor_reports_a_missing_consumer_script(tmp_path):
+    install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
+    (tmp_path / "scripts" / "qops_pickup.py").unlink()
+    problems = " ".join(install.drift(tmp_path, qconfig.load(REPO)))
+    assert "qops_pickup.py" in problems and "missing" in problems
+
+
+def test_write_scripts_does_not_silently_overwrite_a_local_edit(tmp_path):
+    install.write_scripts(tmp_path)
+    edited = tmp_path / "scripts" / "qops_import.py"
+    edited.write_text("# a consumer's local edit\n", encoding="utf-8")
+    msgs = install.write_scripts(tmp_path)
+    assert edited.read_text(encoding="utf-8") == "# a consumer's local edit\n"
+    assert any("qops_import.py" in m and "differs" in m for m in msgs)
 
 
 # --------------------------------------------------------------------------
@@ -4942,7 +4976,8 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
                   "skills-lock.json", ".claude/skills/interview/SKILL.md",
                   ".claude/skills/spec-to-issue/SKILL.md",
                   ".claude/skills/triage/SKILL.md",
-                  ".claude/skills/pending/SKILL.md"):
+                  ".claude/skills/pending/SKILL.md",
+                  "scripts/qops_import.py", "scripts/qops_pickup.py"):
         assert (tmp_path / expect).exists(), f"{expect} not written"
     for name in install.WORKFLOWS:
         assert (tmp_path / ".github" / "workflows" / name).exists()
