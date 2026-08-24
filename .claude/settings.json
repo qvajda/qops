@@ -30,11 +30,13 @@
       "Bash(python -m qops resume:*)",
       "Bash(python -m qops doctor:*)",
       "Bash(python -m qops metrics:*)",
+      "Bash(python -m qops pending:*)",
       "Bash(py -3 -m qops brief:*)",
       "Bash(py -3 -m qops ledger:*)",
       "Bash(py -3 -m qops resume:*)",
       "Bash(py -3 -m qops doctor:*)",
-      "Bash(py -3 -m qops metrics:*)"
+      "Bash(py -3 -m qops metrics:*)",
+      "Bash(py -3 -m qops pending:*)"
     ],
     "deny": [
       "Bash(gh api -X:*)",
