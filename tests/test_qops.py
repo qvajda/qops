@@ -105,6 +105,21 @@ def test_triage_stays_owner_only_and_spec_to_issue_does_not():
     assert "disable-model-invocation" not in spec
 
 
+def test_the_pending_skill_defers_to_the_verb():
+    """#132: the skill runs `qops pending` and reads its sections back — it
+    must not re-derive eligibility itself. Asserted over the file, not by
+    reading it once."""
+    installed = (REPO / ".claude" / "skills" / "pending" / "SKILL.md").read_text(
+        encoding="utf-8")
+    templated = (REPO / "qops" / "templates" / "skills" / "pending" / "SKILL.md"
+                ).read_text(encoding="utf-8")
+    assert installed == templated
+    assert "qops pending" in installed
+    for forbidden in ("state:", "gate:", "ready:auto", "no-auto", "origin:",
+                      "gh issue"):
+        assert forbidden not in installed, forbidden
+
+
 # --------------------------------------------------------------------------
 # guard — the hard blocks. ADR-0001: PreToolUse exit 2 blocks for real.
 # --------------------------------------------------------------------------
@@ -4898,7 +4913,8 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
     for expect in (".qops/config.yml", "CLAUDE.md", ".claude/settings.json",
                   "skills-lock.json", ".claude/skills/interview/SKILL.md",
                   ".claude/skills/spec-to-issue/SKILL.md",
-                  ".claude/skills/triage/SKILL.md"):
+                  ".claude/skills/triage/SKILL.md",
+                  ".claude/skills/pending/SKILL.md"):
         assert (tmp_path / expect).exists(), f"{expect} not written"
     for name in install.WORKFLOWS:
         assert (tmp_path / ".github" / "workflows" / name).exists()
