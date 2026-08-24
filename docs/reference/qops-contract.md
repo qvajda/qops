@@ -72,9 +72,12 @@ Required keys are marked ●. Everything else has a default and may be omitted.
 |---|---|---|
 | `skills.native` | list[str] | Ours, tracked in git. Declared-and-absent is a `doctor` problem. |
 | `skills.external` | list[str] | Reinstallable copies. Each needs a `ref` in `skills-lock.json`. May be `[]`. |
+| `skills.native_skip` | list[str] | Opt-out: a name in `init.SKILLS` this consumer decided on purpose not to carry. May be `[]` or absent. |
 
 `skill_drift` fails on an installed-and-undeclared skill, a declared-and-missing
-native, a lock entry outside the declared set, and a lock entry with no `ref`.
+native, a lock entry outside the declared set, a lock entry with no `ref`, and
+(#179) a name present in qops's own `init.SKILLS` scaffold list that is
+neither in `skills.native` nor in `skills.native_skip`.
 
 ### CI
 

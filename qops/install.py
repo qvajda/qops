@@ -467,6 +467,7 @@ def skill_drift(root: Path, cfg: dict) -> list[str]:
         problems.append(f"native skill `{missing}` is declared and missing "
                         f"from .claude/skills/")
 
+    problems += upstream_skill_drift(declared)
     lock_path = root / "skills-lock.json"
     if not lock_path.exists():
         return problems + ["skills-lock.json missing"]
@@ -482,6 +483,32 @@ def skill_drift(root: Path, cfg: dict) -> list[str]:
             problems.append(f"skills-lock.json: `{name}` has no upstream ref — "
                             f"drift against it cannot be detected (ADR-0018)")
     return problems
+
+
+def upstream_skill_drift(declared: dict) -> list[str]:
+    """The consumer's declared native set covers every skill `qops init`
+    itself scaffolds a fresh repo with (#179).
+
+    A repo that ran `qops init` before a name was added to `init.SKILLS`
+    never gets it back — neither `install` nor `doctor` wrote a newly-added
+    native skill into an existing consumer's declared set or tree, same shape
+    of gap as the taxonomy (#178) and the scripts (#177). This only reports;
+    adding the skill file and the config entry stays the owner's edit.
+
+    `skills.native_skip` is the opt-out: a name a consumer decided on purpose
+    it does not want, so this stops flagging it instead of failing forever.
+
+    Imports `init` lazily — `init.py` imports this module, so importing it
+    back at module load time would be circular.
+    """
+    from . import init as initmod
+    native = set(declared.get("native", []))
+    skip = set(declared.get("native_skip", []))
+    missing = set(initmod.SKILLS) - native - skip
+    return [f"native skill `{name}` is in qops's own scaffold list "
+            f"(init.SKILLS) and missing from `.qops/config.yml`'s "
+            f"`skills.native` — add it, or add it to `skills.native_skip` "
+            f"to opt out (#179)" for name in sorted(missing)]
 
 
 _CREATE_TABLE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);",
