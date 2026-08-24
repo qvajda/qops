@@ -654,7 +654,10 @@ UNWRITABLE = (".claude/",)
 # it backticks. Every specced row in this repo names `.claude/` under *Must not
 # touch* - reading the wrong half would make the entire backlog unlaunchable,
 # which is the one failure mode of this check that empties the queue silently.
-_EXPECTED = re.compile(r"^[ \t]*Expected to touch:(?P<rest>.*)$", re.M | re.I)
+_EXPECTED = re.compile(
+    r"^[ \t]*Expected to touch:(?P<rest>.*?)(?:Must not touch:.*)?$",
+    re.M | re.I,
+)
 _PATH = re.compile(r"`([^`]+)`")
 
 
