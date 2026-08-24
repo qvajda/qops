@@ -4225,6 +4225,11 @@ _FILES_ROLE = ("## Files\n\nExpected to touch: `.claude/agents/triager.md`, "
                "`tests/test_qops.py`\n")
 _FILES_PROSE = ("## Files\n\nExpected to touch: `qops/install.py`\n"
                 "Must not touch: `.claude/settings.json`, `qops/templates/`\n")
+_FILES_ONE_LINE = ("## Files\n\nExpected to touch: `qops/install.py`, "
+                    "`tests/test_qops.py` · Must not touch: `.claude/`, "
+                    "`scripts/qops_pickup.py`, `qops/templates/`\n")
+_FILES_ONE_LINE_ROLE = ("## Files\n\nExpected to touch: `.claude/agents/triager.md` "
+                         "· Must not touch: `qops/templates/`\n")
 
 
 def test_a_row_the_launch_may_not_write_is_never_claimed():
@@ -4240,6 +4245,15 @@ def test_must_not_touch_is_not_expected_to_touch():
     specced row in this repo names `.claude/` under *Must not touch*. Reading
     the wrong half would make every row unlaunchable."""
     assert qops_pickup.unwritable(_FILES_PROSE) == []
+
+
+def test_must_not_touch_on_the_same_line_is_not_expected_to_touch():
+    """`spec-to-issue`'s own template puts both halves on one line
+    (`Expected to touch: ... · Must not touch: ...`). That layout must parse
+    identically to the two-line one, or every row the skill files with a
+    `.claude/` exclusion is silently unlaunchable (#170)."""
+    assert qops_pickup.unwritable(_FILES_ONE_LINE) == []
+    assert qops_pickup.unwritable(_FILES_ONE_LINE_ROLE) == [".claude/agents/triager.md"]
 
 
 def test_a_row_with_no_files_section_is_launchable():
