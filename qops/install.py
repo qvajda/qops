@@ -607,6 +607,47 @@ def undeclared_labels(cfg: dict) -> list[str]:
             if _LABEL_LIKE.match(s) and s not in declared]
 
 
+# `mission` is excluded: its values are each project's own vocabulary
+# (`substrate`/`consumers`/`housekeeping` here, `core` in the template's
+# placeholder), never a value the CLI, a hook or a workflow branches on. Every
+# other namespace plus `flags` IS code qops itself depends on
+# (`BLOCKING_FLAGS`, `eligible()`, the templates) and is what #178 is about.
+_SHIPPED_NAMESPACES = ("type", "state", "gate", "origin", "priority")
+
+
+def shipped_taxonomy() -> set[str]:
+    """The taxonomy qops's own installed version ships, read from the
+    package's own `config.yml.tmpl` — never a hardcoded list (#178), or this
+    check goes stale the same way the drift it looks for did.
+
+    `config.yml.tmpl` is package data (`pyproject.toml`), so this reads the
+    schema of whatever qops version is actually installed, not this checkout.
+    """
+    import yaml
+    text = (TEMPLATES / "config.yml.tmpl").read_text(encoding="utf-8")
+    for key in ("project", "repo", "default_branch", "python"):
+        text = text.replace("{{" + key + "}}", "x")
+    labels = yaml.safe_load(text).get("labels") or {}
+    out = {f"{ns}:{v}" for ns in _SHIPPED_NAMESPACES for v in labels.get(ns, [])}
+    return out | set(labels.get("flags", []))
+
+
+def taxonomy_drift(cfg: dict) -> list[str]:
+    """A value in qops's shipped taxonomy and absent from this project's
+    (#178). A consumer that bumps its pin without hand-diffing config.yml
+    against qops's own gets a tracker silently missing labels the CLI and
+    hooks assume exist — #105's `--labels` step no-opped exactly this way,
+    against a taxonomy already a version stale.
+
+    A project's taxonomy is free to be a superset (extra namespaces, extra
+    values); only a value shipped and missing is reported.
+    """
+    missing = shipped_taxonomy() - taxonomy(cfg)
+    return [f"label {s!r} is in qops's shipped taxonomy and missing from "
+            f"this project's `labels:` — add it to .qops/config.yml"
+            for s in sorted(missing)]
+
+
 # A test file named anywhere in the issue body: `tests/test_x.py`, or a bare
 # `test_something`. Deliberately loose - the assertion is that a sortie names
 # the thing that will judge it, not that the name resolves today.
@@ -1320,6 +1361,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     problems += skill_drift(root, cfg)
     problems += schema_drift(root, cfg)
     problems += undeclared_labels(cfg)
+    problems += taxonomy_drift(cfg)
     if issues is _UNFETCHED:
         issues = open_issues(cfg)
     if issues is not None:
