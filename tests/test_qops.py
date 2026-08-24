@@ -5343,6 +5343,18 @@ def test_cli_output_survives_a_non_utf8_stdout():
     assert "—".encode() in result.stdout
 
 
+def test_version_prints_the_installed_package_version_not_source():
+    """#176: reads importlib.metadata, same class of check as find_root — a
+    pinned dependency's __file__ is site-packages, not the repo in play."""
+    from importlib.metadata import version as pkg_version
+    result = subprocess.run(
+        [sys.executable, "-m", "qops", "version"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == pkg_version("qops")
+
+
 # --------------------------------------------------------------------------
 # #57 - a role file edited mid-session does not reach any subagent spawned
 # later in that session: the harness snapshots role definitions when the

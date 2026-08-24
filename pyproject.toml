@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qops"
-version = "0.2.0"
+version = "0.3.0"
 description = "A per-project ways-of-working substrate: brief, ledger, guard, install, doctor, metrics."
 readme = "README.md"
 license = { file = "LICENSE" }
