@@ -360,6 +360,37 @@ def test_a_moved_head_does_not_block_a_command_that_is_not_a_checkout():
     assert guard.check("Bash", {"command": "git status"}, ctx, SYNTHETIC) is None
 
 
+# --- #167: a failed checkout leaves a record, not an observation -----------
+
+def test_a_failed_checkout_leaves_no_record_that_locks_the_session():
+    """A `checkout` record is written before the command runs. If it fails,
+    HEAD never leaves the branch recorded just before it - that is not the
+    external move #130 refuses."""
+    ctx = {"branch": "master", "worktrees": 1,
+           "session_branch": "fix/128-x", "session_prior_branch": "master"}
+    cmd = "git checkout fix/999-other"
+    assert guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC) is None
+
+
+def test_a_head_move_unexplained_by_a_failed_checkout_still_refuses():
+    """#130 still refuses when no failed-checkout record explains the
+    mismatch - the prior branch does not match where HEAD actually is."""
+    ctx = {"branch": "master", "worktrees": 1,
+           "session_branch": "fix/128-x", "session_prior_branch": "fix/121-x"}
+    cmd = "git checkout fix/999-other"
+    reason = guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC)
+    assert reason and "fix/128-x" in reason and "master" in reason
+
+
+def test_ledger_prior_session_branch_reads_the_one_before_latest(tmp_path):
+    ledger.append(tmp_path, "session_start", {"session_id": "s1", "branch": "master"})
+    ledger.append(tmp_path, "checkout", {"session_id": "s1", "branch": "fix/128-x"})
+    assert ledger.prior_session_branch(tmp_path, "s1") == "master"
+    assert ledger.prior_session_branch(tmp_path, "unknown") is None
+    ledger.append(tmp_path, "checkout", {"session_id": "s1", "branch": "fix/130-x"})
+    assert ledger.prior_session_branch(tmp_path, "s1") == "fix/128-x"
+
+
 def test_ledger_last_session_branch_reads_this_sessions_latest(tmp_path):
     ledger.append(tmp_path, "session_start",
                   {"session_id": "s1", "branch": "master"})
