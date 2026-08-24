@@ -85,6 +85,55 @@ def render_one(name: str, cfg: dict) -> str:
     return text
 
 
+# `scripts/qops_import.py` and `scripts/qops_pickup.py` are documented as
+# required in a fresh repo (`init.NEXT_STEPS`, `docs/reference/loops.md`) but
+# lived only in this repo's own `scripts/` — a `requirements.txt` consumer's
+# `pip install` never pulls a sibling directory in, only what the package
+# declares (ADR-0024's shapes). Packaged as data under `templates/scripts/`
+# (#177) so they reach a consumer the same way a workflow template does,
+# while the two files a sortie may not touch stay exactly where they are.
+CONSUMER_SCRIPTS = ("qops_import.py", "qops_pickup.py")
+SCRIPTS_SRC = TEMPLATES / "scripts"
+
+
+def write_scripts(root: Path) -> list[str]:
+    """Copy the packaged consumer scripts into `root/scripts/`.
+
+    Not a rendering: these carry no `{{placeholder}}`, so a byte match against
+    the packaged copy is enough to tell "untouched" from "the consumer edited
+    this" — and only the second one is left alone, warned about instead of
+    silently overwritten.
+    """
+    out = Path(root) / "scripts"
+    out.mkdir(parents=True, exist_ok=True)
+    messages = []
+    for name in CONSUMER_SCRIPTS:
+        text = (SCRIPTS_SRC / name).read_text(encoding="utf-8")
+        dest = out / name
+        if dest.exists():
+            if dest.read_text(encoding="utf-8") == text:
+                continue
+            messages.append(
+                f"scripts/{name}: exists and differs from the packaged copy "
+                f"— left untouched, remove it to re-pull the packaged version")
+            continue
+        dest.write_text(text, encoding="utf-8", newline="\n")
+        messages.append(f"wrote scripts/{name}")
+    return messages
+
+
+def script_drift(root: Path) -> list[str]:
+    """Its own check, called from `doctor` beside `skill_drift` — not folded
+    into `drift()`. `drift()` answers "does what `render_all` rendered still
+    match the templates"; these are copied, not rendered, and `render_all`
+    does not write them. Folding it in made every `render_all` then
+    `drift() == []` assertion fail on a file `render_all` never claimed.
+    """
+    return [f"scripts/{name}: missing — run `qops install`"
+            for name in CONSUMER_SCRIPTS
+            if not (Path(root) / "scripts" / name).exists()]
+
+
 SETTINGS = Path(".claude") / "settings.json"
 
 
@@ -1374,6 +1423,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         # problem.
         print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
+    problems += script_drift(root)
     problems += schema_drift(root, cfg)
     problems += undeclared_labels(cfg)
     if issues is _UNFETCHED:
@@ -1429,6 +1479,8 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     written = render_all(root, cfg)
     for p in written:
         print(f"rendered {Path(p).relative_to(Path(root))}")
+    for msg in write_scripts(root):
+        print(msg)
     print(register_task(root, cfg))
     return 0
 
