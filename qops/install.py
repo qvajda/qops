@@ -123,6 +123,12 @@ def write_scripts(root: Path) -> list[str]:
 
 
 def script_drift(root: Path) -> list[str]:
+    """Its own check, called from `doctor` beside `skill_drift` — not folded
+    into `drift()`. `drift()` answers "does what `render_all` rendered still
+    match the templates"; these are copied, not rendered, and `render_all`
+    does not write them. Folding it in made every `render_all` then
+    `drift() == []` assertion fail on a file `render_all` never claimed.
+    """
     return [f"scripts/{name}: missing — run `qops install`"
             for name in CONSUMER_SCRIPTS
             if not (Path(root) / "scripts" / name).exists()]
@@ -205,7 +211,6 @@ def drift(root: Path, cfg: dict) -> list[str]:
         problems.append(f"{name}: hand-edited — move your additions to "
                         f"`permissions.extra.allow/deny` in .qops/config.yml, "
                         f"then `qops install`")
-    problems += script_drift(root)
     return problems
 
 
@@ -1418,6 +1423,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         # problem.
         print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
+    problems += script_drift(root)
     problems += schema_drift(root, cfg)
     problems += undeclared_labels(cfg)
     if issues is _UNFETCHED:

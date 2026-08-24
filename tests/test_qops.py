@@ -811,9 +811,13 @@ def test_write_scripts_writes_both_consumer_scripts(tmp_path):
 def test_doctor_reports_a_missing_consumer_script(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
     install.write_scripts(tmp_path)
+    assert install.script_drift(tmp_path) == []
     (tmp_path / "scripts" / "qops_pickup.py").unlink()
-    problems = " ".join(install.drift(tmp_path, qconfig.load(REPO)))
+    problems = " ".join(install.script_drift(tmp_path))
     assert "qops_pickup.py" in problems and "missing" in problems
+    # And it is *not* `drift()`'s: `render_all` never writes these, so a tree
+    # it rendered is undrifted whether or not the scripts are there.
+    assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
 def test_write_scripts_does_not_silently_overwrite_a_local_edit(tmp_path):
