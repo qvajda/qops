@@ -3529,6 +3529,67 @@ def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
     assert "fetch-tags: true" in rendered, "checkout fetches no tags"
 
 
+def _version_repo(tmp_path, main_base, main_head, version_base, version_head):
+    """A real temporary git repo shaped like the version-bump question: a
+    base commit on `trunk` and a head commit on `fix/182-fixture`, each
+    carrying its own `qops/__main__.py` and `pyproject.toml`. Mirrors
+    `_r8_repo` — `git merge-base` is what's under test, so it needs a real
+    repo, not a mocked diff."""
+    root = tmp_path / "repo"
+    (root / "qops").mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "trunk")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "qops" / "__main__.py").write_text(main_base, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "qops"\nversion = "{version_base}"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "branch", "origin/master")
+    _git(root, "checkout", "-q", "-b", "fix/182-fixture")
+    (root / "qops" / "__main__.py").write_text(main_head, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "qops"\nversion = "{version_head}"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "head", "--allow-empty")
+    return root
+
+
+_VERBS_BASE = '    "brief": (brief.main, "session brief"),\n'
+_VERBS_HEAD = _VERBS_BASE + '    "migrate": (migrate.main, "new verb"),\n'
+
+
+def test_a_new_verb_without_a_version_bump_fails(tmp_path):
+    """#182: `qops migrate` landed 73 commits before any tag caught up
+    because nothing tied a new verb to a version bump. A new key in
+    `VERBS` is exactly what README.md already counts as version-worthy."""
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_HEAD,
+                         version_base="0.2.0", version_head="0.2.0")
+    problems = install.version_bump_required(root, base_ref="master",
+                                             head_ref="fix/182-fixture")
+    assert any("migrate" in p and "0.2.0" in p for p in problems), problems
+
+
+def test_a_new_verb_with_a_version_bump_passes(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_HEAD,
+                         version_base="0.2.0", version_head="0.3.0")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
+def test_no_new_verb_needs_no_bump(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.2.0")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
+def test_version_bump_required_is_silent_without_a_pr_context(monkeypatch):
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    assert install.version_bump_required(REPO) == []
+
+
 def test_brief_reports_the_same_version_pyproject_declares():
     """#103: an editable install's egg-info goes stale the moment
     pyproject.toml is hand-edited without a reinstall — this repo showed
