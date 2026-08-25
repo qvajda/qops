@@ -775,8 +775,35 @@ def test_install_renders_the_seven_workflows(tmp_path):
         assert left is None, f"unrendered placeholder {left.group(0)} in {p}"
 
 
+def test_render_adr_consumer_copies_every_consumer_facing_adr(tmp_path):
+    """#181: a citation with nothing copied into the consumer's tree is a
+    dead link the moment it leaves this repo — that was the defect."""
+    written = install.render_adr_consumer(tmp_path)
+    names = {Path(p).name for p in written}
+    assert names == {p.name for p in install.ADR_CONSUMER_DIR.glob("CADR-*.md")}
+    for p in written:
+        assert (tmp_path / "docs" / "adr" / "consumer" / Path(p).name).exists()
+
+
+def test_broken_adr_citations_catches_a_dangling_cite(tmp_path):
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "gate.yml").write_text("# see CADR-9999\n", encoding="utf-8")
+    missing = install.broken_adr_citations(tmp_path)
+    assert any("CADR-9999" in m for m in missing)
+
+
+def test_broken_adr_citations_is_clean_once_installed(tmp_path):
+    install.render_adr_consumer(tmp_path)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "gate.yml").write_text("# see CADR-0001\n", encoding="utf-8")
+    assert install.broken_adr_citations(tmp_path) == []
+
+
 def test_doctor_is_green_on_a_fresh_install(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
+    install.render_adr_consumer(tmp_path)
     assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
@@ -1240,6 +1267,28 @@ def test_claude_md_is_within_the_hot_path_cap():
 def test_every_doc_path_cited_from_code_resolves():
     missing = install.broken_doc_links(REPO)
     assert missing == [], f"broken doc citations: {missing}"
+
+
+def test_every_cadr_citation_in_this_repos_own_install_resolves():
+    """qops installs itself (`test_the_repo_itself_is_installed_and_undrifted`)
+    so it is also a consumer of its own `CADR-` citations, and #181's doctor
+    check must find nothing wrong in its own tree."""
+    missing = install.broken_adr_citations(REPO)
+    assert missing == [], f"broken ADR citations: {missing}"
+
+
+def test_no_bare_adr_citation_survives_in_a_rendered_template():
+    """Every `ADR-NNNN` a template or native skill cites must be the
+    consumer-facing `CADR-NNNN` form (#181, ADR-0035) — a bare number is a
+    citation to a file nothing ever copies into a consumer's tree."""
+    import re
+    targets = list((REPO / "qops" / "templates").glob("*.tmpl")) + \
+        list((REPO / "qops" / "templates" / "skills").glob("*/SKILL.md"))
+    leaks = []
+    for p in targets:
+        for m in re.finditer(r"(?<!C)ADR-\d{4}", p.read_text(encoding="utf-8")):
+            leaks.append(f"{p.relative_to(REPO)}: {m.group(0)}")
+    assert leaks == [], f"bare ADR citation in a rendered template: {leaks}"
 
 
 # --------------------------------------------------------------------------
