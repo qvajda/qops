@@ -5840,3 +5840,42 @@ def test_a_claim_with_no_alert_launched_is_never_reaped(tmp_path, monkeypatch):
 def test_digest_template_carries_no_telegram_step():
     tmpl = (REPO / "qops" / "templates" / "digest.yml.tmpl").read_text(encoding="utf-8")
     assert "TELEGRAM" not in tmpl and "telegram" not in tmpl
+
+
+def test_filing_skills_refuse_ready_auto_without_a_named_test():
+    """#194: R8 belongs at the filing, same reasoning as ADR-0028's outcome
+    bar — the filing is the only owner act left in the chain. Both surfaces
+    that write `ready:auto` must state the refusal in prose an agent reads
+    before filing, not just enforce it downstream in `issue_invariants`."""
+    spec_to_issue = (REPO / "qops" / "templates" / "skills" / "spec-to-issue"
+                     / "SKILL.md").read_text(encoding="utf-8")
+    triage = (REPO / "qops" / "templates" / "skills" / "triage"
+             / "SKILL.md").read_text(encoding="utf-8")
+    for text in (spec_to_issue, triage):
+        assert "ready:auto" in text
+        assert "names no test" in text
+        assert "R8" in text
+
+
+def test_r8_names_a_test_reports_tracker_wide(monkeypatch):
+    """The five rows in #194 sat mislabelled for hours and only a PR made
+    them visible — a tracker-wide sweep must report R8 on every such row,
+    not just the one a PR happens to name. `_rows_in_scope` still narrows to
+    the branch's own row on a PR (#63), unchanged by this fix."""
+    cfg = qconfig.load(REPO)
+    bad = [{"name": "type:code"}, {"name": "state:planned"},
+           {"name": "gate:machine"}, {"name": "ready:auto"},
+           {"name": "origin:owner"}]
+    rows = [{"number": 180, "labels": bad, "body": "no test named here"},
+            {"number": 181, "labels": bad,
+             "body": "Acceptance: tests/test_qops.py passes."}]
+    problems = install.issue_invariants(rows, cfg, tracker_wide=True)
+    assert any("#180" in p and "names no test" in p for p in problems)
+    assert not any("#181" in p for p in problems)
+
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "fix/180-a-branch-naming-its-row")
+    scoped, _ = install._rows_in_scope(rows)
+    assert [r["number"] for r in scoped] == [180]
