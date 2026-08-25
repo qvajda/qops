@@ -27,6 +27,15 @@ WORKFLOWS = ("test.yml", "gate.yml", "guard.yml", "digest.yml", "groom.yml",
 
 _DOC_LINK = re.compile(r"docs/[A-Za-z0-9_./-]+\.md")
 
+# Consumer-facing ADRs (#181, ADR-0035): decisions a rendered workflow or
+# native skill may cite by number. They ship as package data under
+# `templates/adr/`, copied verbatim into every consumer's `docs/adr/consumer/`
+# so a citation resolves in *that* repo's tree, not just this one's — and
+# numbered `CADR-NNNN`, a namespace of its own, so they can never collide with
+# a consumer's own project-specific `docs/adr/000N-*.md`.
+ADR_CONSUMER_DIR = TEMPLATES / "adr"
+_CADR_CITE = re.compile(r"CADR-\d{4}")
+
 # The one dependency-install block every rendered job that runs Python uses
 # (ADR-0024). It is a single constant because the three copies that preceded it
 # diverged into three different bugs, each surfacing only in a repo shaped
@@ -87,6 +96,55 @@ def render_one(name: str, cfg: dict) -> str:
     return text
 
 
+# `scripts/qops_import.py` and `scripts/qops_pickup.py` are documented as
+# required in a fresh repo (`init.NEXT_STEPS`, `docs/reference/loops.md`) but
+# lived only in this repo's own `scripts/` — a `requirements.txt` consumer's
+# `pip install` never pulls a sibling directory in, only what the package
+# declares (ADR-0024's shapes). Packaged as data under `templates/scripts/`
+# (#177) so they reach a consumer the same way a workflow template does,
+# while the two files a sortie may not touch stay exactly where they are.
+CONSUMER_SCRIPTS = ("qops_import.py", "qops_pickup.py")
+SCRIPTS_SRC = TEMPLATES / "scripts"
+
+
+def write_scripts(root: Path) -> list[str]:
+    """Copy the packaged consumer scripts into `root/scripts/`.
+
+    Not a rendering: these carry no `{{placeholder}}`, so a byte match against
+    the packaged copy is enough to tell "untouched" from "the consumer edited
+    this" — and only the second one is left alone, warned about instead of
+    silently overwritten.
+    """
+    out = Path(root) / "scripts"
+    out.mkdir(parents=True, exist_ok=True)
+    messages = []
+    for name in CONSUMER_SCRIPTS:
+        text = (SCRIPTS_SRC / name).read_text(encoding="utf-8")
+        dest = out / name
+        if dest.exists():
+            if dest.read_text(encoding="utf-8") == text:
+                continue
+            messages.append(
+                f"scripts/{name}: exists and differs from the packaged copy "
+                f"— left untouched, remove it to re-pull the packaged version")
+            continue
+        dest.write_text(text, encoding="utf-8", newline="\n")
+        messages.append(f"wrote scripts/{name}")
+    return messages
+
+
+def script_drift(root: Path) -> list[str]:
+    """Its own check, called from `doctor` beside `skill_drift` — not folded
+    into `drift()`. `drift()` answers "does what `render_all` rendered still
+    match the templates"; these are copied, not rendered, and `render_all`
+    does not write them. Folding it in made every `render_all` then
+    `drift() == []` assertion fail on a file `render_all` never claimed.
+    """
+    return [f"scripts/{name}: missing — run `qops install`"
+            for name in CONSUMER_SCRIPTS
+            if not (Path(root) / "scripts" / name).exists()]
+
+
 SETTINGS = Path(".claude") / "settings.json"
 
 
@@ -122,6 +180,24 @@ def render_settings(cfg: dict) -> str:
     perms["allow"] = [a for a in allow if a not in set(deny)]
     perms["deny"] = deny
     return json.dumps(data, indent=2) + "\n"
+
+
+def render_adr_consumer(root: Path) -> list[str]:
+    """Copy every consumer-facing ADR into `docs/adr/consumer/` (#181).
+
+    A citation with nothing copied is a dead link the moment it leaves this
+    repo — that was the defect. The copy is verbatim: renumbering already
+    happened once, when the file was named into `templates/adr/`.
+    """
+    out = Path(root) / "docs" / "adr" / "consumer"
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for src in sorted(ADR_CONSUMER_DIR.glob("CADR-*.md")):
+        dest = out / src.name
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8",
+                        newline="\n")
+        written.append(str(dest))
+    return written
 
 
 def render_all(root: Path, cfg: dict) -> list[str]:
@@ -416,6 +492,33 @@ def unregister_task(root: Path, cfg: dict) -> str:
     return f"pickup task {task_id(spec)}: {done.stdout.strip()}"
 
 
+def broken_adr_citations(root: Path) -> list[str]:
+    """Every `CADR-NNNN` cite in a *rendered* workflow or native skill body
+    resolves to a real file under this tree's `docs/adr/consumer/` (#181).
+
+    Scans rendered output, not `qops/templates/` — the source always
+    resolves against `templates/adr/`, that is not the citation that can go
+    stale. What goes stale is a consumer's copy: never installed, or
+    installed once and never refreshed after a qops upgrade added or
+    renumbered a consumer-facing ADR.
+    """
+    root = Path(root)
+    present = {"-".join(p.name.split("-", 2)[:2])
+               for p in (root / "docs" / "adr" / "consumer").glob("CADR-*.md")}
+    missing = []
+    targets = list((root / ".github" / "workflows").glob("*.yml")) \
+        + list((root / ".claude" / "skills").glob("*/SKILL.md"))
+    for p in targets:
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for cited in sorted(set(_CADR_CITE.findall(text))):
+            if cited not in present:
+                missing.append(f"{p.relative_to(root)} -> {cited}")
+    return sorted(missing)
+
+
 def broken_doc_links(root: Path) -> list[str]:
     """Every docs/*.md path cited from code must resolve (PRD §7 Phase 4).
 
@@ -483,6 +586,41 @@ def skill_drift(root: Path, cfg: dict) -> list[str]:
         if not entry.get("ref"):
             problems.append(f"skills-lock.json: `{name}` has no upstream ref — "
                             f"drift against it cannot be detected (ADR-0018)")
+    return problems
+
+
+AGENT_ROLES = ("coder", "interactor", "planner", "reviewer", "scribe", "triager")
+AGENT_TEMPLATES = TEMPLATES / "agents"
+
+
+def agent_drift(root: Path, cfg: dict) -> list[str]:
+    """A consumer's `.claude/agents/<role>.md` matches qops's own current copy
+    (#183). A role file IS the agent's instructions for that session - unlike a
+    skill or a config key, a stale one does not miss a feature, it makes the
+    agent behave by rules the owner already replaced.
+
+    `agents.<role>.accept_drift: true` in `.qops/config.yml` is the opt-out: a
+    project may have legitimately customized a role (its own tools/model
+    choice), and the check flags drift once, the owner reviews and either
+    merges it or accepts it deliberately - it never auto-overwrites.
+    """
+    problems = []
+    declared = cfg.get("agents") or {}
+    for role in AGENT_ROLES:
+        if bool((declared.get(role) or {}).get("accept_drift", False)):
+            continue
+        ref = AGENT_TEMPLATES / f"{role}.md"
+        theirs = Path(root) / ".claude" / "agents" / f"{role}.md"
+        if not theirs.exists():
+            problems.append(f".claude/agents/{role}.md: missing")
+            continue
+        want = ref.read_text(encoding="utf-8").replace("\r\n", "\n")
+        got = theirs.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if got != want:
+            problems.append(
+                f".claude/agents/{role}.md: drifted from qops's current copy — "
+                f"merge the update by hand, or set `agents.{role}.accept_drift: "
+                f"true` in .qops/config.yml if this is deliberate")
     return problems
 
 
@@ -670,11 +808,20 @@ def eligible(issue: dict) -> bool:
         return False
     if "gate:none" in labels or not any(l.startswith("gate:") for l in labels):
         return False
+    # R8 is a condition on *every* `ready:auto` row, not only on the
+    # owner-filed route (ADR-0023: the grant "takes effect once R8 holds").
+    # Short-circuiting on the label alone made this predicate disagree with
+    # `doctor`'s own R8 invariant, and the two disagreeing is not a difference
+    # of opinion: the picker launched five rows overnight whose gate could
+    # never go green, leaving five PRs open and five rows on `state:building`.
+    names_a_test = bool(_NAMES_A_TEST.search(issue.get("body") or ""))
     if "ready:auto" in labels:
-        return True
+        # `body` absent means the caller passed a fixture that cannot answer,
+        # the same convention `doctor`'s R8 invariant uses.
+        return names_a_test or issue.get("body") is None
     if "gate:taste" in labels or "origin:owner" not in labels:
         return False
-    return bool(_NAMES_A_TEST.search(issue.get("body") or ""))
+    return names_a_test
 
 
 # Paths the launch may not write, whatever the row says. Not a repo rule and
@@ -1062,6 +1209,61 @@ def _test_targets(body: str) -> list[str]:
                               if "/" in t or "\\" in t))
 
 
+def _verbs_at(root: Path, ref: str) -> set[str] | None:
+    out = subprocess.run(["git", "show", f"{ref}:qops/__main__.py"], cwd=root,
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        return None
+    return set(re.findall(r'^\s+"(\w+)":\s*\(', out.stdout, re.MULTILINE))
+
+
+def _version_at(root: Path, ref: str) -> str | None:
+    out = subprocess.run(["git", "show", f"{ref}:pyproject.toml"], cwd=root,
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        return None
+    m = re.search(r'^version\s*=\s*"([^"]+)"', out.stdout, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def version_bump_required(root: Path, base_ref: str | None = None,
+                          head_ref: str | None = None) -> list[str]:
+    """#182: a new verb is exactly what prior releases counted as
+    version-worthy (README.md's v0.1.1 note; `qops migrate` landing 73
+    commits before any tag caught up). A consumer pins to the latest tag —
+    the only reproducible thing to pin to — so a verb that lands without a
+    version bump is invisible to that pin until someone hits the missing
+    verb by hand.
+
+    This does not cut the tag; `test_the_tag_agrees_with_the_declared_version`
+    (#40) already refuses a tag cut against a stale version. Together the two
+    close the loop the file-only check would leave open: no verb lands
+    without a bump, and no tag lands without matching the bump.
+    """
+    base_ref = base_ref if base_ref is not None else os.environ.get("GITHUB_BASE_REF")
+    head_ref = head_ref if head_ref is not None else os.environ.get("GITHUB_HEAD_REF")
+    if not base_ref or not head_ref:
+        return []
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", f"origin/{base_ref}", "HEAD"], cwd=root,
+            capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    base_verbs, head_verbs = _verbs_at(root, merge_base), _verbs_at(root, "HEAD")
+    if base_verbs is None or head_verbs is None:
+        return []
+    new_verbs = head_verbs - base_verbs
+    if not new_verbs:
+        return []
+    base_version, head_version = _version_at(root, merge_base), _version_at(root, "HEAD")
+    if base_version == head_version:
+        return [f"new verb(s) {sorted(new_verbs)} added but pyproject.toml "
+                f"version is still {head_version} — bump it before this "
+                f"merges (#182)"]
+    return []
+
+
 def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
              head_ref: str | None = None) -> list[str]:
     """ADR-0023's R8, made a proof rather than a filename regex.
@@ -1327,6 +1529,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     `qops pending` (#131) already read the backlog once and passes it back
     here, so a run of both never issues the query twice."""
     problems = drift(root, cfg)
+    problems += version_bump_required(root)
     if not wants_the_task(cfg):
         # A project that declared no picker is not drifting from one. It is
         # still checked for the opposite: a task registered under this
@@ -1353,6 +1556,8 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         # problem.
         print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
+    problems += agent_drift(root, cfg)
+    problems += script_drift(root)
     problems += schema_drift(root, cfg)
     problems += config_key_drift(cfg)
     problems += undeclared_labels(cfg)
@@ -1381,6 +1586,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         problems.append("the open-issue invariants were not evaluated - the "
                         "backlog was unreadable, see the skip above (QOPS_STRICT)")
     problems += [f"broken doc citation: {m}" for m in broken_doc_links(root)]
+    problems += [f"broken ADR citation: {m}" for m in broken_adr_citations(root)]
     settings = Path(root) / ".claude" / "settings.json"
     if not settings.exists():
         problems.append(".claude/settings.json missing — hooks are not installed")
@@ -1406,9 +1612,11 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     if "--unregister-task" in argv:
         print(unregister_task(root, cfg))
         return 0
-    written = render_all(root, cfg)
+    written = render_all(root, cfg) + render_adr_consumer(root)
     for p in written:
         print(f"rendered {Path(p).relative_to(Path(root))}")
+    for msg in write_scripts(root):
+        print(msg)
     print(register_task(root, cfg))
     return 0
 

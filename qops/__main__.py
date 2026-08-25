@@ -13,13 +13,21 @@
     qops migrate    propose a taxonomy migration over open rows, apply nothing
                     until --execute (--dry-run/--execute/--verify, ADR-0030)
     qops pending    what is waiting on the owner, and what the loop takes next
+    qops version    print the installed qops version
 """
 
 import sys
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from . import (brief, close, config, guard, init, install, ledger, metrics,
                migrate, pending, reconcile, review)
+
+
+def _version_main(argv: list[str], root: Path, cfg: dict) -> int:
+    print(_pkg_version("qops"))
+    return 0
+
 
 VERBS = {
     "brief": (brief.main, "session brief for SessionStart (<=400 tokens)"),
@@ -35,11 +43,12 @@ VERBS = {
     "reconcile": (reconcile.main, "advance merged sorties whose row is not state:done"),
     "migrate": (migrate.main, "--dry-run/--execute/--verify a taxonomy migration"),
     "pending": (pending.main, "waiting on you, and what the loop takes next; read-only"),
+    "version": (_version_main, "print the installed qops version"),
 }
 
 # init runs before any .qops/config.yml exists — the one verb that must not
 # have the root walked or the config loaded before its own main runs.
-NO_CONFIG = {"init"}
+NO_CONFIG = {"init", "version"}
 
 
 def main(argv: list[str] | None = None) -> int:
