@@ -1234,6 +1234,41 @@ def open_issues(cfg: dict) -> list[dict] | None:
         return None
 
 
+def conflicted_prs(cfg: dict, prs=None, tracker_wide: bool = True) -> list[str]:
+    """Open PRs GitHub cannot build a merge ref for (#195).
+
+    `mergeStateStatus: DIRTY` gets no `pull_request` event at all - not red,
+    silent. `BLOCKED` (a required check pending, a review outstanding) and
+    `BEHIND` (`reconcile.advance_behind` handles those) are working as
+    designed, and `UNKNOWN` is a mergeability GitHub has not finished
+    computing yet - none of those are problems here.
+
+    `tracker_wide=False` is the #173 scoping rule: a conflict on some *other*
+    PR is not this PR's row to fix, and `gate` is a required check, so
+    reporting it on a scoped run would hold a PR red on something no sortie
+    behind it can resolve.
+    """
+    if not tracker_wide:
+        return []
+    repo = cfg.get("repo")
+    if not repo:
+        print("doctor: skipping the conflicted-PR check — config names no `repo`")
+        return []
+    if prs is None:
+        try:
+            prs = reconcile.open_prs(repo, 200)
+        except (OSError, subprocess.SubprocessError, RuntimeError,
+                json.JSONDecodeError) as exc:
+            print(f"doctor: skipping the conflicted-PR check — {exc}")
+            return []
+    problems = [f"PR #{pr.get('number')} (`{pr.get('headRefName')}`) is "
+                f"DIRTY — GitHub cannot build a merge ref for it, no checks "
+                f"will run"
+                for pr in prs if pr.get("mergeStateStatus") == "DIRTY"]
+    print(f"doctor: {len(prs)} open PRs checked for conflicts")
+    return problems
+
+
 def strict() -> bool:
     """CI wants an unreadable backlog red; a laptop wants it quiet.
 
@@ -1338,6 +1373,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
                                                    tracker_wide=judged is issues)
         problems += redundant_no_auto(judged)
         problems += r8_proof(root, issues)
+        problems += conflicted_prs(cfg, tracker_wide=judged is issues)
     elif strict():
         # The reason is already printed by open_issues(), one line up. What was
         # missing is that the skip left no state behind: the step passed, and
