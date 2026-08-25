@@ -75,6 +75,32 @@ def test_skill_drift_catches_an_undeclared_skill_and_a_refless_pin(tmp_path):
     assert "run-models" in problems and "no upstream ref" in problems
 
 
+# --------------------------------------------------------------------------
+# config key backfill — #180. A key the template grows after `qops init` has
+# no path onto an already-scaffolded config; every reader defaults it
+# safely, so this is advisory, not a hard failure.
+# --------------------------------------------------------------------------
+
+def test_own_config_carries_every_template_key():
+    assert install.config_key_drift(qconfig.load(REPO)) == []
+
+
+def test_config_key_drift_catches_a_missing_top_level_and_nested_key():
+    cfg = dict(qconfig.load(REPO))
+    del cfg["pickup_task"]
+    cfg["ci"] = {k: v for k, v in cfg["ci"].items() if k != "digest_posts_on_schedule"}
+    problems = "\n".join(install.config_key_drift(cfg))
+    assert "pickup_task" in problems
+    assert "ci:" in problems and "digest_posts_on_schedule" in problems
+
+
+def test_config_key_drift_never_flags_the_project_specific_keys():
+    cfg = dict(qconfig.load(REPO))
+    for key in ("project", "repo", "tripwires"):
+        del cfg[key]
+    assert install.config_key_drift(cfg) == []
+
+
 def test_gh_api_writes_are_never_allowlisted():
     """Sign-off item 10. `gh api` bare is a GET and is allowlisted; a write to
     repo settings is an owner decision, already taken. The allow rule is only

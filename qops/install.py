@@ -17,6 +17,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import yaml
+
 from . import ledger, reconcile
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -558,6 +560,39 @@ def schema_drift(root: Path, cfg: dict | None = None,
                                 f"and missing from the live DB - run its migration")
     finally:
         conn.close()
+    return problems
+
+
+# A key the template fills with a value unique to the project, not a shared
+# setting - a consumer missing it is not the drift #180 is about.
+_CONFIG_KEY_EXCLUDE = {"project", "repo", "tripwires"}
+
+
+def config_key_drift(cfg: dict) -> list[str]:
+    """Every top-level (and `ci:`/`agents:`) key in config.yml.tmpl is present
+    in this project's own `.qops/config.yml` (#180).
+
+    `qops init` writes a config from the template once; a key the template
+    grows afterward has no path onto an already-scaffolded config, and every
+    reader defaults it safely (`cfg.get(key, default)`), so nothing breaks
+    mechanically - the config just silently stops being a truthful copy of
+    the schema. Advisory, not a hard failure: the owner still picks the
+    value, same as `qops init` would have asked.
+    """
+    # `render_one` needs `project` to fill the template's own placeholder; a
+    # config missing it (the case this check itself might be reporting) must
+    # still render, so it gets a throwaway fallback for that render alone.
+    template = yaml.safe_load(render_one("config.yml", {**cfg, "project": cfg.get("project", "x")}))
+    problems = []
+    for key in sorted(set(template) - _CONFIG_KEY_EXCLUDE - set(cfg)):
+        problems.append(f"`.qops/config.yml` is missing `{key}:`, present in "
+                        f"config.yml.tmpl — add it (see docs/reference/"
+                        f"qops-contract.md)")
+    for section in ("ci", "agents"):
+        missing = set(template.get(section) or {}) - set(cfg.get(section) or {})
+        for key in sorted(missing):
+            problems.append(f"`.qops/config.yml` `{section}:` is missing "
+                            f"`{key}:`, present in config.yml.tmpl")
     return problems
 
 
@@ -1319,6 +1354,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
     problems += schema_drift(root, cfg)
+    problems += config_key_drift(cfg)
     problems += undeclared_labels(cfg)
     if issues is _UNFETCHED:
         issues = open_issues(cfg)
