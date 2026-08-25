@@ -143,6 +143,47 @@ def test_agent_drift_accepts_a_declared_customization(tmp_path):
     assert "planner.md" in problems
 
 
+def test_skill_body_drift_is_clean_against_qops_own_skills():
+    assert install.skill_body_drift(REPO, qconfig.load(REPO)) == []
+
+
+def _consumer_skills(root, bodies):
+    for name, body in bodies.items():
+        d = root / ".claude" / "skills" / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+def test_skill_body_drift_catches_a_stale_native_skill(tmp_path):
+    """#200: `skill_drift` compares the *set* of names; the bodies were never
+    read. A `v0.2.0`-era consumer runs `triage` under the pre-ADR-0026 rules
+    while `doctor` says the skill set is clean."""
+    _consumer_skills(tmp_path, {"triage": "stale copy", "pending": "also stale"})
+    cfg = {"skills": {"native": ["triage", "pending"], "external": []}}
+    problems = "\n".join(install.skill_body_drift(tmp_path, cfg))
+    assert "triage/SKILL.md" in problems and "drifted" in problems
+    assert "pending/SKILL.md" in problems
+
+
+def test_skill_body_drift_accepts_a_declared_customization(tmp_path):
+    _consumer_skills(tmp_path, {"triage": "ours now", "pending": "stale"})
+    cfg = {"skills": {"native": ["triage", "pending"], "external": [],
+                      "accept_drift": ["triage"]}}
+    problems = "\n".join(install.skill_body_drift(tmp_path, cfg))
+    assert "triage/SKILL.md" not in problems
+    assert "pending/SKILL.md" in problems
+
+
+def test_skill_body_drift_ignores_skills_qops_does_not_ship(tmp_path):
+    """An external skill is a reinstallable copy of someone else's, and a
+    consumer's own native skill has no template to drift from. Neither is
+    this check's business — comparing them would fail forever."""
+    _consumer_skills(tmp_path, {"find-models": "not ours",
+                                "their-own-thing": "theirs"})
+    cfg = {"skills": {"native": ["their-own-thing"], "external": ["find-models"]}}
+    assert install.skill_body_drift(tmp_path, cfg) == []
+
+
 def test_gh_api_writes_are_never_allowlisted():
     """Sign-off item 10. `gh api` bare is a GET and is allowlisted; a write to
     repo settings is an owner decision, already taken. The allow rule is only

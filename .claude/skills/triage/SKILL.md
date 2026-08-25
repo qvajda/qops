@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Triage
 
-**Owner-only, by decision (ADR-0019).** Triage walks a state machine over many
+**Owner-only, by decision (CADR-0005).** Triage walks a state machine over many
 issues and relabels in a batch. `gh issue list` is the source of truth, so a
 mis-read taxonomy corrupts the thing every future session reads first. The
 reflex we want from an agent is `/spec-to-issue`, not this.
@@ -36,7 +36,7 @@ triage → planned → building → gate → review → done
   no-progress stop.
 - `gate` — a PR is open and the machine checks are running.
 - `review` — gates green, waiting on a taste review. Only `gate:taste` work
-  legitimately rests here; a `gate:machine` PR merges itself (ADR-0020).
+  legitimately rests here; a `gate:machine` PR merges itself (CADR-0006).
 - `done` — `qops close` writes this. Do not set it by hand.
 - `blocked` / `cancelled` — terminal-ish; both need a reason in a comment, or
   the label is a guess with a label's authority.
@@ -49,6 +49,9 @@ that contradicts the issue body; list what it could not classify.
 **May not:**
 - apply **`ready:auto`** — ever, in any circumstance. That flag means an
   unattended agent may start the work, and it is the owner's alone to grant.
+  Refuse it in particular on a row whose body names no test file (a
+  `tests/…​.py` path or a `test_*` node id) — nothing can prove it done (R8).
+  Report such a row as untriaged; do not edit it to add one.
 - decide priority, close an issue, or edit an issue body.
 - guess. When `type:` or `gate:` is genuinely ambiguous, **leave it and list
   it.** A guessed label reads exactly like a decided one, which is worse than a

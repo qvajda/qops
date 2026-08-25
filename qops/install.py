@@ -614,6 +614,55 @@ def upstream_skill_drift(declared: dict) -> list[str]:
             f"(init.SKILLS) and missing from `.qops/config.yml`'s "
             f"`skills.native` — add it, or add it to `skills.native_skip` "
             f"to opt out (#179)" for name in sorted(missing)]
+SKILL_TEMPLATES = TEMPLATES / "skills"
+
+
+def _differs(ref: Path, theirs: Path) -> bool:
+    """One installed file against the copy qops ships, newline-insensitively —
+    a consumer on Windows has CRLF where the package has LF, and that is not
+    drift."""
+    return (theirs.read_text(encoding="utf-8").replace("\r\n", "\n")
+            != ref.read_text(encoding="utf-8").replace("\r\n", "\n"))
+
+
+def skill_body_drift(root: Path, cfg: dict) -> list[str]:
+    """A consumer's native `.claude/skills/<name>/SKILL.md` matches qops's own
+    current copy (#200).
+
+    `skill_drift` compares the *set* of installed names against the declared
+    one; the bodies were never read, and neither `install` nor `doctor` ever
+    rewrote one. So a consumer pinned two releases back files and triages rows
+    under the rules its skills were written against - `qhoto_printshop` at
+    `v0.2.0` ran `interview`, `spec-to-issue` and `triage` from before
+    ADR-0026's `gate:` split and ADR-0028's outcome bar - while every skill
+    check `doctor` had was green. `agent_drift`'s argument (#183), one
+    surface over.
+
+    Only names qops actually ships a template for are compared: an external
+    skill is someone else's, and a consumer's own native skill has no
+    template to drift from. `skills.accept_drift` is the opt-out, a list of
+    names for the same reason `skills.native_skip` is one - the declared set
+    is a list, not a map.
+    """
+    declared = cfg.get("skills") or {}
+    accepted = set(declared.get("accept_drift") or [])
+    problems = []
+    for name in sorted(set(declared.get("native", [])) - accepted):
+        ref = SKILL_TEMPLATES / name / "SKILL.md"
+        theirs = Path(root) / ".claude" / "skills" / name / "SKILL.md"
+        # A missing one is `skill_drift`'s report, not this one's: two lines
+        # for one fact is how a green run stops being read.
+        if not ref.exists() or not theirs.exists():
+            continue
+        if _differs(ref, theirs):
+            problems.append(
+                f".claude/skills/{name}/SKILL.md: drifted from qops's current "
+                f"copy — merge the update by hand, or add `{name}` to "
+                f"`skills.accept_drift` in .qops/config.yml if this is "
+                f"deliberate")
+    return problems
+
+
 AGENT_ROLES = ("coder", "interactor", "planner", "reviewer", "scribe", "triager")
 AGENT_TEMPLATES = TEMPLATES / "agents"
 
@@ -639,9 +688,7 @@ def agent_drift(root: Path, cfg: dict) -> list[str]:
         if not theirs.exists():
             problems.append(f".claude/agents/{role}.md: missing")
             continue
-        want = ref.read_text(encoding="utf-8").replace("\r\n", "\n")
-        got = theirs.read_text(encoding="utf-8").replace("\r\n", "\n")
-        if got != want:
+        if _differs(ref, theirs):
             problems.append(
                 f".claude/agents/{role}.md: drifted from qops's current copy — "
                 f"merge the update by hand, or set `agents.{role}.accept_drift: "
@@ -1657,6 +1704,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         # problem.
         print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
+    problems += skill_body_drift(root, cfg)
     problems += agent_drift(root, cfg)
     problems += script_drift(root)
     problems += schema_drift(root, cfg)
