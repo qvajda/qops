@@ -5080,11 +5080,68 @@ def test_migrate_propose_names_missing_origin_gate_and_outcome():
 
 def test_migrate_propose_leaves_a_compliant_row_alone():
     compliant = {"number": 201, "labels": [{"name": "origin:owner"},
-                                           {"name": "gate:machine"}],
+                                           {"name": "gate:machine"},
+                                           {"name": "type:code"},
+                                           {"name": "state:planned"}],
                 "body": "## Acceptance\n\nSomething a machine can check."}
     plan = migratemod.propose([compliant])
     row = plan["rows"][0]
-    assert row["add_labels"] == [] and row["body"] is None
+    assert row["add_labels"] == [] and row["body"] is None and row["needs"] == []
+
+
+_MIGRATE_CFG = {"repo": "o/r", "ci": {"status_issue_label": "qops:status"},
+                "validate": {"require_on_open": ["type", "state", "gate",
+                                                 "origin"]}}
+
+
+def test_migrate_propose_leaves_a_triage_body_alone():
+    """#199: ADR-0028's bar is on *leaving* triage, and `install._BAR_EXEMPT`
+    is where that is written down. Proposing a body rewrite for a row the
+    invariants would never report turns one reviewable diff into a corpus-wide
+    one — 35 rows against printshop's backlog, 33 of them exempt."""
+    row = {"number": 300, "body": "one line, no acceptance",
+           "labels": [{"name": "state:triage"}, {"name": "type:code"}]}
+    plan = migratemod.propose([row], _MIGRATE_CFG)
+    assert plan["rows"][0]["body"] is None
+    # the labels it is missing are still proposed — only the body is exempt
+    assert set(plan["rows"][0]["add_labels"]) == {"origin:pending",
+                                                 "gate:machine"}
+
+
+def test_migrate_propose_skips_the_bookkeeping_row():
+    """`digest.yml` opens and rewrites the pinned status issue daily, and
+    `issue_invariants` exempts it for that reason (#167). A migration that
+    edits it is two halves of the substrate writing the same body."""
+    status = {"number": 301, "body": "machine-authored",
+              "labels": [{"name": "qops:status"}]}
+    plan = migratemod.propose([status, _undermigrated_row()], _MIGRATE_CFG)
+    assert [r["number"] for r in plan["rows"]] == [200]
+
+
+def test_migrate_propose_fills_only_the_mechanical_namespaces():
+    """`state:` and `gate:` and `origin:` each have a default the substrate
+    already argues for; `type:` has none, and a machine picking one is the
+    judgement ADR-0030 keeps with the owner. So it is reported, not filled."""
+    bare = {"number": 302, "body": "## Acceptance\n\nchecked by a command.",
+            "labels": []}
+    row = migratemod.propose([bare], _MIGRATE_CFG)["rows"][0]
+    assert set(row["add_labels"]) == {"state:triage", "gate:machine",
+                                      "origin:pending"}
+    assert row["needs"] == ["type"]
+
+
+def test_migrate_execute_survives_the_bookkeeping_row_changing(tmp_path):
+    """The fingerprint covers what the plan was drawn against, which is the
+    rows the plan holds. Hashing the status issue too would let the 06:00
+    digest refuse an execute drawn at 05:00, for a row nothing plans to
+    touch."""
+    (tmp_path / ".qops").mkdir()
+    status = {"number": 301, "body": "day one", "labels": [{"name": "qops:status"}]}
+    gh = FakeMigrateGh([status, _undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", cfg=_MIGRATE_CFG, run=gh)
+    gh.issues["301"]["body"] = "day two — the digest rewrote it"
+    result = migratemod.execute(tmp_path, "o/r", cfg=_MIGRATE_CFG, run=gh)
+    assert result["ok"], result["reason"]
 
 
 def test_migrate_dry_run_writes_the_plan_and_touches_no_tracker_call(tmp_path):
