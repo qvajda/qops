@@ -493,21 +493,28 @@ def unregister_task(root: Path, cfg: dict) -> str:
 
 
 def broken_adr_citations(root: Path) -> list[str]:
-    """Every `CADR-NNNN` cite in a *rendered* workflow or native skill body
-    resolves to a real file under this tree's `docs/adr/consumer/` (#181).
+    """Every `CADR-NNNN` cite in a *rendered* workflow, native skill body or
+    agent role file resolves to a real file under this tree's
+    `docs/adr/consumer/` (#181).
 
     Scans rendered output, not `qops/templates/` — the source always
     resolves against `templates/adr/`, that is not the citation that can go
     stale. What goes stale is a consumer's copy: never installed, or
     installed once and never refreshed after a qops upgrade added or
     renumbered a consumer-facing ADR.
+
+    `.claude/agents/*.md` was outside this scan until #198, which is the
+    surface where a wrong citation costs most: a role file IS the agent's
+    instructions, so a bare number resolving to the consumer's own unrelated
+    ADR is not a dead link, it is the planner reading someone else's rule.
     """
     root = Path(root)
     present = {"-".join(p.name.split("-", 2)[:2])
                for p in (root / "docs" / "adr" / "consumer").glob("CADR-*.md")}
     missing = []
     targets = list((root / ".github" / "workflows").glob("*.yml")) \
-        + list((root / ".claude" / "skills").glob("*/SKILL.md"))
+        + list((root / ".claude" / "skills").glob("*/SKILL.md")) \
+        + list((root / ".claude" / "agents").glob("*.md"))
     for p in targets:
         try:
             text = p.read_text(encoding="utf-8", errors="ignore")
