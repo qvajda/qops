@@ -861,6 +861,20 @@ def test_broken_adr_citations_catches_a_dangling_cite(tmp_path):
     assert any("CADR-9999" in m for m in missing)
 
 
+def test_broken_adr_citations_reads_agent_role_files(tmp_path):
+    """#198: `.claude/agents/*.md` is the third installed surface that may
+    cite a `CADR-`, and it was outside the scan — so every consumer's role
+    files could cite anything and `doctor` stayed green."""
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "planner.md").write_text("# see CADR-9999\n", encoding="utf-8")
+    missing = install.broken_adr_citations(tmp_path)
+    assert any("CADR-9999" in m for m in missing)
+    install.render_adr_consumer(tmp_path)
+    (agents / "planner.md").write_text("# see CADR-0001\n", encoding="utf-8")
+    assert install.broken_adr_citations(tmp_path) == []
+
+
 def test_broken_adr_citations_is_clean_once_installed(tmp_path):
     install.render_adr_consumer(tmp_path)
     workflows = tmp_path / ".github" / "workflows"
@@ -1384,12 +1398,18 @@ def test_every_cadr_citation_in_this_repos_own_install_resolves():
 
 
 def test_no_bare_adr_citation_survives_in_a_rendered_template():
-    """Every `ADR-NNNN` a template or native skill cites must be the
-    consumer-facing `CADR-NNNN` form (#181, ADR-0035) — a bare number is a
-    citation to a file nothing ever copies into a consumer's tree."""
+    """Every `ADR-NNNN` a template, native skill or agent role file cites must
+    be the consumer-facing `CADR-NNNN` form (#181, ADR-0035) — a bare number is
+    a citation to a file nothing ever copies into a consumer's tree.
+
+    The role files were the surface the first pass missed (#198): they are
+    installed into `.claude/agents/` exactly like a skill is, and a role file
+    IS the agent's instructions, so a number that resolves to the consumer's
+    own unrelated ADR is not a dead link but a wrong rule."""
     import re
     targets = list((REPO / "qops" / "templates").glob("*.tmpl")) + \
-        list((REPO / "qops" / "templates" / "skills").glob("*/SKILL.md"))
+        list((REPO / "qops" / "templates" / "skills").glob("*/SKILL.md")) + \
+        list((REPO / "qops" / "templates" / "agents").glob("*.md"))
     leaks = []
     for p in targets:
         for m in re.finditer(r"(?<!C)ADR-\d{4}", p.read_text(encoding="utf-8")):
