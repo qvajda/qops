@@ -75,6 +75,74 @@ def test_skill_drift_catches_an_undeclared_skill_and_a_refless_pin(tmp_path):
     assert "run-models" in problems and "no upstream ref" in problems
 
 
+def test_upstream_skill_drift_flags_a_name_qops_added_since_onboarding():
+    problems = install.upstream_skill_drift(
+        {"native": ["interview", "spec-to-issue", "triage"]})
+    assert len(problems) == 1
+    assert "pending" in problems[0] and "native_skip" in problems[0]
+
+
+def test_upstream_skill_drift_respects_the_opt_out():
+    assert install.upstream_skill_drift(
+        {"native": ["interview", "spec-to-issue", "triage"],
+         "native_skip": ["pending"]}) == []
+
+
+def test_upstream_skill_drift_clean_when_declared_set_covers_it():
+    assert install.upstream_skill_drift(
+        {"native": ["interview", "spec-to-issue", "triage", "pending"]}) == []
+# --------------------------------------------------------------------------
+# config key backfill — #180. A key the template grows after `qops init` has
+# no path onto an already-scaffolded config; every reader defaults it
+# safely, so this is advisory, not a hard failure.
+# --------------------------------------------------------------------------
+
+def test_own_config_carries_every_template_key():
+    assert install.config_key_drift(qconfig.load(REPO)) == []
+
+
+def test_config_key_drift_catches_a_missing_top_level_and_nested_key():
+    cfg = dict(qconfig.load(REPO))
+    del cfg["pickup_task"]
+    cfg["ci"] = {k: v for k, v in cfg["ci"].items() if k != "digest_posts_on_schedule"}
+    problems = "\n".join(install.config_key_drift(cfg))
+    assert "pickup_task" in problems
+    assert "ci:" in problems and "digest_posts_on_schedule" in problems
+
+
+def test_config_key_drift_never_flags_the_project_specific_keys():
+    cfg = dict(qconfig.load(REPO))
+    for key in ("project", "repo", "tripwires"):
+        del cfg[key]
+    assert install.config_key_drift(cfg) == []
+# agent role drift — #183. A role file IS the agent's instructions; a stale
+# copy makes an agent behave by rules the owner already replaced.
+# --------------------------------------------------------------------------
+
+def test_agent_drift_is_clean_against_qops_own_role_files():
+    assert install.agent_drift(REPO, qconfig.load(REPO)) == []
+
+
+def test_agent_drift_catches_a_stale_role_file(tmp_path):
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    for role in install.AGENT_ROLES:
+        (agents / f"{role}.md").write_text("stale copy", encoding="utf-8")
+    problems = "\n".join(install.agent_drift(tmp_path, {}))
+    assert "coder.md" in problems and "drifted" in problems
+
+
+def test_agent_drift_accepts_a_declared_customization(tmp_path):
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    for role in install.AGENT_ROLES:
+        (agents / f"{role}.md").write_text("stale copy", encoding="utf-8")
+    cfg = {"agents": {"coder": {"accept_drift": True}}}
+    problems = "\n".join(install.agent_drift(tmp_path, cfg))
+    assert "coder.md" not in problems
+    assert "planner.md" in problems
+
+
 def test_gh_api_writes_are_never_allowlisted():
     """Sign-off item 10. `gh api` bare is a GET and is allowlisted; a write to
     repo settings is an owner decision, already taken. The allow rule is only
@@ -775,8 +843,36 @@ def test_install_renders_the_seven_workflows(tmp_path):
         assert left is None, f"unrendered placeholder {left.group(0)} in {p}"
 
 
+def test_render_adr_consumer_copies_every_consumer_facing_adr(tmp_path):
+    """#181: a citation with nothing copied into the consumer's tree is a
+    dead link the moment it leaves this repo — that was the defect."""
+    written = install.render_adr_consumer(tmp_path)
+    names = {Path(p).name for p in written}
+    assert names == {p.name for p in install.ADR_CONSUMER_DIR.glob("CADR-*.md")}
+    for p in written:
+        assert (tmp_path / "docs" / "adr" / "consumer" / Path(p).name).exists()
+
+
+def test_broken_adr_citations_catches_a_dangling_cite(tmp_path):
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "gate.yml").write_text("# see CADR-9999\n", encoding="utf-8")
+    missing = install.broken_adr_citations(tmp_path)
+    assert any("CADR-9999" in m for m in missing)
+
+
+def test_broken_adr_citations_is_clean_once_installed(tmp_path):
+    install.render_adr_consumer(tmp_path)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "gate.yml").write_text("# see CADR-0001\n", encoding="utf-8")
+    assert install.broken_adr_citations(tmp_path) == []
+
+
 def test_doctor_is_green_on_a_fresh_install(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
+    install.render_adr_consumer(tmp_path)
     assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
@@ -789,6 +885,43 @@ def test_doctor_detects_drift(tmp_path):
 
 def test_the_repo_itself_is_installed_and_undrifted():
     assert install.drift(REPO, qconfig.load(REPO)) == []
+
+
+# --------------------------------------------------------------------------
+# consumer scripts land on disk too (#177) — qops_import.py/qops_pickup.py
+# are documented as required but were never written into a consumer's tree.
+# --------------------------------------------------------------------------
+
+def test_write_scripts_writes_both_consumer_scripts(tmp_path):
+    msgs = install.write_scripts(tmp_path)
+    for name in install.CONSUMER_SCRIPTS:
+        dest = tmp_path / "scripts" / name
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8") == \
+            (install.SCRIPTS_SRC / name).read_text(encoding="utf-8")
+    assert any("qops_import.py" in m for m in msgs)
+    assert any("qops_pickup.py" in m for m in msgs)
+
+
+def test_doctor_reports_a_missing_consumer_script(tmp_path):
+    install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
+    assert install.script_drift(tmp_path) == []
+    (tmp_path / "scripts" / "qops_pickup.py").unlink()
+    problems = " ".join(install.script_drift(tmp_path))
+    assert "qops_pickup.py" in problems and "missing" in problems
+    # And it is *not* `drift()`'s: `render_all` never writes these, so a tree
+    # it rendered is undrifted whether or not the scripts are there.
+    assert install.drift(tmp_path, qconfig.load(REPO)) == []
+
+
+def test_write_scripts_does_not_silently_overwrite_a_local_edit(tmp_path):
+    install.write_scripts(tmp_path)
+    edited = tmp_path / "scripts" / "qops_import.py"
+    edited.write_text("# a consumer's local edit\n", encoding="utf-8")
+    msgs = install.write_scripts(tmp_path)
+    assert edited.read_text(encoding="utf-8") == "# a consumer's local edit\n"
+    assert any("qops_import.py" in m and "differs" in m for m in msgs)
 
 
 # --------------------------------------------------------------------------
@@ -1240,6 +1373,28 @@ def test_claude_md_is_within_the_hot_path_cap():
 def test_every_doc_path_cited_from_code_resolves():
     missing = install.broken_doc_links(REPO)
     assert missing == [], f"broken doc citations: {missing}"
+
+
+def test_every_cadr_citation_in_this_repos_own_install_resolves():
+    """qops installs itself (`test_the_repo_itself_is_installed_and_undrifted`)
+    so it is also a consumer of its own `CADR-` citations, and #181's doctor
+    check must find nothing wrong in its own tree."""
+    missing = install.broken_adr_citations(REPO)
+    assert missing == [], f"broken ADR citations: {missing}"
+
+
+def test_no_bare_adr_citation_survives_in_a_rendered_template():
+    """Every `ADR-NNNN` a template or native skill cites must be the
+    consumer-facing `CADR-NNNN` form (#181, ADR-0035) — a bare number is a
+    citation to a file nothing ever copies into a consumer's tree."""
+    import re
+    targets = list((REPO / "qops" / "templates").glob("*.tmpl")) + \
+        list((REPO / "qops" / "templates" / "skills").glob("*/SKILL.md"))
+    leaks = []
+    for p in targets:
+        for m in re.finditer(r"(?<!C)ADR-\d{4}", p.read_text(encoding="utf-8")):
+            leaks.append(f"{p.relative_to(REPO)}: {m.group(0)}")
+    assert leaks == [], f"bare ADR citation in a rendered template: {leaks}"
 
 
 # --------------------------------------------------------------------------
@@ -2969,6 +3124,35 @@ def test_an_undeclared_label_is_caught():
     assert any("qops:nope" in p for p in install.undeclared_labels(cfg))
 
 
+def test_this_repos_own_taxonomy_matches_what_it_ships():
+    """qops must pass its own check — dogfooding is the point of #178."""
+    assert install.taxonomy_drift(qconfig.load(REPO)) == []
+
+
+def test_a_taxonomy_missing_a_shipped_value_is_caught():
+    """printshop's config sat a version stale after #105 and `--labels`
+    silently no-op'd over it — this is the check that would have said so."""
+    cfg = json.loads(json.dumps(qconfig.load(REPO), default=str))
+    cfg["labels"]["gate"] = ["machine"]  # drop `taste` and `none`
+    problems = install.taxonomy_drift(cfg)
+    assert any("gate:taste" in p for p in problems)
+    assert any("gate:none" in p for p in problems)
+
+
+def test_a_taxonomy_superset_of_the_shipped_one_is_not_drift():
+    cfg = json.loads(json.dumps(qconfig.load(REPO), default=str))
+    cfg["labels"]["gate"].append("extra")
+    assert install.taxonomy_drift(cfg) == []
+
+
+def test_taxonomy_drift_ignores_mission_which_is_each_projects_own():
+    """`mission` values are project vocabulary (substrate/consumers/
+    housekeeping here, `core` in the shipped template) — not fixed enum
+    values the CLI, a hook or a workflow branches on, so a project naming its
+    own missions is never drift."""
+    assert "mission:core" not in install.shipped_taxonomy()
+
+
 def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     cfg = qconfig.load(REPO)
     issues = [
@@ -3529,6 +3713,67 @@ def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
     assert "fetch-tags: true" in rendered, "checkout fetches no tags"
 
 
+def _version_repo(tmp_path, main_base, main_head, version_base, version_head):
+    """A real temporary git repo shaped like the version-bump question: a
+    base commit on `trunk` and a head commit on `fix/182-fixture`, each
+    carrying its own `qops/__main__.py` and `pyproject.toml`. Mirrors
+    `_r8_repo` — `git merge-base` is what's under test, so it needs a real
+    repo, not a mocked diff."""
+    root = tmp_path / "repo"
+    (root / "qops").mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "trunk")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "qops" / "__main__.py").write_text(main_base, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "qops"\nversion = "{version_base}"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "branch", "origin/master")
+    _git(root, "checkout", "-q", "-b", "fix/182-fixture")
+    (root / "qops" / "__main__.py").write_text(main_head, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "qops"\nversion = "{version_head}"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "head", "--allow-empty")
+    return root
+
+
+_VERBS_BASE = '    "brief": (brief.main, "session brief"),\n'
+_VERBS_HEAD = _VERBS_BASE + '    "migrate": (migrate.main, "new verb"),\n'
+
+
+def test_a_new_verb_without_a_version_bump_fails(tmp_path):
+    """#182: `qops migrate` landed 73 commits before any tag caught up
+    because nothing tied a new verb to a version bump. A new key in
+    `VERBS` is exactly what README.md already counts as version-worthy."""
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_HEAD,
+                         version_base="0.2.0", version_head="0.2.0")
+    problems = install.version_bump_required(root, base_ref="master",
+                                             head_ref="fix/182-fixture")
+    assert any("migrate" in p and "0.2.0" in p for p in problems), problems
+
+
+def test_a_new_verb_with_a_version_bump_passes(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_HEAD,
+                         version_base="0.2.0", version_head="0.3.0")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
+def test_no_new_verb_needs_no_bump(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.2.0")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
+def test_version_bump_required_is_silent_without_a_pr_context(monkeypatch):
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    assert install.version_bump_required(REPO) == []
+
+
 def test_brief_reports_the_same_version_pyproject_declares():
     """#103: an editable install's egg-info goes stale the moment
     pyproject.toml is hand-edited without a reinstall — this repo showed
@@ -3596,6 +3841,19 @@ def test_an_owner_filed_planned_row_needs_no_second_label_edit():
                      body=named_test))
     assert not qops_pickup.eligible(
         _owner_issue("gate:machine", "state:planned", "origin:agent", body=named_test))
+
+
+def test_ready_auto_without_a_named_test_is_not_eligible():
+    """The picker and `doctor` must answer R8 the same way. When they did not,
+    a `ready:auto` row naming no test was picked up, built, and PR'd - and
+    `doctor`'s R8 invariant failed its gate forever (five rows, 2026-08-25)."""
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto", body="## Acceptance\n\nIt works.\n"))
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto",
+                     body="Expected to touch: `tests/test_qops.py`\n"))
 
 
 def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
@@ -4379,7 +4637,8 @@ def test_a_pass_where_every_row_struck_out_names_that_as_the_reason(monkeypatch,
     was actually skipped as struck out names the wrong cause (#48's message
     for #49's skip). The final line must say struck out."""
     row = {"number": 47, "title": "struck", "updatedAt": "2026-08-20T01:00:00Z",
-           "body": "just a body", "labels": [{"name": "state:planned"},
+           "body": "Expected to touch: `tests/test_qops.py`",
+           "labels": [{"name": "state:planned"},
                                               {"name": "gate:machine"},
                                               {"name": "ready:auto"}]}
     _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
@@ -4654,8 +4913,12 @@ def test_gitattributes_declares_text_auto():
 # the queue read empty for an hour with nothing saying why.
 # --------------------------------------------------------------------------
 
-_ROLE_FILES = "## Files\n\nExpected to touch: `.claude/agents/triager.md`\n"
-_OK_FILES = "## Files\n\nExpected to touch: `qops/install.py`\n"
+# Both name a test: R8 is a condition on every `ready:auto` row, so a fixture
+# that skips it is not auto-eligible at all and exercises nothing.
+_ROLE_FILES = ("## Files\n\nExpected to touch: `.claude/agents/triager.md` and "
+               "`tests/test_qops.py`\n")
+_OK_FILES = ("## Files\n\nExpected to touch: `qops/install.py` and "
+             "`tests/test_qops.py`\n")
 
 
 def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
@@ -4665,7 +4928,8 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
                    {"name": "ready:auto"}],
     }
     unwritable_not_auto_eligible = {
-        # #13's shape: names no test, so eligible() is False by every route.
+        # #13's shape: no `ready:auto`, no `origin:owner` - ineligible by
+        # every route.
         "number": 13, "body": _ROLE_FILES,
         "labels": [{"name": "state:planned"}, {"name": "gate:machine"}],
     }
@@ -4942,7 +5206,8 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
                   "skills-lock.json", ".claude/skills/interview/SKILL.md",
                   ".claude/skills/spec-to-issue/SKILL.md",
                   ".claude/skills/triage/SKILL.md",
-                  ".claude/skills/pending/SKILL.md"):
+                  ".claude/skills/pending/SKILL.md",
+                  "scripts/qops_import.py", "scripts/qops_pickup.py"):
         assert (tmp_path / expect).exists(), f"{expect} not written"
     for name in install.WORKFLOWS:
         assert (tmp_path / ".github" / "workflows" / name).exists()
@@ -5241,6 +5506,18 @@ def test_cli_output_survives_a_non_utf8_stdout():
     )
     assert result.returncode == 0
     assert "—".encode() in result.stdout
+
+
+def test_version_prints_the_installed_package_version_not_source():
+    """#176: reads importlib.metadata, same class of check as find_root — a
+    pinned dependency's __file__ is site-packages, not the repo in play."""
+    from importlib.metadata import version as pkg_version
+    result = subprocess.run(
+        [sys.executable, "-m", "qops", "version"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == pkg_version("qops")
 
 
 # --------------------------------------------------------------------------
@@ -5563,6 +5840,45 @@ def test_a_claim_with_no_alert_launched_is_never_reaped(tmp_path, monkeypatch):
 def test_digest_template_carries_no_telegram_step():
     tmpl = (REPO / "qops" / "templates" / "digest.yml.tmpl").read_text(encoding="utf-8")
     assert "TELEGRAM" not in tmpl and "telegram" not in tmpl
+
+
+def test_filing_skills_refuse_ready_auto_without_a_named_test():
+    """#194: R8 belongs at the filing, same reasoning as ADR-0028's outcome
+    bar — the filing is the only owner act left in the chain. Both surfaces
+    that write `ready:auto` must state the refusal in prose an agent reads
+    before filing, not just enforce it downstream in `issue_invariants`."""
+    spec_to_issue = (REPO / "qops" / "templates" / "skills" / "spec-to-issue"
+                     / "SKILL.md").read_text(encoding="utf-8")
+    triage = (REPO / "qops" / "templates" / "skills" / "triage"
+             / "SKILL.md").read_text(encoding="utf-8")
+    for text in (spec_to_issue, triage):
+        assert "ready:auto" in text
+        assert "names no test" in text
+        assert "R8" in text
+
+
+def test_r8_names_a_test_reports_tracker_wide(monkeypatch):
+    """The five rows in #194 sat mislabelled for hours and only a PR made
+    them visible — a tracker-wide sweep must report R8 on every such row,
+    not just the one a PR happens to name. `_rows_in_scope` still narrows to
+    the branch's own row on a PR (#63), unchanged by this fix."""
+    cfg = qconfig.load(REPO)
+    bad = [{"name": "type:code"}, {"name": "state:planned"},
+           {"name": "gate:machine"}, {"name": "ready:auto"},
+           {"name": "origin:owner"}]
+    rows = [{"number": 180, "labels": bad, "body": "no test named here"},
+            {"number": 181, "labels": bad,
+             "body": "Acceptance: tests/test_qops.py passes."}]
+    problems = install.issue_invariants(rows, cfg, tracker_wide=True)
+    assert any("#180" in p and "names no test" in p for p in problems)
+    assert not any("#181" in p for p in problems)
+
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    monkeypatch.setenv("GITHUB_HEAD_REF", "fix/180-a-branch-naming-its-row")
+    scoped, _ = install._rows_in_scope(rows)
+    assert [r["number"] for r in scoped] == [180]
 
 
 def test_a_conflicted_pr_is_reported_as_a_stall():

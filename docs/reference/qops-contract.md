@@ -72,9 +72,12 @@ Required keys are marked ●. Everything else has a default and may be omitted.
 |---|---|---|
 | `skills.native` | list[str] | Ours, tracked in git. Declared-and-absent is a `doctor` problem. |
 | `skills.external` | list[str] | Reinstallable copies. Each needs a `ref` in `skills-lock.json`. May be `[]`. |
+| `skills.native_skip` | list[str] | Opt-out: a name in `init.SKILLS` this consumer decided on purpose not to carry. May be `[]` or absent. |
 
 `skill_drift` fails on an installed-and-undeclared skill, a declared-and-missing
-native, a lock entry outside the declared set, and a lock entry with no `ref`.
+native, a lock entry outside the declared set, a lock entry with no `ref`, and
+(#179) a name present in qops's own `init.SKILLS` scaffold list that is
+neither in `skills.native` nor in `skills.native_skip`.
 
 ### CI
 
@@ -95,6 +98,10 @@ native, a lock entry outside the declared set, and a lock entry with no `ref`.
 (`planner`, `coder`, `reviewer`, `scribe`, `triager`, `interactor`).
 `agents.<role>.allow/deny` — optional per-role command classes (ADR-0033). A
 role stating neither behaves exactly as it does today; there is no reader yet.
+`agents.<role>.accept_drift` — `true` opts a role's `.claude/agents/<role>.md`
+out of `agent_drift`'s check (#183): a project may have legitimately
+customized a role, and this is how it says so instead of `doctor` failing on
+it forever.
 
 ### Permissions
 

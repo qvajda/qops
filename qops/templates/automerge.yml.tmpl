@@ -1,7 +1,7 @@
 # RENDERED BY `qops install` from qops/templates/automerge.yml.tmpl + .qops/config.yml
 # Do not hand-edit: `qops doctor` fails on drift.
 #
-# ADR-0020. A green `gate:machine` PR merges itself: the gate has already
+# CADR-0006. A green `gate:machine` PR merges itself: the gate has already
 # judged it, so the click was a mindless approval button, and a mindless
 # approval button is not a control.
 #
@@ -18,7 +18,7 @@
 # The gate is read from the LINKED ISSUE, not from the PR. Issues are the
 # source of truth (CLAUDE.md) and nothing labels a PR: the first cut read
 # `github.event.pull_request.labels` and was structurally incapable of ever
-# firing. The issue number comes from the branch, per ADR-0019 — the same rule
+# firing. The issue number comes from the branch, per CADR-0005 — the same rule
 # `qops brief` uses.
 #
 # #128 added the other half: a merge released nothing, so a shipped sortie sat
@@ -125,7 +125,7 @@ jobs:
             exit 0
           fi
           echo "$out"
-          echo "::error::could not queue auto-merge on #$PR. The usual cause is that {{default_branch}} has no required status checks: the PR is already mergeable, there is nothing to queue behind, and enabling it would merge unread code. Configure branch protection (ADR-0016) - the checks are what merge, not this job."
+          echo "::error::could not queue auto-merge on #$PR. The usual cause is that {{default_branch}} has no required status checks: the PR is already mergeable, there is nothing to queue behind, and enabling it would merge unread code. Configure branch protection (CADR-0003) - the checks are what merge, not this job."
           exit 1
 
   advance:
@@ -135,7 +135,7 @@ jobs:
     #
     # It always labels. On `gate:taste` it stops there: a merge is not a
     # judgement, and the owner's read is the only judgement there is - closing
-    # stays theirs. On `gate:machine` it also closes (ADR-0025): the gate
+    # stays theirs. On `gate:machine` it also closes (CADR-0009): the gate
     # already judged this row the same way it judged the merge, so there is no
     # taste read left to give and no owner action to wait on.
     #
@@ -179,7 +179,7 @@ jobs:
           case "$labels" in
             *gate:machine*)
               gh issue close "$n" --repo {{repo}} --comment \
-                "Closed by \`automerge-loop\`: \`gate:machine\`, PR #$PR merged - nothing left to judge (ADR-0025)." ;;
+                "Closed by \`automerge-loop\`: \`gate:machine\`, PR #$PR merged - nothing left to judge (CADR-0009)." ;;
           esac
 
   # The backstop, run where a bot merge can actually reach it.
@@ -216,13 +216,13 @@ jobs:
       #
       # **Optional by construction.** Absent the secret this resolves to
       # `GITHUB_TOKEN` and the job authenticates exactly as it did before, so a
-      # repo shaped unlike this one installs unchanged (ADR-0024) - it simply
+      # repo shaped unlike this one installs unchanged (CADR-0008) - it simply
       # does not get the BEHIND sweep, and `qops reconcile` says so as a skip
       # rather than failing the run.
       #
       # A fine-grained PAT names its repositories, so this is minted per repo:
       # Contents, Pull requests and Issues write, and **no administration**
-      # (ADR-0016 finding B8 - an agent identity that could edit protection
+      # (CADR-0003 finding B8 - an agent identity that could edit protection
       # settings would route around the decision those settings encode).
       # Updating a branch is not approving a PR; bot approval stays refused.
       GH_TOKEN: ${{ secrets.QOPS_AGENT_TOKEN || secrets.GITHUB_TOKEN }}
@@ -234,7 +234,7 @@ jobs:
           cache: pip
       - name: install
         # One block for every rendered job that runs Python, rendered from
-        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # `qops/install.py:INSTALL_DEPS` (CADR-0008). Three copies of it drifted
         # into three separate failures in repos shaped unlike this one.
         run: |
           {{install_deps}}

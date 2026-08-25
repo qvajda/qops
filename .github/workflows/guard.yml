@@ -29,7 +29,7 @@ jobs:
         # consumes qops as a dependency the package arrives through the
         # requirements file - nowhere else (#21). One block for every
         # rendered job that runs Python, rendered from
-        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # `qops/install.py:INSTALL_DEPS` (CADR-0008). Three copies of it drifted
         # into three separate failures in repos shaped unlike this one.
         run: |
           python -m pip install --upgrade pip
@@ -56,7 +56,7 @@ jobs:
         # consumes qops as a dependency the package arrives through the
         # requirements file - nowhere else (#21). One block for every
         # rendered job that runs Python, rendered from
-        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # `qops/install.py:INSTALL_DEPS` (CADR-0008). Three copies of it drifted
         # into three separate failures in repos shaped unlike this one.
         run: |
           python -m pip install --upgrade pip
