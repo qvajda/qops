@@ -572,6 +572,7 @@ def skill_drift(root: Path, cfg: dict) -> list[str]:
         problems.append(f"native skill `{missing}` is declared and missing "
                         f"from .claude/skills/")
 
+    problems += upstream_skill_drift(declared)
     lock_path = root / "skills-lock.json"
     if not lock_path.exists():
         return problems + ["skills-lock.json missing"]
@@ -589,6 +590,30 @@ def skill_drift(root: Path, cfg: dict) -> list[str]:
     return problems
 
 
+def upstream_skill_drift(declared: dict) -> list[str]:
+    """The consumer's declared native set covers every skill `qops init`
+    itself scaffolds a fresh repo with (#179).
+
+    A repo that ran `qops init` before a name was added to `init.SKILLS`
+    never gets it back — neither `install` nor `doctor` wrote a newly-added
+    native skill into an existing consumer's declared set or tree, same shape
+    of gap as the taxonomy (#178) and the scripts (#177). This only reports;
+    adding the skill file and the config entry stays the owner's edit.
+
+    `skills.native_skip` is the opt-out: a name a consumer decided on purpose
+    it does not want, so this stops flagging it instead of failing forever.
+
+    Imports `init` lazily — `init.py` imports this module, so importing it
+    back at module load time would be circular.
+    """
+    from . import init as initmod
+    native = set(declared.get("native", []))
+    skip = set(declared.get("native_skip", []))
+    missing = set(initmod.SKILLS) - native - skip
+    return [f"native skill `{name}` is in qops's own scaffold list "
+            f"(init.SKILLS) and missing from `.qops/config.yml`'s "
+            f"`skills.native` — add it, or add it to `skills.native_skip` "
+            f"to opt out (#179)" for name in sorted(missing)]
 AGENT_ROLES = ("coder", "interactor", "planner", "reviewer", "scribe", "triager")
 AGENT_TEMPLATES = TEMPLATES / "agents"
 
@@ -778,6 +803,47 @@ def undeclared_labels(cfg: dict) -> list[str]:
     return [f"label {s!r} is named in .qops/config.yml and is not in the "
             f"`labels:` taxonomy" for s in sorted(set(_scalars(cfg)))
             if _LABEL_LIKE.match(s) and s not in declared]
+
+
+# `mission` is excluded: its values are each project's own vocabulary
+# (`substrate`/`consumers`/`housekeeping` here, `core` in the template's
+# placeholder), never a value the CLI, a hook or a workflow branches on. Every
+# other namespace plus `flags` IS code qops itself depends on
+# (`BLOCKING_FLAGS`, `eligible()`, the templates) and is what #178 is about.
+_SHIPPED_NAMESPACES = ("type", "state", "gate", "origin", "priority")
+
+
+def shipped_taxonomy() -> set[str]:
+    """The taxonomy qops's own installed version ships, read from the
+    package's own `config.yml.tmpl` — never a hardcoded list (#178), or this
+    check goes stale the same way the drift it looks for did.
+
+    `config.yml.tmpl` is package data (`pyproject.toml`), so this reads the
+    schema of whatever qops version is actually installed, not this checkout.
+    """
+    import yaml
+    text = (TEMPLATES / "config.yml.tmpl").read_text(encoding="utf-8")
+    for key in ("project", "repo", "default_branch", "python"):
+        text = text.replace("{{" + key + "}}", "x")
+    labels = yaml.safe_load(text).get("labels") or {}
+    out = {f"{ns}:{v}" for ns in _SHIPPED_NAMESPACES for v in labels.get(ns, [])}
+    return out | set(labels.get("flags", []))
+
+
+def taxonomy_drift(cfg: dict) -> list[str]:
+    """A value in qops's shipped taxonomy and absent from this project's
+    (#178). A consumer that bumps its pin without hand-diffing config.yml
+    against qops's own gets a tracker silently missing labels the CLI and
+    hooks assume exist — #105's `--labels` step no-opped exactly this way,
+    against a taxonomy already a version stale.
+
+    A project's taxonomy is free to be a superset (extra namespaces, extra
+    values); only a value shipped and missing is reported.
+    """
+    missing = shipped_taxonomy() - taxonomy(cfg)
+    return [f"label {s!r} is in qops's shipped taxonomy and missing from "
+            f"this project's `labels:` — add it to .qops/config.yml"
+            for s in sorted(missing)]
 
 
 # A test file named anywhere in the issue body: `tests/test_x.py`, or a bare
@@ -1561,6 +1627,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     problems += schema_drift(root, cfg)
     problems += config_key_drift(cfg)
     problems += undeclared_labels(cfg)
+    problems += taxonomy_drift(cfg)
     if issues is _UNFETCHED:
         issues = open_issues(cfg)
     if issues is not None:
