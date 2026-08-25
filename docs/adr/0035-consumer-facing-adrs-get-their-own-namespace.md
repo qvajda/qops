@@ -16,8 +16,8 @@ have, for its own pre-split `ADR-0023`, a different decision entirely
 ## Decision
 
 A citation meant to survive installation — anything a rendered `.github/
-workflows/*` or `.claude/skills/*/SKILL.md` may name — is numbered
-`CADR-NNNN`, never bare `ADR-NNNN`. The two prefixes can never collide by
+workflows/*`, `.claude/skills/*/SKILL.md` or `.claude/agents/*.md` may name —
+is numbered `CADR-NNNN`, never bare `ADR-NNNN`. The two prefixes can never collide by
 construction, so a consumer's own `docs/adr/000N-*.md` numbering is untouched
 and untouchable by qops's growth.
 
@@ -29,7 +29,7 @@ the citation now names a file that exists in the tree that reads it, not
 just in qops's own.
 
 `qops doctor` gained `install.broken_adr_citations()`: it scans a consumer's
-*rendered* workflows and skill bodies (not `qops/templates/` — the template
+*rendered* workflows, skill bodies and agent role files (not `qops/templates/` — the template
 source always resolves against `templates/adr/` in the same checkout) for
 `CADR-NNNN` and fails if `docs/adr/consumer/CADR-NNNN-*.md` is missing. A
 missing file is the only failure mode left once the split holds: collision
@@ -56,6 +56,25 @@ number a template already cited (`grep -rhoE 'ADR-[0-9]{4}' qops/templates/`):
 | 0028 the-filing-is-the-licence                                        | CADR-0011 |
 | 0029 the-loop-plans-what-the-owner-licensed                            | CADR-0012 |
 | 0032 the-pickup-task-is-installed-and-named-per-project                | CADR-0013 |
+
+**Amended by #198.** The first pass read "a template" as the `.tmpl` files and
+the native skills, and left `qops/templates/agents/*.md` — the six role files
+`qops init` installs into `.claude/agents/` — citing bare numbers. That is the
+worst of the three surfaces, not the least: in `qhoto_printshop` the planner's
+and triager's `ADR-0023` resolved to that repo's own
+`0023-the-substrate-lives-in-its-own-repo.md`, silently, which is the failure
+mode this ADR names in its first paragraph. They now cite `CADR-`, the scan
+reads them, and one more number joined the set:
+
+| old (qops `docs/adr/`)                                              | new (`CADR-`) |
+|-----------------------------------------------------------------------|---------------|
+| 0026 gate-taste-is-a-preference-that-is-an-input                       | CADR-0014 |
+
+`interactor.md`'s `ADR-0002` got no number at all: it named the source repo's
+approval-transport decision, which qops does not carry and never did, so there
+was nothing to renumber. The citation is gone and the sentence it hung off
+stands unchanged — a pointer into another repo's `docs/adr/` cannot survive
+installation under any prefix.
 
 The originals stay exactly where they are, at their original numbers, under
 qops's own `docs/adr/` — this repo's own development history is not a
