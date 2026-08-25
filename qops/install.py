@@ -635,11 +635,20 @@ def eligible(issue: dict) -> bool:
         return False
     if "gate:none" in labels or not any(l.startswith("gate:") for l in labels):
         return False
+    # R8 is a condition on *every* `ready:auto` row, not only on the
+    # owner-filed route (ADR-0023: the grant "takes effect once R8 holds").
+    # Short-circuiting on the label alone made this predicate disagree with
+    # `doctor`'s own R8 invariant, and the two disagreeing is not a difference
+    # of opinion: the picker launched five rows overnight whose gate could
+    # never go green, leaving five PRs open and five rows on `state:building`.
+    names_a_test = bool(_NAMES_A_TEST.search(issue.get("body") or ""))
     if "ready:auto" in labels:
-        return True
+        # `body` absent means the caller passed a fixture that cannot answer,
+        # the same convention `doctor`'s R8 invariant uses.
+        return names_a_test or issue.get("body") is None
     if "gate:taste" in labels or "origin:owner" not in labels:
         return False
-    return bool(_NAMES_A_TEST.search(issue.get("body") or ""))
+    return names_a_test
 
 
 # Paths the launch may not write, whatever the row says. Not a repo rule and
