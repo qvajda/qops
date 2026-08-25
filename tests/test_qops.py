@@ -75,6 +75,22 @@ def test_skill_drift_catches_an_undeclared_skill_and_a_refless_pin(tmp_path):
     assert "run-models" in problems and "no upstream ref" in problems
 
 
+def test_upstream_skill_drift_flags_a_name_qops_added_since_onboarding():
+    problems = install.upstream_skill_drift(
+        {"native": ["interview", "spec-to-issue", "triage"]})
+    assert len(problems) == 1
+    assert "pending" in problems[0] and "native_skip" in problems[0]
+
+
+def test_upstream_skill_drift_respects_the_opt_out():
+    assert install.upstream_skill_drift(
+        {"native": ["interview", "spec-to-issue", "triage"],
+         "native_skip": ["pending"]}) == []
+
+
+def test_upstream_skill_drift_clean_when_declared_set_covers_it():
+    assert install.upstream_skill_drift(
+        {"native": ["interview", "spec-to-issue", "triage", "pending"]}) == []
 # --------------------------------------------------------------------------
 # agent role drift — #183. A role file IS the agent's instructions; a stale
 # copy makes an agent behave by rules the owner already replaced.
