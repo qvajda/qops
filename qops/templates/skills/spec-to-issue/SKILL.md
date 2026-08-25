@@ -89,6 +89,13 @@ Exactly one `type:`, one `state:` and one `gate:`, from `.qops/config.yml`:
 **Never apply `ready:auto`.** It means an unattended agent may start the work
 unsupervised, and it is the owner's alone to grant (ADR-0019, `loops.md`).
 
+**Refuse `ready:auto` when the body names no test.** Even when the owner asks
+for the label in this session, do not apply `ready:auto` to a body that names
+no test file (a `tests/…​.py` path or a `test_*` node id) — nothing can prove
+the row done (R8). File the row without the label, in `state:triage`, and say
+which line is missing. A row with no test yet is a legitimate triage row; the
+refusal is on the label, never on the filing (ADR-0028).
+
 ## Blocking edges
 
 Declare dependencies as native tracker links (`gh issue edit --add-sub-issue`,

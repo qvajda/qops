@@ -49,6 +49,9 @@ that contradicts the issue body; list what it could not classify.
 **May not:**
 - apply **`ready:auto`** — ever, in any circumstance. That flag means an
   unattended agent may start the work, and it is the owner's alone to grant.
+  Refuse it in particular on a row whose body names no test file (a
+  `tests/…​.py` path or a `test_*` node id) — nothing can prove it done (R8).
+  Report such a row as untriaged; do not edit it to add one.
 - decide priority, close an issue, or edit an issue body.
 - guess. When `type:` or `gate:` is genuinely ambiguous, **leave it and list
   it.** A guessed label reads exactly like a decided one, which is worse than a
