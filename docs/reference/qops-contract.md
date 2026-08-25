@@ -73,11 +73,19 @@ Required keys are marked ●. Everything else has a default and may be omitted.
 | `skills.native` | list[str] | Ours, tracked in git. Declared-and-absent is a `doctor` problem. |
 | `skills.external` | list[str] | Reinstallable copies. Each needs a `ref` in `skills-lock.json`. May be `[]`. |
 | `skills.native_skip` | list[str] | Opt-out: a name in `init.SKILLS` this consumer decided on purpose not to carry. May be `[]` or absent. |
+| `skills.accept_drift` | list[str] | Opt-out for `skill_body_drift` (#200): names whose `SKILL.md` this consumer has deliberately customized. A list, not a map, because the declared set is one. May be `[]` or absent. |
 
 `skill_drift` fails on an installed-and-undeclared skill, a declared-and-missing
 native, a lock entry outside the declared set, a lock entry with no `ref`, and
 (#179) a name present in qops's own `init.SKILLS` scaffold list that is
 neither in `skills.native` nor in `skills.native_skip`.
+
+`skill_body_drift` is the other half (#200): `skill_drift` compares the *set*
+of names, this compares the **bodies** of the natives qops ships a template
+for, against `qops/templates/skills/<name>/SKILL.md`. It reports; it never
+overwrites — a skill body a consumer edited is theirs, and `skills.accept_drift`
+is how they say so. An external skill and a consumer's own native skill are
+never compared: neither has a template to drift from.
 
 ### CI
 
