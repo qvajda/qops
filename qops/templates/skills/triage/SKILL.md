@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Triage
 
-**Owner-only, by decision (ADR-0019).** Triage walks a state machine over many
+**Owner-only, by decision (CADR-0005).** Triage walks a state machine over many
 issues and relabels in a batch. `gh issue list` is the source of truth, so a
 mis-read taxonomy corrupts the thing every future session reads first. The
 reflex we want from an agent is `/spec-to-issue`, not this.
@@ -36,7 +36,7 @@ triage → planned → building → gate → review → done
   no-progress stop.
 - `gate` — a PR is open and the machine checks are running.
 - `review` — gates green, waiting on a taste review. Only `gate:taste` work
-  legitimately rests here; a `gate:machine` PR merges itself (ADR-0020).
+  legitimately rests here; a `gate:machine` PR merges itself (CADR-0006).
 - `done` — `qops close` writes this. Do not set it by hand.
 - `blocked` / `cancelled` — terminal-ish; both need a reason in a comment, or
   the label is a guess with a label's authority.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qops"
-version = "0.2.0"
+version = "0.3.0"
 description = "A per-project ways-of-working substrate: brief, ledger, guard, install, doctor, metrics."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -23,4 +23,4 @@ Homepage = "https://github.com/qvajda/qops"
 packages = ["qops"]
 
 [tool.setuptools.package-data]
-qops = ["templates/*.tmpl", "templates/skills/*/SKILL.md"]
+qops = ["templates/*.tmpl", "templates/skills/*/SKILL.md", "templates/agents/*.md", "templates/scripts/*.py", "templates/adr/*.md"]
