@@ -121,8 +121,8 @@ is made more expensive. If the ask does not fit, the thing being asked is larger
 than one decision and the split is the real message.
 
 This format is for the rows he actually reads. Both rows in the whole corpus
-where his read changed an outcome were asks (`qhoto_printshop`#112 and #151), so
-it is not decoration — it is the shape of the only work that still needs him.
+where his read changed an outcome were asks, so it is not decoration — it is
+the shape of the only work that still needs him.
 
 **Delegation cap: one.** Delegate only for a large, genuinely independent
 track, and to one subagent, not several.
