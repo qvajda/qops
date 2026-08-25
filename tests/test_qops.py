@@ -3697,6 +3697,19 @@ def test_an_owner_filed_planned_row_needs_no_second_label_edit():
         _owner_issue("gate:machine", "state:planned", "origin:agent", body=named_test))
 
 
+def test_ready_auto_without_a_named_test_is_not_eligible():
+    """The picker and `doctor` must answer R8 the same way. When they did not,
+    a `ready:auto` row naming no test was picked up, built, and PR'd - and
+    `doctor`'s R8 invariant failed its gate forever (five rows, 2026-08-25)."""
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto", body="## Acceptance\n\nIt works.\n"))
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto",
+                     body="Expected to touch: `tests/test_qops.py`\n"))
+
+
 def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
     body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
     assert not qops_pickup.eligible(
@@ -4478,7 +4491,8 @@ def test_a_pass_where_every_row_struck_out_names_that_as_the_reason(monkeypatch,
     was actually skipped as struck out names the wrong cause (#48's message
     for #49's skip). The final line must say struck out."""
     row = {"number": 47, "title": "struck", "updatedAt": "2026-08-20T01:00:00Z",
-           "body": "just a body", "labels": [{"name": "state:planned"},
+           "body": "Expected to touch: `tests/test_qops.py`",
+           "labels": [{"name": "state:planned"},
                                               {"name": "gate:machine"},
                                               {"name": "ready:auto"}]}
     _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
@@ -4753,8 +4767,12 @@ def test_gitattributes_declares_text_auto():
 # the queue read empty for an hour with nothing saying why.
 # --------------------------------------------------------------------------
 
-_ROLE_FILES = "## Files\n\nExpected to touch: `.claude/agents/triager.md`\n"
-_OK_FILES = "## Files\n\nExpected to touch: `qops/install.py`\n"
+# Both name a test: R8 is a condition on every `ready:auto` row, so a fixture
+# that skips it is not auto-eligible at all and exercises nothing.
+_ROLE_FILES = ("## Files\n\nExpected to touch: `.claude/agents/triager.md` and "
+               "`tests/test_qops.py`\n")
+_OK_FILES = ("## Files\n\nExpected to touch: `qops/install.py` and "
+             "`tests/test_qops.py`\n")
 
 
 def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
@@ -4764,7 +4782,8 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
                    {"name": "ready:auto"}],
     }
     unwritable_not_auto_eligible = {
-        # #13's shape: names no test, so eligible() is False by every route.
+        # #13's shape: no `ready:auto`, no `origin:owner` - ineligible by
+        # every route.
         "number": 13, "body": _ROLE_FILES,
         "labels": [{"name": "state:planned"}, {"name": "gate:machine"}],
     }
