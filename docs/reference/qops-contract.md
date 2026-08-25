@@ -1,8 +1,11 @@
 # The qops contract — config schema and CLI
 
 **Frozen 2026-08-19 (Phase 8, P8.1).** This is what a consuming project may
-rely on. `myThirdwheel` is consumer #2 and its first week is the design review:
-no schema change inside that window — complaints get collected, not patched.
+rely on. `qhoto_printshop` is consumer #2 and its first week is the design
+review: no schema change inside that window — complaints get collected, not
+patched. The window opens when #105 lands, not when this line was written; the
+name it replaced was a project that never onboarded, so nothing had started the
+clock.
 
 Two rules hold the whole thing up:
 
