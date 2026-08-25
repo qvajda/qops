@@ -5879,3 +5879,38 @@ def test_r8_names_a_test_reports_tracker_wide(monkeypatch):
     monkeypatch.setenv("GITHUB_HEAD_REF", "fix/180-a-branch-naming-its-row")
     scoped, _ = install._rows_in_scope(rows)
     assert [r["number"] for r in scoped] == [180]
+
+
+def test_a_conflicted_pr_is_reported_as_a_stall():
+    cfg = {"repo": "o/r"}
+    prs = [{"number": 190, "headRefName": "fix/190-x", "mergeStateStatus": "DIRTY"},
+           {"number": 191, "headRefName": "fix/191-y", "mergeStateStatus": "CLEAN"}]
+    problems = install.conflicted_prs(cfg, prs=prs)
+    assert len(problems) == 1
+    assert "190" in problems[0] and "fix/190-x" in problems[0]
+    assert "191" not in problems[0]
+
+
+def test_blocked_behind_unknown_and_missing_status_report_nothing():
+    cfg = {"repo": "o/r"}
+    prs = [{"number": 1, "headRefName": "a", "mergeStateStatus": "CLEAN"},
+           {"number": 2, "headRefName": "b", "mergeStateStatus": "BLOCKED"},
+           {"number": 3, "headRefName": "c", "mergeStateStatus": "BEHIND"},
+           {"number": 4, "headRefName": "d", "mergeStateStatus": "UNKNOWN"},
+           {"number": 5, "headRefName": "e"}]
+    assert install.conflicted_prs(cfg, prs=prs) == []
+
+
+def test_a_dirty_pr_on_a_scoped_run_reports_nothing():
+    cfg = {"repo": "o/r"}
+    prs = [{"number": 190, "headRefName": "fix/190-x", "mergeStateStatus": "DIRTY"}]
+    assert install.conflicted_prs(cfg, prs=prs, tracker_wide=False) == []
+
+
+def test_a_conflicted_pr_check_skips_quietly_when_gh_fails(monkeypatch):
+    cfg = {"repo": "o/r"}
+
+    def boom(repo, limit):
+        raise RuntimeError("gh pr list: not authenticated")
+    monkeypatch.setattr(install.reconcile, "open_prs", boom)
+    assert install.conflicted_prs(cfg) == []
