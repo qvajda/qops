@@ -3329,6 +3329,67 @@ def _literals(path):
     return strings, shell
 
 
+# The consumers qops knows it has (#206). `docs/reference/qops-contract.md`
+# names consumer #2; this is the same fact in the form a test can read, and it
+# is qops's own list rather than a consumer's `portability_forbidden` on
+# purpose. A consumer's list is their vocabulary over their tree — printshop's
+# holds `listing`, which `digest.yml.tmpl`, `qops_pickup.py` and
+# `pending/SKILL.md` all use as an English verb. Distinctive stems only.
+CONSUMER_NAMES = ("qhoto", "printshop")
+
+
+def _installed_files():
+    """Everything that lands in a consumer's tree, plus the one document a
+    consumer reads before installing anything.
+
+    `qops/templates/adr/CADR-*.md` is exempt: those ship verbatim by ADR-0035,
+    they are the source repo's own decision records, and eight of the fourteen
+    name it. Their content is not qops's to rewrite — that is the line
+    ADR-0035 already refuses to cross.
+    """
+    for f in (REPO / "qops").rglob("*"):
+        if not f.is_file() or f.suffix not in (".py", ".md", ".tmpl", ".yml",
+                                               ".json"):
+            continue
+        if f.name.startswith("CADR-"):
+            continue
+        yield f
+    yield REPO / "README.md"
+
+
+def _operative_text(path):
+    """The half of a file that changes what a machine or an agent does.
+
+    A decision's history, a provenance line and a docstring explaining why are
+    the record being truthful, not a leak. The split is the one `_literals`
+    already makes for `shell=True`, for the same reason: an assertion that
+    cannot tell the explanation from the defect is one nobody can leave in
+    place.
+    """
+    if path.suffix == ".py":
+        return "\n".join(_literals(path)[0])
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if path.name == "README.md":
+        text = "".join(part for part in text.split("\n## ")
+                       if not part.startswith("Provenance"))
+    return text
+
+
+@pytest.mark.parametrize("name", CONSUMER_NAMES)
+def test_no_consumer_name_leaks_into_an_installed_surface(name):
+    """#206: the check `CLAUDE.md`'s opening rule cites builds its word list
+    from `.qops/config.yml`, which in the substrate repo is empty — so it can
+    never fail here, and a consumer's name could be written into anything qops
+    ships. One already had been: `planner.md` cited two issue numbers on a
+    tracker that is not the reader's, in instruction prose, in a file installed
+    into every consumer's `.claude/agents/`."""
+    leaks = [str(f.relative_to(REPO)) for f in _installed_files()
+             if name in _operative_text(f).lower()]
+    assert leaks == [], (
+        f"{name!r} names a consumer and reaches one, in:\n" +
+        "\n".join(leaks))
+
+
 @pytest.mark.parametrize("needle", ["bash", "sh -c", "/bin/", "python3"])
 def test_no_substrate_module_assumes_posix(needle):
     """ADR-0009: the cron host is a Windows desktop. `metrics.state_report`

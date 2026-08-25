@@ -6,10 +6,14 @@ start with the same brief, its constraints are enforced by a hook rather than by
 memory, and its backlog can be worked unattended.
 
 **This repo is the substrate itself.** The rule that shapes every change here:
-nothing in `qops/`, `scripts/`, `tests/`, `.claude/` or `docs/` may name a
-project. `.qops/config.yml` is the only file allowed to, and
-`tests/test_qops.py::test_no_project_specific_string_outside_the_config`
-enforces it. Read `docs/reference/qops-contract.md` before changing a config key
+nothing that reaches a consumer may name a project — `qops/` and `README.md`,
+asserted by `test_no_consumer_name_leaks_into_an_installed_surface` over
+**operative** content only. A decision record, a provenance line and a
+docstring may name the repo qops came from: that is the record being truthful,
+not a leak (#206). `.qops/config.yml` is the only file a consumer may name
+itself in, and `test_no_project_specific_string_outside_the_config` is that
+half — a consumer's own words over a consumer's own tree.
+Read `docs/reference/qops-contract.md` before changing a config key
 or a CLI verb — it is the frozen contract, and consumers depend on it.
 
 This file is hot path: it enters every session unasked, and it is capped at
