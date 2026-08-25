@@ -75,6 +75,35 @@ def test_skill_drift_catches_an_undeclared_skill_and_a_refless_pin(tmp_path):
     assert "run-models" in problems and "no upstream ref" in problems
 
 
+# --------------------------------------------------------------------------
+# agent role drift — #183. A role file IS the agent's instructions; a stale
+# copy makes an agent behave by rules the owner already replaced.
+# --------------------------------------------------------------------------
+
+def test_agent_drift_is_clean_against_qops_own_role_files():
+    assert install.agent_drift(REPO, qconfig.load(REPO)) == []
+
+
+def test_agent_drift_catches_a_stale_role_file(tmp_path):
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    for role in install.AGENT_ROLES:
+        (agents / f"{role}.md").write_text("stale copy", encoding="utf-8")
+    problems = "\n".join(install.agent_drift(tmp_path, {}))
+    assert "coder.md" in problems and "drifted" in problems
+
+
+def test_agent_drift_accepts_a_declared_customization(tmp_path):
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    for role in install.AGENT_ROLES:
+        (agents / f"{role}.md").write_text("stale copy", encoding="utf-8")
+    cfg = {"agents": {"coder": {"accept_drift": True}}}
+    problems = "\n".join(install.agent_drift(tmp_path, cfg))
+    assert "coder.md" not in problems
+    assert "planner.md" in problems
+
+
 def test_gh_api_writes_are_never_allowlisted():
     """Sign-off item 10. `gh api` bare is a GET and is allowlisted; a write to
     repo settings is an owner decision, already taken. The allow rule is only
