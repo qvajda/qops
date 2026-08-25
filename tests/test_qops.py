@@ -3742,6 +3742,40 @@ def _declared_version() -> str:
     return m.group(1)
 
 
+_NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six",
+                 "seven", "eight", "nine", "ten"]
+
+
+def test_the_readme_pins_the_version_this_tree_declares():
+    """#201: `README.md`'s install line is the first command a new consumer
+    runs, and it named `v0.1.0` two releases after the fact. A pin nobody
+    re-reads is exactly the drift the substrate checks everywhere else."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    m = re.search(r"qops@(v[\w.]+)", text)
+    assert m, "README.md shows no `pip install ... qops@<tag>` line"
+    assert m.group(1) == f"v{_declared_version()}", (
+        f"README pins {m.group(1)} against a tree declaring "
+        f"{_declared_version()}")
+
+
+def test_the_readme_counts_the_workflows_that_exist():
+    """The same drift, one line up: `reviewer.yml` made it seven and the
+    sentence still said six, while `CLAUDE.md` already said seven."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    m = re.search(r"(\w+) rendered workflows", text)
+    assert m, "README.md does not count the rendered workflows"
+    assert m.group(1) == _NUMBER_WORDS[len(install.WORKFLOWS)]
+
+
+def test_the_readme_lists_every_verb_the_cli_dispatches():
+    """A consumer onboarding reads this block and nothing else; it was missing
+    `init`, which is the verb that scaffolds them."""
+    import qops.__main__ as qops_main
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    missing = [v for v in qops_main.VERBS if f"python -m qops {v}" not in text]
+    assert missing == [], f"README.md lists no {missing}"
+
+
 def test_the_tag_agrees_with_the_declared_version():
     """Asked at the tag, which is the only place it is a real question (#40).
 

@@ -1,6 +1,6 @@
 # qops
 
-A per-project ways-of-working substrate. One CLI, six rendered workflows, six
+A per-project ways-of-working substrate. One CLI, seven rendered workflows, six
 loops, a label taxonomy, six agent roles and four skills.
 
 A project installs qops so that its sessions start with the same brief, its
@@ -14,10 +14,15 @@ python -m qops ledger     append a session event (hook payload on stdin)
 python -m qops resume     print or regenerate .qops/resume.md
 python -m qops guard      PreToolUse hook; `guard scan` is the CI half
 python -m qops close      close a sortie: label state:done and close the issue
+python -m qops init       scaffold a blank repo to a clean doctor
 python -m qops install    render .github/workflows from templates + config
 python -m qops doctor     drift, broken doc links, an uninstalled hook
+python -m qops review     does a PR's diff serve its row's stated outcome
 python -m qops metrics    S1-S13; --state regenerates the state report
 python -m qops reconcile  advance the row of every merged sortie
+python -m qops migrate    propose a taxonomy migration, apply nothing unasked
+python -m qops pending    what waits on the owner, and what the loop takes next
+python -m qops version    print the installed qops version
 ```
 
 ## The one property that matters
@@ -37,7 +42,7 @@ repo being operated on.
 ## Install
 
 ```bash
-pip install "qops @ git+https://github.com/qvajda/qops@v0.1.0"
+pip install "qops @ git+https://github.com/qvajda/qops@v0.3.0"
 ```
 
 Pin a tag, not a branch. A substrate that mutates under a live project is a
