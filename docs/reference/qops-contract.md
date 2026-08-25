@@ -95,6 +95,10 @@ native, a lock entry outside the declared set, and a lock entry with no `ref`.
 (`planner`, `coder`, `reviewer`, `scribe`, `triager`, `interactor`).
 `agents.<role>.allow/deny` — optional per-role command classes (ADR-0033). A
 role stating neither behaves exactly as it does today; there is no reader yet.
+`agents.<role>.accept_drift` — `true` opts a role's `.claude/agents/<role>.md`
+out of `agent_drift`'s check (#183): a project may have legitimately
+customized a role, and this is how it says so instead of `doctor` failing on
+it forever.
 
 ### Permissions
 

@@ -484,6 +484,41 @@ def skill_drift(root: Path, cfg: dict) -> list[str]:
     return problems
 
 
+AGENT_ROLES = ("coder", "interactor", "planner", "reviewer", "scribe", "triager")
+AGENT_TEMPLATES = TEMPLATES / "agents"
+
+
+def agent_drift(root: Path, cfg: dict) -> list[str]:
+    """A consumer's `.claude/agents/<role>.md` matches qops's own current copy
+    (#183). A role file IS the agent's instructions for that session - unlike a
+    skill or a config key, a stale one does not miss a feature, it makes the
+    agent behave by rules the owner already replaced.
+
+    `agents.<role>.accept_drift: true` in `.qops/config.yml` is the opt-out: a
+    project may have legitimately customized a role (its own tools/model
+    choice), and the check flags drift once, the owner reviews and either
+    merges it or accepts it deliberately - it never auto-overwrites.
+    """
+    problems = []
+    declared = cfg.get("agents") or {}
+    for role in AGENT_ROLES:
+        if bool((declared.get(role) or {}).get("accept_drift", False)):
+            continue
+        ref = AGENT_TEMPLATES / f"{role}.md"
+        theirs = Path(root) / ".claude" / "agents" / f"{role}.md"
+        if not theirs.exists():
+            problems.append(f".claude/agents/{role}.md: missing")
+            continue
+        want = ref.read_text(encoding="utf-8").replace("\r\n", "\n")
+        got = theirs.read_text(encoding="utf-8").replace("\r\n", "\n")
+        if got != want:
+            problems.append(
+                f".claude/agents/{role}.md: drifted from qops's current copy — "
+                f"merge the update by hand, or set `agents.{role}.accept_drift: "
+                f"true` in .qops/config.yml if this is deliberate")
+    return problems
+
+
 _CREATE_TABLE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);",
                             re.DOTALL)
 _TABLE_LEVEL = ("UNIQUE(", "UNIQUE (", "FOREIGN KEY", "CHECK(", "CHECK (",
@@ -1318,6 +1353,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         # problem.
         print(f"doctor: pickup task {task_id(spec)} is {task_state_of(found)}")
     problems += skill_drift(root, cfg)
+    problems += agent_drift(root, cfg)
     problems += schema_drift(root, cfg)
     problems += undeclared_labels(cfg)
     if issues is _UNFETCHED:
