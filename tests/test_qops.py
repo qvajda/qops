@@ -92,6 +92,29 @@ def test_upstream_skill_drift_clean_when_declared_set_covers_it():
     assert install.upstream_skill_drift(
         {"native": ["interview", "spec-to-issue", "triage", "pending"]}) == []
 # --------------------------------------------------------------------------
+# config key backfill — #180. A key the template grows after `qops init` has
+# no path onto an already-scaffolded config; every reader defaults it
+# safely, so this is advisory, not a hard failure.
+# --------------------------------------------------------------------------
+
+def test_own_config_carries_every_template_key():
+    assert install.config_key_drift(qconfig.load(REPO)) == []
+
+
+def test_config_key_drift_catches_a_missing_top_level_and_nested_key():
+    cfg = dict(qconfig.load(REPO))
+    del cfg["pickup_task"]
+    cfg["ci"] = {k: v for k, v in cfg["ci"].items() if k != "digest_posts_on_schedule"}
+    problems = "\n".join(install.config_key_drift(cfg))
+    assert "pickup_task" in problems
+    assert "ci:" in problems and "digest_posts_on_schedule" in problems
+
+
+def test_config_key_drift_never_flags_the_project_specific_keys():
+    cfg = dict(qconfig.load(REPO))
+    for key in ("project", "repo", "tripwires"):
+        del cfg[key]
+    assert install.config_key_drift(cfg) == []
 # agent role drift — #183. A role file IS the agent's instructions; a stale
 # copy makes an agent behave by rules the owner already replaced.
 # --------------------------------------------------------------------------
