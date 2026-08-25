@@ -110,17 +110,28 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         body = (TEMPLATES / "skills" / name / "SKILL.md").read_text(
             encoding="utf-8")
         (dest / "SKILL.md").write_text(body, encoding="utf-8", newline="\n")
+    # The six role files, on a fresh repo only. `agent_drift` reports a missing
+    # one as a problem, so a scaffold that never wrote them makes every fresh
+    # install start red - and the row's "never overwrite a consumer's" holds:
+    # a repo being initialized has none to overwrite.
+    agents_dir = claude_dir / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    for role in install.AGENT_ROLES:
+        body = (install.AGENT_TEMPLATES / f"{role}.md").read_text(encoding="utf-8")
+        (agents_dir / f"{role}.md").write_text(body, encoding="utf-8",
+                                               newline="\n")
+
     (root / "skills-lock.json").write_text(
         json.dumps({"version": 1, "skills": {}}, indent=2) + "\n",
         encoding="utf-8", newline="\n")
 
-    for p in install.render_all(root, new_cfg):
+    for p in install.render_all(root, new_cfg) + install.render_adr_consumer(root):
         print(f"rendered {Path(p).relative_to(root)}")
     for msg in install.write_scripts(root):
         print(msg)
     print(f"wrote {values['project']}'s .qops/config.yml, CLAUDE.md, "
           f".claude/settings.json, .claude/skills/, skills-lock.json, "
-          f"scripts/")
+          f"scripts/, docs/adr/consumer/")
     print()
     print(NEXT_STEPS.format(repo=values["repo"],
                             default_branch=values["default_branch"]))

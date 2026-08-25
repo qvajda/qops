@@ -1,7 +1,7 @@
 # RENDERED BY `qops install` from qops/templates/reviewer.yml.tmpl + .qops/config.yml
 # Do not hand-edit: `qops doctor` fails on drift.
 #
-# The semantic reader (ADR-0028 §4, #80). Every other required check is
+# The semantic reader (CADR-0011 §4, #80). Every other required check is
 # mechanical, so without this nothing between a filing and master
 # reads for meaning.
 #
@@ -11,7 +11,7 @@
 # on the cron host instead (`scripts/qops_pickup.py --review`) and posted as a
 # PR comment carrying the head SHA; this job reads that comment and exits on
 # it. A comment, not a commit status: `.claude/settings.json` denies `gh api
-# -X` against repo settings by a taken decision (ADR-0016/0020).
+# -X` against repo settings by a taken decision (CADR-0003/CADR-0006).
 #
 # It ships REPORTING ONLY. Adding `reviewer` to the branch's required contexts
 # is a separate owner act, taken after a week of real verdicts rather than on
@@ -55,7 +55,7 @@ jobs:
           cache: pip
       - name: install
         # One block for every rendered job that runs Python, rendered from
-        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # `qops/install.py:INSTALL_DEPS` (CADR-0008). Three copies of it drifted
         # into three separate failures in repos shaped unlike this one.
         run: |
           python -m pip install --upgrade pip

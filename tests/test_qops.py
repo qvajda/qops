@@ -75,6 +75,35 @@ def test_skill_drift_catches_an_undeclared_skill_and_a_refless_pin(tmp_path):
     assert "run-models" in problems and "no upstream ref" in problems
 
 
+# --------------------------------------------------------------------------
+# agent role drift — #183. A role file IS the agent's instructions; a stale
+# copy makes an agent behave by rules the owner already replaced.
+# --------------------------------------------------------------------------
+
+def test_agent_drift_is_clean_against_qops_own_role_files():
+    assert install.agent_drift(REPO, qconfig.load(REPO)) == []
+
+
+def test_agent_drift_catches_a_stale_role_file(tmp_path):
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    for role in install.AGENT_ROLES:
+        (agents / f"{role}.md").write_text("stale copy", encoding="utf-8")
+    problems = "\n".join(install.agent_drift(tmp_path, {}))
+    assert "coder.md" in problems and "drifted" in problems
+
+
+def test_agent_drift_accepts_a_declared_customization(tmp_path):
+    agents = tmp_path / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    for role in install.AGENT_ROLES:
+        (agents / f"{role}.md").write_text("stale copy", encoding="utf-8")
+    cfg = {"agents": {"coder": {"accept_drift": True}}}
+    problems = "\n".join(install.agent_drift(tmp_path, cfg))
+    assert "coder.md" not in problems
+    assert "planner.md" in problems
+
+
 def test_gh_api_writes_are_never_allowlisted():
     """Sign-off item 10. `gh api` bare is a GET and is allowlisted; a write to
     repo settings is an owner decision, already taken. The allow rule is only
@@ -775,9 +804,36 @@ def test_install_renders_the_seven_workflows(tmp_path):
         assert left is None, f"unrendered placeholder {left.group(0)} in {p}"
 
 
+def test_render_adr_consumer_copies_every_consumer_facing_adr(tmp_path):
+    """#181: a citation with nothing copied into the consumer's tree is a
+    dead link the moment it leaves this repo — that was the defect."""
+    written = install.render_adr_consumer(tmp_path)
+    names = {Path(p).name for p in written}
+    assert names == {p.name for p in install.ADR_CONSUMER_DIR.glob("CADR-*.md")}
+    for p in written:
+        assert (tmp_path / "docs" / "adr" / "consumer" / Path(p).name).exists()
+
+
+def test_broken_adr_citations_catches_a_dangling_cite(tmp_path):
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "gate.yml").write_text("# see CADR-9999\n", encoding="utf-8")
+    missing = install.broken_adr_citations(tmp_path)
+    assert any("CADR-9999" in m for m in missing)
+
+
+def test_broken_adr_citations_is_clean_once_installed(tmp_path):
+    install.render_adr_consumer(tmp_path)
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "gate.yml").write_text("# see CADR-0001\n", encoding="utf-8")
+    assert install.broken_adr_citations(tmp_path) == []
+
+
 def test_doctor_is_green_on_a_fresh_install(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
     install.write_scripts(tmp_path)
+    install.render_adr_consumer(tmp_path)
     assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
@@ -1278,6 +1334,28 @@ def test_claude_md_is_within_the_hot_path_cap():
 def test_every_doc_path_cited_from_code_resolves():
     missing = install.broken_doc_links(REPO)
     assert missing == [], f"broken doc citations: {missing}"
+
+
+def test_every_cadr_citation_in_this_repos_own_install_resolves():
+    """qops installs itself (`test_the_repo_itself_is_installed_and_undrifted`)
+    so it is also a consumer of its own `CADR-` citations, and #181's doctor
+    check must find nothing wrong in its own tree."""
+    missing = install.broken_adr_citations(REPO)
+    assert missing == [], f"broken ADR citations: {missing}"
+
+
+def test_no_bare_adr_citation_survives_in_a_rendered_template():
+    """Every `ADR-NNNN` a template or native skill cites must be the
+    consumer-facing `CADR-NNNN` form (#181, ADR-0035) — a bare number is a
+    citation to a file nothing ever copies into a consumer's tree."""
+    import re
+    targets = list((REPO / "qops" / "templates").glob("*.tmpl")) + \
+        list((REPO / "qops" / "templates" / "skills").glob("*/SKILL.md"))
+    leaks = []
+    for p in targets:
+        for m in re.finditer(r"(?<!C)ADR-\d{4}", p.read_text(encoding="utf-8")):
+            leaks.append(f"{p.relative_to(REPO)}: {m.group(0)}")
+    assert leaks == [], f"bare ADR citation in a rendered template: {leaks}"
 
 
 # --------------------------------------------------------------------------
@@ -3726,6 +3804,19 @@ def test_an_owner_filed_planned_row_needs_no_second_label_edit():
         _owner_issue("gate:machine", "state:planned", "origin:agent", body=named_test))
 
 
+def test_ready_auto_without_a_named_test_is_not_eligible():
+    """The picker and `doctor` must answer R8 the same way. When they did not,
+    a `ready:auto` row naming no test was picked up, built, and PR'd - and
+    `doctor`'s R8 invariant failed its gate forever (five rows, 2026-08-25)."""
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto", body="## Acceptance\n\nIt works.\n"))
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto",
+                     body="Expected to touch: `tests/test_qops.py`\n"))
+
+
 def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
     body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
     assert not qops_pickup.eligible(
@@ -4507,7 +4598,8 @@ def test_a_pass_where_every_row_struck_out_names_that_as_the_reason(monkeypatch,
     was actually skipped as struck out names the wrong cause (#48's message
     for #49's skip). The final line must say struck out."""
     row = {"number": 47, "title": "struck", "updatedAt": "2026-08-20T01:00:00Z",
-           "body": "just a body", "labels": [{"name": "state:planned"},
+           "body": "Expected to touch: `tests/test_qops.py`",
+           "labels": [{"name": "state:planned"},
                                               {"name": "gate:machine"},
                                               {"name": "ready:auto"}]}
     _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
@@ -4782,8 +4874,12 @@ def test_gitattributes_declares_text_auto():
 # the queue read empty for an hour with nothing saying why.
 # --------------------------------------------------------------------------
 
-_ROLE_FILES = "## Files\n\nExpected to touch: `.claude/agents/triager.md`\n"
-_OK_FILES = "## Files\n\nExpected to touch: `qops/install.py`\n"
+# Both name a test: R8 is a condition on every `ready:auto` row, so a fixture
+# that skips it is not auto-eligible at all and exercises nothing.
+_ROLE_FILES = ("## Files\n\nExpected to touch: `.claude/agents/triager.md` and "
+               "`tests/test_qops.py`\n")
+_OK_FILES = ("## Files\n\nExpected to touch: `qops/install.py` and "
+             "`tests/test_qops.py`\n")
 
 
 def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
@@ -4793,7 +4889,8 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
                    {"name": "ready:auto"}],
     }
     unwritable_not_auto_eligible = {
-        # #13's shape: names no test, so eligible() is False by every route.
+        # #13's shape: no `ready:auto`, no `origin:owner` - ineligible by
+        # every route.
         "number": 13, "body": _ROLE_FILES,
         "labels": [{"name": "state:planned"}, {"name": "gate:machine"}],
     }
