@@ -12,13 +12,13 @@ project: {{project}}
 repo: {{repo}}
 default_branch: {{default_branch}}
 
-# The interpreter the hooks and the shims invoke (ADR-0009).
+# The interpreter the hooks and the shims invoke (CADR-0002).
 python: {{python}}
 python_posix: python3
 
 # --- pickup-loop -------------------------------------------------------
 # `qops install` registers pickup-loop's scheduled task on this host from the
-# keys below (ADR-0032). It is the one loop that costs money.
+# keys below (CADR-0013). It is the one loop that costs money.
 #
 # Set false and no install anywhere touches this machine's scheduler. Most
 # projects want the workflows, the guard and the brief and never run a picker;
@@ -45,7 +45,7 @@ scan_exclude:
 # --- portability ---------------------------------------------------------
 portability_forbidden: []
 
-# --- skills (ADR-0018) -----------------------------------------------------
+# --- skills (CADR-0004) -----------------------------------------------------
 skills:
   native: [interview, spec-to-issue, triage, pending]
   external: []

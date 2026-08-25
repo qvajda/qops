@@ -125,13 +125,13 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         json.dumps({"version": 1, "skills": {}}, indent=2) + "\n",
         encoding="utf-8", newline="\n")
 
-    for p in install.render_all(root, new_cfg):
+    for p in install.render_all(root, new_cfg) + install.render_adr_consumer(root):
         print(f"rendered {Path(p).relative_to(root)}")
     for msg in install.write_scripts(root):
         print(msg)
     print(f"wrote {values['project']}'s .qops/config.yml, CLAUDE.md, "
           f".claude/settings.json, .claude/skills/, skills-lock.json, "
-          f"scripts/")
+          f"scripts/, docs/adr/consumer/")
     print()
     print(NEXT_STEPS.format(repo=values["repo"],
                             default_branch=values["default_branch"]))
