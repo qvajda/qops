@@ -806,6 +806,7 @@ def test_install_renders_the_seven_workflows(tmp_path):
 
 def test_doctor_is_green_on_a_fresh_install(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
     assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
@@ -818,6 +819,43 @@ def test_doctor_detects_drift(tmp_path):
 
 def test_the_repo_itself_is_installed_and_undrifted():
     assert install.drift(REPO, qconfig.load(REPO)) == []
+
+
+# --------------------------------------------------------------------------
+# consumer scripts land on disk too (#177) — qops_import.py/qops_pickup.py
+# are documented as required but were never written into a consumer's tree.
+# --------------------------------------------------------------------------
+
+def test_write_scripts_writes_both_consumer_scripts(tmp_path):
+    msgs = install.write_scripts(tmp_path)
+    for name in install.CONSUMER_SCRIPTS:
+        dest = tmp_path / "scripts" / name
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8") == \
+            (install.SCRIPTS_SRC / name).read_text(encoding="utf-8")
+    assert any("qops_import.py" in m for m in msgs)
+    assert any("qops_pickup.py" in m for m in msgs)
+
+
+def test_doctor_reports_a_missing_consumer_script(tmp_path):
+    install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
+    assert install.script_drift(tmp_path) == []
+    (tmp_path / "scripts" / "qops_pickup.py").unlink()
+    problems = " ".join(install.script_drift(tmp_path))
+    assert "qops_pickup.py" in problems and "missing" in problems
+    # And it is *not* `drift()`'s: `render_all` never writes these, so a tree
+    # it rendered is undrifted whether or not the scripts are there.
+    assert install.drift(tmp_path, qconfig.load(REPO)) == []
+
+
+def test_write_scripts_does_not_silently_overwrite_a_local_edit(tmp_path):
+    install.write_scripts(tmp_path)
+    edited = tmp_path / "scripts" / "qops_import.py"
+    edited.write_text("# a consumer's local edit\n", encoding="utf-8")
+    msgs = install.write_scripts(tmp_path)
+    assert edited.read_text(encoding="utf-8") == "# a consumer's local edit\n"
+    assert any("qops_import.py" in m and "differs" in m for m in msgs)
 
 
 # --------------------------------------------------------------------------
@@ -3558,6 +3596,67 @@ def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
     assert "fetch-tags: true" in rendered, "checkout fetches no tags"
 
 
+def _version_repo(tmp_path, main_base, main_head, version_base, version_head):
+    """A real temporary git repo shaped like the version-bump question: a
+    base commit on `trunk` and a head commit on `fix/182-fixture`, each
+    carrying its own `qops/__main__.py` and `pyproject.toml`. Mirrors
+    `_r8_repo` — `git merge-base` is what's under test, so it needs a real
+    repo, not a mocked diff."""
+    root = tmp_path / "repo"
+    (root / "qops").mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "trunk")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "qops" / "__main__.py").write_text(main_base, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "qops"\nversion = "{version_base}"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "branch", "origin/master")
+    _git(root, "checkout", "-q", "-b", "fix/182-fixture")
+    (root / "qops" / "__main__.py").write_text(main_head, encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "qops"\nversion = "{version_head}"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "head", "--allow-empty")
+    return root
+
+
+_VERBS_BASE = '    "brief": (brief.main, "session brief"),\n'
+_VERBS_HEAD = _VERBS_BASE + '    "migrate": (migrate.main, "new verb"),\n'
+
+
+def test_a_new_verb_without_a_version_bump_fails(tmp_path):
+    """#182: `qops migrate` landed 73 commits before any tag caught up
+    because nothing tied a new verb to a version bump. A new key in
+    `VERBS` is exactly what README.md already counts as version-worthy."""
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_HEAD,
+                         version_base="0.2.0", version_head="0.2.0")
+    problems = install.version_bump_required(root, base_ref="master",
+                                             head_ref="fix/182-fixture")
+    assert any("migrate" in p and "0.2.0" in p for p in problems), problems
+
+
+def test_a_new_verb_with_a_version_bump_passes(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_HEAD,
+                         version_base="0.2.0", version_head="0.3.0")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
+def test_no_new_verb_needs_no_bump(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.2.0")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
+def test_version_bump_required_is_silent_without_a_pr_context(monkeypatch):
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    assert install.version_bump_required(REPO) == []
+
+
 def test_brief_reports_the_same_version_pyproject_declares():
     """#103: an editable install's egg-info goes stale the moment
     pyproject.toml is hand-edited without a reinstall — this repo showed
@@ -3625,6 +3724,19 @@ def test_an_owner_filed_planned_row_needs_no_second_label_edit():
                      body=named_test))
     assert not qops_pickup.eligible(
         _owner_issue("gate:machine", "state:planned", "origin:agent", body=named_test))
+
+
+def test_ready_auto_without_a_named_test_is_not_eligible():
+    """The picker and `doctor` must answer R8 the same way. When they did not,
+    a `ready:auto` row naming no test was picked up, built, and PR'd - and
+    `doctor`'s R8 invariant failed its gate forever (five rows, 2026-08-25)."""
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto", body="## Acceptance\n\nIt works.\n"))
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto",
+                     body="Expected to touch: `tests/test_qops.py`\n"))
 
 
 def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
@@ -4408,7 +4520,8 @@ def test_a_pass_where_every_row_struck_out_names_that_as_the_reason(monkeypatch,
     was actually skipped as struck out names the wrong cause (#48's message
     for #49's skip). The final line must say struck out."""
     row = {"number": 47, "title": "struck", "updatedAt": "2026-08-20T01:00:00Z",
-           "body": "just a body", "labels": [{"name": "state:planned"},
+           "body": "Expected to touch: `tests/test_qops.py`",
+           "labels": [{"name": "state:planned"},
                                               {"name": "gate:machine"},
                                               {"name": "ready:auto"}]}
     _ledger(tmp_path, ("pickup", 47), ("pickup_release", 47),
@@ -4683,8 +4796,12 @@ def test_gitattributes_declares_text_auto():
 # the queue read empty for an hour with nothing saying why.
 # --------------------------------------------------------------------------
 
-_ROLE_FILES = "## Files\n\nExpected to touch: `.claude/agents/triager.md`\n"
-_OK_FILES = "## Files\n\nExpected to touch: `qops/install.py`\n"
+# Both name a test: R8 is a condition on every `ready:auto` row, so a fixture
+# that skips it is not auto-eligible at all and exercises nothing.
+_ROLE_FILES = ("## Files\n\nExpected to touch: `.claude/agents/triager.md` and "
+               "`tests/test_qops.py`\n")
+_OK_FILES = ("## Files\n\nExpected to touch: `qops/install.py` and "
+             "`tests/test_qops.py`\n")
 
 
 def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
@@ -4694,7 +4811,8 @@ def test_an_auto_eligible_row_the_launch_cannot_write_is_reported():
                    {"name": "ready:auto"}],
     }
     unwritable_not_auto_eligible = {
-        # #13's shape: names no test, so eligible() is False by every route.
+        # #13's shape: no `ready:auto`, no `origin:owner` - ineligible by
+        # every route.
         "number": 13, "body": _ROLE_FILES,
         "labels": [{"name": "state:planned"}, {"name": "gate:machine"}],
     }
@@ -4971,7 +5089,8 @@ def test_qops_init_then_doctor_leaves_only_the_owner_preconditions(
                   "skills-lock.json", ".claude/skills/interview/SKILL.md",
                   ".claude/skills/spec-to-issue/SKILL.md",
                   ".claude/skills/triage/SKILL.md",
-                  ".claude/skills/pending/SKILL.md"):
+                  ".claude/skills/pending/SKILL.md",
+                  "scripts/qops_import.py", "scripts/qops_pickup.py"):
         assert (tmp_path / expect).exists(), f"{expect} not written"
     for name in install.WORKFLOWS:
         assert (tmp_path / ".github" / "workflows" / name).exists()
@@ -5270,6 +5389,18 @@ def test_cli_output_survives_a_non_utf8_stdout():
     )
     assert result.returncode == 0
     assert "—".encode() in result.stdout
+
+
+def test_version_prints_the_installed_package_version_not_source():
+    """#176: reads importlib.metadata, same class of check as find_root — a
+    pinned dependency's __file__ is site-packages, not the repo in play."""
+    from importlib.metadata import version as pkg_version
+    result = subprocess.run(
+        [sys.executable, "-m", "qops", "version"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == pkg_version("qops")
 
 
 # --------------------------------------------------------------------------
