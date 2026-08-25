@@ -23,4 +23,4 @@ Homepage = "https://github.com/qvajda/qops"
 packages = ["qops"]
 
 [tool.setuptools.package-data]
-qops = ["templates/*.tmpl", "templates/skills/*/SKILL.md", "templates/scripts/*.py"]
+qops = ["templates/*.tmpl", "templates/skills/*/SKILL.md", "templates/scripts/*.py", "templates/adr/*.md"]

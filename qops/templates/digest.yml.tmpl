@@ -40,7 +40,7 @@ jobs:
           cache: pip
       - name: install
         # One block for every rendered job that runs Python, rendered from
-        # `qops/install.py:INSTALL_DEPS` (ADR-0024). Three copies of it drifted
+        # `qops/install.py:INSTALL_DEPS` (CADR-0008). Three copies of it drifted
         # into three separate failures in repos shaped unlike this one.
         run: |
           {{install_deps}}
@@ -110,7 +110,7 @@ jobs:
               --label state:review --json number,title \
               --template '{{ range . }}- #{{ .number }} {{ .title }}{{ "\n" }}{{ end }}'
             echo
-            # ADR-0029 §6's floor for a row the planner could not plan: a label
+            # CADR-0012 §6's floor for a row the planner could not plan: a label
             # and a digest line. Without the line the row is blocked where only
             # the tracker can see it, and the loop looks idle rather than stuck
             # (#83). Escalation by any other transport is an upgrade, not this.
@@ -120,8 +120,8 @@ jobs:
               --template '{{ range . }}- #{{ .number }} {{ .title }}{{ "\n" }}{{ end }}'
             echo
             # #125: a `state:triage` row that states no outcome is invisible
-            # to the planner (`states_an_outcome()` gates it out before ADR-
-            # 0027's split duty even sees it) — filed, and stuck there until
+            # to the planner (`states_an_outcome()` gates it out before
+            # CADR-0010's split duty even sees it) — filed, and stuck there until
             # someone states one. Only these, never the whole triage queue:
             # most of it is plannable and simply waiting its turn, and a
             # section listing all of it says nothing and gets skimmed past.

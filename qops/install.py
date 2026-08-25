@@ -25,6 +25,15 @@ WORKFLOWS = ("test.yml", "gate.yml", "guard.yml", "digest.yml", "groom.yml",
 
 _DOC_LINK = re.compile(r"docs/[A-Za-z0-9_./-]+\.md")
 
+# Consumer-facing ADRs (#181, ADR-0035): decisions a rendered workflow or
+# native skill may cite by number. They ship as package data under
+# `templates/adr/`, copied verbatim into every consumer's `docs/adr/consumer/`
+# so a citation resolves in *that* repo's tree, not just this one's — and
+# numbered `CADR-NNNN`, a namespace of its own, so they can never collide with
+# a consumer's own project-specific `docs/adr/000N-*.md`.
+ADR_CONSUMER_DIR = TEMPLATES / "adr"
+_CADR_CITE = re.compile(r"CADR-\d{4}")
+
 # The one dependency-install block every rendered job that runs Python uses
 # (ADR-0024). It is a single constant because the three copies that preceded it
 # diverged into three different bugs, each surfacing only in a repo shaped
@@ -169,6 +178,24 @@ def render_settings(cfg: dict) -> str:
     perms["allow"] = [a for a in allow if a not in set(deny)]
     perms["deny"] = deny
     return json.dumps(data, indent=2) + "\n"
+
+
+def render_adr_consumer(root: Path) -> list[str]:
+    """Copy every consumer-facing ADR into `docs/adr/consumer/` (#181).
+
+    A citation with nothing copied is a dead link the moment it leaves this
+    repo — that was the defect. The copy is verbatim: renumbering already
+    happened once, when the file was named into `templates/adr/`.
+    """
+    out = Path(root) / "docs" / "adr" / "consumer"
+    out.mkdir(parents=True, exist_ok=True)
+    written = []
+    for src in sorted(ADR_CONSUMER_DIR.glob("CADR-*.md")):
+        dest = out / src.name
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8",
+                        newline="\n")
+        written.append(str(dest))
+    return written
 
 
 def render_all(root: Path, cfg: dict) -> list[str]:
@@ -461,6 +488,33 @@ def unregister_task(root: Path, cfg: dict) -> str:
     if done.returncode != 0:
         return f"pickup task {task_id(spec)}: removal failed — {done.stderr.strip()}"
     return f"pickup task {task_id(spec)}: {done.stdout.strip()}"
+
+
+def broken_adr_citations(root: Path) -> list[str]:
+    """Every `CADR-NNNN` cite in a *rendered* workflow or native skill body
+    resolves to a real file under this tree's `docs/adr/consumer/` (#181).
+
+    Scans rendered output, not `qops/templates/` — the source always
+    resolves against `templates/adr/`, that is not the citation that can go
+    stale. What goes stale is a consumer's copy: never installed, or
+    installed once and never refreshed after a qops upgrade added or
+    renumbered a consumer-facing ADR.
+    """
+    root = Path(root)
+    present = {"-".join(p.name.split("-", 2)[:2])
+               for p in (root / "docs" / "adr" / "consumer").glob("CADR-*.md")}
+    missing = []
+    targets = list((root / ".github" / "workflows").glob("*.yml")) \
+        + list((root / ".claude" / "skills").glob("*/SKILL.md"))
+    for p in targets:
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for cited in sorted(set(_CADR_CITE.findall(text))):
+            if cited not in present:
+                missing.append(f"{p.relative_to(root)} -> {cited}")
+    return sorted(missing)
 
 
 def broken_doc_links(root: Path) -> list[str]:
@@ -1460,6 +1514,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
         problems.append("the open-issue invariants were not evaluated - the "
                         "backlog was unreadable, see the skip above (QOPS_STRICT)")
     problems += [f"broken doc citation: {m}" for m in broken_doc_links(root)]
+    problems += [f"broken ADR citation: {m}" for m in broken_adr_citations(root)]
     settings = Path(root) / ".claude" / "settings.json"
     if not settings.exists():
         problems.append(".claude/settings.json missing — hooks are not installed")
@@ -1485,7 +1540,7 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     if "--unregister-task" in argv:
         print(unregister_task(root, cfg))
         return 0
-    written = render_all(root, cfg)
+    written = render_all(root, cfg) + render_adr_consumer(root)
     for p in written:
         print(f"rendered {Path(p).relative_to(Path(root))}")
     for msg in write_scripts(root):
