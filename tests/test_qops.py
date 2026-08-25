@@ -3101,6 +3101,35 @@ def test_an_undeclared_label_is_caught():
     assert any("qops:nope" in p for p in install.undeclared_labels(cfg))
 
 
+def test_this_repos_own_taxonomy_matches_what_it_ships():
+    """qops must pass its own check — dogfooding is the point of #178."""
+    assert install.taxonomy_drift(qconfig.load(REPO)) == []
+
+
+def test_a_taxonomy_missing_a_shipped_value_is_caught():
+    """printshop's config sat a version stale after #105 and `--labels`
+    silently no-op'd over it — this is the check that would have said so."""
+    cfg = json.loads(json.dumps(qconfig.load(REPO), default=str))
+    cfg["labels"]["gate"] = ["machine"]  # drop `taste` and `none`
+    problems = install.taxonomy_drift(cfg)
+    assert any("gate:taste" in p for p in problems)
+    assert any("gate:none" in p for p in problems)
+
+
+def test_a_taxonomy_superset_of_the_shipped_one_is_not_drift():
+    cfg = json.loads(json.dumps(qconfig.load(REPO), default=str))
+    cfg["labels"]["gate"].append("extra")
+    assert install.taxonomy_drift(cfg) == []
+
+
+def test_taxonomy_drift_ignores_mission_which_is_each_projects_own():
+    """`mission` values are project vocabulary (substrate/consumers/
+    housekeeping here, `core` in the shipped template) — not fixed enum
+    values the CLI, a hook or a workflow branches on, so a project naming its
+    own missions is never drift."""
+    assert "mission:core" not in install.shipped_taxonomy()
+
+
 def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     cfg = qconfig.load(REPO)
     issues = [
