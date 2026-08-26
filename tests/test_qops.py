@@ -3222,6 +3222,50 @@ def test_taxonomy_drift_ignores_mission_which_is_each_projects_own():
     assert "mission:core" not in install.shipped_taxonomy()
 
 
+def test_blocking_flags_are_labels_the_taxonomy_ships():
+    """#211: `BLOCKING_FLAGS` named bare `blocked`, a label neither tracker
+    ships, since the set was written (#73) — `state:blocked` vetoed nothing.
+    Green against the shipped template is the fix; the forced-bad-member case
+    below is the check that would have caught the original typo."""
+    assert install.blocking_flags_drift() == []
+
+
+def test_an_unshipped_blocking_flag_is_reported_by_name(monkeypatch):
+    monkeypatch.setattr(install, "BLOCKING_FLAGS",
+                         install.BLOCKING_FLAGS | {"nonsense:flag"})
+    problems = install.blocking_flags_drift()
+    assert any("nonsense:flag" in p for p in problems)
+
+
+def test_a_blocked_row_is_neither_plannable_nor_eligible():
+    """`state:blocked` is the label a human reaches for, and the one
+    `clarification()`/`answer_prompt()`/`produced_answer()` read by its real
+    name — only `BLOCKING_FLAGS` spelled it wrong (#211)."""
+    body = "## Acceptance\n- `tests/test_qops.py::test_x` passes.\n"
+    triage = {"number": 1, "body": body,
+              "labels": [{"name": "state:triage"}]}
+    assert install.plannable(triage) is True
+    blocked_triage = {"number": 1, "body": body,
+                       "labels": [{"name": "state:triage"},
+                                  {"name": "state:blocked"}]}
+    assert install.plannable(blocked_triage) is False
+
+    base_labels = [{"name": "state:planned"}, {"name": "gate:machine"},
+                   {"name": "origin:owner"}]
+    planned = {"number": 2, "body": "tests/test_x.py", "labels": base_labels}
+    assert install.eligible(planned) is True
+    blocked_planned = {"number": 2, "body": "tests/test_x.py",
+                        "labels": base_labels + [{"name": "state:blocked"}]}
+    assert install.eligible(blocked_planned) is False
+
+
+def test_shipped_taxonomy_ships_priority_parked():
+    """`priority:parked` is a flag `eligible`/`plannable`/`decomposable` all
+    branch on via `BLOCKING_FLAGS`; a namespace qops's own code depends on and
+    its own template does not ship is the #178/#136 defect class (#211)."""
+    assert "priority:parked" in install.shipped_taxonomy()
+
+
 def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     cfg = qconfig.load(REPO)
     issues = [
