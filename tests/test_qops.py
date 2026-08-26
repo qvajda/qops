@@ -2346,6 +2346,14 @@ def test_a_failed_backlog_query_is_not_an_idle_queue(tmp_path, monkeypatch):
     assert qops_pickup.candidates(tmp_path) == []
 
 
+def test_a_backlog_that_cannot_be_decoded_is_not_an_idle_queue(tmp_path, monkeypatch):
+    """returncode 0 with an unreadable stdout (cp1252 host, non-cp1252 byte in
+    the payload) is UNKNOWN, not an empty backlog."""
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0, None, ""))
+    assert qops_pickup.candidates(tmp_path) is None
+
+
 # --------------------------------------------------------------------------
 # #82 / ADR-0029 §1 — the loop plans when it has nothing to build. Until this,
 # `state:triage -> state:planned` was the one act in the chain only an owner
