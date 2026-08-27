@@ -3214,6 +3214,41 @@ def test_taxonomy_drift_ignores_mission_which_is_each_projects_own():
     assert "mission:core" not in install.shipped_taxonomy()
 
 
+def test_doctor_runs_a_consumer_declared_check(tmp_path):
+    """A config declaring `doctor_checks: [mymod:check]` has that callable's
+    strings appear in `doctor`'s output — the seam #209 adds (no database
+    anywhere in the fixture)."""
+    (tmp_path / "mymod.py").write_text(
+        "def check(root, cfg):\n    return ['a consumer-owned problem']\n",
+        encoding="utf-8")
+    problems = install.consumer_checks(tmp_path, {"doctor_checks": ["mymod:check"]})
+    assert problems == ["a consumer-owned problem"]
+
+
+def test_doctor_imports_nothing_when_no_check_is_declared(tmp_path, monkeypatch):
+    def fail_if_called(name, *a, **k):
+        raise AssertionError("import_module must not be called")
+    monkeypatch.setattr(install.importlib, "import_module", fail_if_called)
+    before = list(sys.path)
+    assert install.consumer_checks(tmp_path, {}) == []
+    assert sys.path == before
+
+
+def test_doctor_reports_an_unimportable_consumer_check(tmp_path):
+    problems = install.consumer_checks(
+        tmp_path, {"doctor_checks": ["nosuchmodule:check"]})
+    assert len(problems) == 1
+    assert "nosuchmodule:check" in problems[0]
+
+
+def test_doctor_reports_a_consumer_check_that_returns_a_non_list(tmp_path):
+    (tmp_path / "badmod.py").write_text(
+        "def check(root, cfg):\n    return 'not a list'\n", encoding="utf-8")
+    problems = install.consumer_checks(tmp_path, {"doctor_checks": ["badmod:check"]})
+    assert len(problems) == 1
+    assert "badmod:check" in problems[0]
+
+
 def test_an_open_issue_carries_exactly_one_type_state_and_gate():
     cfg = qconfig.load(REPO)
     issues = [
