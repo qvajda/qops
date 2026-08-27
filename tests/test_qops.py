@@ -5954,6 +5954,18 @@ def test_a_launch_failure_leaves_a_reason_and_fails_once(tmp_path, monkeypatch):
     assert reasons and reasons[0][0] == "alert_failed"
 
 
+def test_the_alert_session_name_carries_the_project():
+    """#215: a consumer's alert session must not read as `qops #<n> ...` —
+    the name is `cfg["project"]`, the only project-specific surface, not the
+    root directory basename or the git remote."""
+    name = qops_pickup.alert_session_name("acme", 42, "needs a decision")
+    assert name.startswith("acme #42 ")
+    assert not name.startswith("qops #")
+    long_clause = "x" * 200
+    truncated = qops_pickup.alert_session_name("acme", 42, long_clause)
+    assert len(truncated) == qops_pickup.ALERT_NAME_MAX
+
+
 def test_the_alerter_holds_no_trigger_predicate():
     """ADR-0031 §1: the set is `pending.waiting_on_owner()`, never
     re-derived. No `gate:` literal anywhere, and no `state:` literal other
