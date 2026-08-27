@@ -102,9 +102,12 @@ def backlog(root: Path) -> list[dict] | None:
     out = subprocess.run(
         ["gh", "issue", "list", "--state", "open", "--limit", "100",
          "--json", "number,title,labels,updatedAt,body"],
-        cwd=root, capture_output=True, text=True)
+        cwd=root, capture_output=True, text=True, encoding="utf-8")
     if out.returncode:
         print(out.stderr.strip(), file=sys.stderr)
+        return None
+    if out.stdout is None:
+        print("gh issue list: stdout could not be decoded", file=sys.stderr)
         return None
     return json.loads(out.stdout or "[]")
 
