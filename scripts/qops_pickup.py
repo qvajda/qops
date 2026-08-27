@@ -102,9 +102,12 @@ def backlog(root: Path) -> list[dict] | None:
     out = subprocess.run(
         ["gh", "issue", "list", "--state", "open", "--limit", "100",
          "--json", "number,title,labels,updatedAt,body"],
-        cwd=root, capture_output=True, text=True)
+        cwd=root, capture_output=True, text=True, encoding="utf-8")
     if out.returncode:
         print(out.stderr.strip(), file=sys.stderr)
+        return None
+    if out.stdout is None:
+        print("gh issue list: stdout could not be decoded", file=sys.stderr)
         return None
     return json.loads(out.stdout or "[]")
 
@@ -294,12 +297,15 @@ def _review(root: Path) -> int:
 ALERT_NAME_MAX = 80  # a session name the owner scans, not a full render
 
 
-def alert_session_name(num: int, clause: str) -> str:
+def alert_session_name(project: str, num: int, clause: str) -> str:
     """The triage surface (ADR-0031 §4). Several rows may wait at once, and
     the name is how the owner tells them apart without opening the tracker
-    first — a struck-out row reads differently from a taste-judgement one."""
+    first — a struck-out row reads differently from a taste-judgement one.
+
+    Named from `cfg["project"]`, not the root directory or the git remote:
+    config is the only project-specific surface (#215)."""
     clause = " ".join(clause.split())
-    return f"qops #{num} {clause}"[:ALERT_NAME_MAX]
+    return f"{project} #{num} {clause}"[:ALERT_NAME_MAX]
 
 
 def alert_prompt(num: int, clause: str) -> str:
@@ -355,7 +361,7 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     line = waiting[0]
     num = int(line.split()[0].lstrip("#"))
     clause = line.split(" — ", 1)[1]
-    name = alert_session_name(num, clause)
+    name = alert_session_name(cfg.get("project", "qops"), num, clause)
     print(f"pickup-loop: #{num} is waiting on the owner - {clause}")
     if "--launch" not in argv:
         print(f"pickup-loop: dry run, not alerting. Would launch {name!r}.")

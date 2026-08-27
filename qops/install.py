@@ -951,7 +951,26 @@ _NAMES_A_TEST = re.compile(r"tests?[/\\][\w./\\-]*\.py|\btest_\w+")
 # Any flag that vetoes pickup regardless of everything else (#48/#122). It
 # vetoes more than pickup now: `priority:parked` (#161) stops the picker, the
 # planner and the decomposer together via this one set.
-BLOCKING_FLAGS = {"no-auto", "blocked", "priority:parked"}
+#
+# `"blocked"` was a typo for `state:blocked` from the day this set was written
+# (#73) — no label named bare `blocked` has ever shipped, so `state:blocked`
+# vetoed nothing (#211). `blocking_flags_drift()` below is the assertion that
+# would have caught it: every member here must be a label `shipped_taxonomy()`
+# ships.
+BLOCKING_FLAGS = {"no-auto", "state:blocked", "priority:parked"}
+
+
+def blocking_flags_drift() -> list[str]:
+    """Every member of `BLOCKING_FLAGS` is a label `shipped_taxonomy()` ships.
+
+    Consumer-independent on purpose: the question is whether qops's own two
+    surfaces (this set and `config.yml.tmpl`) agree with each other, not
+    whether a consumer's config is stale (that's `taxonomy_drift`).
+    """
+    shipped = shipped_taxonomy()
+    missing = sorted(f for f in BLOCKING_FLAGS if f not in shipped)
+    return [f"BLOCKING_FLAGS names {s!r}, a label shipped_taxonomy() does not "
+            f"ship" for s in missing]
 
 
 def eligible(issue: dict) -> bool:
@@ -1051,7 +1070,7 @@ def plannable(issue: dict) -> bool:
     direction only the owner holds gets set, so it gets an interview and then
     #84's decomposition, never a plan instead of one (ADR-0029 §4).
 
-    `no-auto` and `blocked` veto planning for the same reason they veto
+    `no-auto` and `state:blocked` veto planning for the same reason they veto
     building — the flag says the owner is handling this one.
     """
     labels = {l["name"] for l in issue.get("labels", [])}
@@ -1762,6 +1781,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     problems += undeclared_labels(cfg)
     problems += taxonomy_drift(cfg)
     problems += consumer_checks(root, cfg)
+    problems += blocking_flags_drift()
     if issues is _UNFETCHED:
         issues = open_issues(cfg)
     if issues is not None:
