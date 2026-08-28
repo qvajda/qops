@@ -3257,6 +3257,35 @@ def test_doctor_reports_a_consumer_check_that_returns_a_non_list(tmp_path):
     assert "badmod:check" in problems[0]
 
 
+def test_no_substrate_module_imports_sqlite3():
+    """#210: `schema_drift` and its SQL-schema parser moved to the consumer
+    that has a database. Nothing under `qops/` needs sqlite3 anymore."""
+    hits = [str(f.relative_to(REPO)) for f in (REPO / "qops").rglob("*.py")
+            if "sqlite3" in f.read_text(encoding="utf-8")]
+    assert hits == []
+
+
+def test_doctor_reports_a_removed_config_key():
+    problems = install.removed_keys({"schema_check": {"sql": "x", "db": "y"}})
+    assert len(problems) == 1
+    assert "schema_check" in problems[0]
+    assert "doctor_checks" in problems[0]
+
+
+def test_doctor_says_nothing_when_no_removed_key_is_declared():
+    assert install.removed_keys({}) == []
+
+
+def test_doctor_exits_1_on_a_removed_config_key(tmp_path, capsys):
+    install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
+    install.render_adr_consumer(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("hi\n", encoding="utf-8")
+    cfg = {**qconfig.load(REPO), "schema_check": {"sql": "x", "db": "y"}}
+    assert install.doctor_main([], tmp_path, cfg) == 1
+    assert "schema_check" in capsys.readouterr().err
+
+
 def test_blocking_flags_are_labels_the_taxonomy_ships():
     """#211: `BLOCKING_FLAGS` named bare `blocked`, a label neither tracker
     ships, since the set was written (#73) — `state:blocked` vetoed nothing.
