@@ -939,8 +939,17 @@ def eligible(issue: dict) -> bool:
     Lives here, not in `scripts/qops_pickup.py`, so `doctor` (#71) can call
     the same predicate `pickup-loop` uses without `qops/` importing from
     `scripts/` — the dependency has to run the other way.
+
+    `type:manual` refuses on both routes, before either branches: the label
+    already states the deliverable is an owner action outside the repo, and
+    an unattended coder pointed at one either writes code nobody asked for or
+    burns three strikes and marks the row struck out (#49) — which reads as
+    "the loop tried and this is hard" rather than "this was never the loop's
+    to take" (#223).
     """
     labels = {l["name"] for l in issue.get("labels", [])}
+    if "type:manual" in labels:
+        return False
     if "state:planned" not in labels:
         return False
     if labels & BLOCKING_FLAGS:

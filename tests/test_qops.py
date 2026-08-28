@@ -4070,6 +4070,23 @@ def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
         _owner_issue("gate:taste", "state:planned", "origin:owner", body=body))
 
 
+def test_a_type_manual_row_is_never_eligible_to_build():
+    """#223: `eligible()` never read `type:`, so a `type:manual` row that
+    reached `state:planned` with a named test was launchable on both routes -
+    an unattended coder pointed at an owner-side action either writes code
+    nobody asked for or burns three strikes (#49)."""
+    body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto", "type:manual", body=body))
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "type:manual", body=body))
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "type:code", body=body))
+
+
 def test_the_triage_rules_send_an_unsure_row_to_the_machine():
     """R3 is prose, and prose drifts back. The old default ("when unsure,
     `gate:taste`") is the exact string that produced the parking lot, and 14 of
