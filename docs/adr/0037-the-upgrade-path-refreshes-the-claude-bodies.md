@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 revisit-after: 2026-12-15
 amends: 0030
 depends-on: 0025, 0035
@@ -12,9 +12,11 @@ onboarding · **Amends:** ADR-0030's last consequence line (the five-step
 upgrade path); depends on ADR-0025 (recurring owner toil is not an
 implementation).
 
-**Status is `proposed` on purpose.** This ADR states three exits and one
-recommendation; the owner picks one, and the pick is this row's gate
-(ADR-0036). The implementation is a separate row, blocked on the pick.
+**Picked: A**, by the owner in review of #233 on 2026-08-28 — the gate this
+row was filed with (ADR-0036: `gate:taste` is a review at the end). The ADR was
+written `proposed`, with three exits and one recommendation; this is the same
+document with the pick recorded, not a rewrite of it. The implementation is a
+separate row, unblocked by this pick.
 
 ## Context
 
@@ -112,7 +114,11 @@ also leaves the wrong reading of the message ("declare `accept_drift`")
 cheaper than the right one, which is how a check that exists to catch stale
 agent instructions gets switched off by the person it protects.
 
-## Recommendation
+## Decision
+
+**A**, as recommended below and picked in review.
+
+## Recommendation, as it stood at review
 
 **A.** It reuses a mechanism already proven by two surfaces in the same verb,
 adds no step to the upgrade path and no key to the contract, and its exemptions
@@ -128,16 +134,17 @@ or C now: it is the same write with a narrower predicate.
 
 ## Consequences of the pick
 
-Whichever is picked, the implementation row owes an assertion (the critic of a
-decision is a test), and for A it is the one that would have caught this:
+The implementation row owes an assertion (the critic of a decision is a test),
+and for A it is the one that would have caught this:
 scaffold a consumer with `init`, stale a skill body and a role file, run
 `install`, and assert `doctor` is clean — plus a second that a name in
 `skills.accept_drift` and a role with `accept_drift: true` are left untouched
 by that same run.
 
-ADR-0035 applies once the behaviour lands, not now: this decision is about a
+ADR-0035 applies once the behaviour lands, not here: this decision is about a
 verb consumers run, so the implementation row carries the `CADR-` copy into
-`qops/templates/adr/`. A proposal with no pick has nothing to copy.
+`qops/templates/adr/` — a decision whose behaviour does not exist yet has
+nothing a consumer can act on.
 
 ## Explicitly not in scope
 
