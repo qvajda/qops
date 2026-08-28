@@ -41,9 +41,10 @@ no force-push. Closed, not deferred.
 switches on GitHub's *native* auto-merge; the **required status checks** are
 what actually merge (ADR-0016, ADR-0020). Turning them off does not make merges
 manual, it makes every `gate:machine` PR sit forever, which reads exactly like a
-broken picker. `.claude/settings.json` denies `gh api -X` against those settings
-on purpose: they are the owner's, and that denial is a taken decision, not an
-obstacle to route around.
+broken picker. Those settings are the owner's, and that is a taken decision, not
+an obstacle to route around — since ADR-0038 the guard holds it, refusing a
+`gh api` write in an unattended run and leaving the owner's own call to reach a
+prompt, where a deny only ever reached a wall.
 
 ## Hard constraints — do not change without flagging first
 
