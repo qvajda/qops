@@ -185,15 +185,16 @@ def test_skill_body_drift_ignores_skills_qops_does_not_ship(tmp_path):
 
 
 def test_gh_api_writes_are_never_allowlisted():
-    """Sign-off item 10. `gh api` bare is a GET and is allowlisted; a write to
-    repo settings is an owner decision, already taken. The allow rule is only
-    safe while the deny rules take the method flags back."""
+    """Sign-off item 10, as ADR-0038 leaves it. `gh api` bare is a GET and is
+    allowlisted; a write to repo settings is an owner decision, and since #235
+    the thing that holds it is the guard rather than a deny entry - see
+    `test_settings_no_longer_denies_what_the_guard_now_refuses`. What survives
+    unchanged here: no write method is ever *allowed*."""
     perms = json.loads((REPO / ".claude" / "settings.json")
                        .read_text(encoding="utf-8"))["permissions"]
-    denied = set(perms.get("deny", []))
     for flag in ("-X", "--method", "-f", "--field", "-F", "--input"):
-        assert f"Bash(gh api {flag}:*)" in denied, f"gh api {flag} is not denied"
-    assert not any(a.startswith("Bash(gh api -X") for a in perms["allow"])
+        assert f"Bash(gh api {flag}:*)" not in perms["allow"], \
+            f"gh api {flag} is allowlisted"
 
 
 @pytest.mark.parametrize("agent", ["planner", "interactor"])
@@ -1000,18 +1001,19 @@ def test_settings_json_merges_the_project_s_extra_permissions(tmp_path):
     """R8 for #158. A project may widen the standard set and may narrow it —
     it may not hand itself back something the substrate denied."""
     cfg = _cfg_with(permissions={"extra": {
-        "allow": ["Bash(psql:*)",
-                  # Already denied by the template. The whole row rests on
-                  # this one not coming back (ADR-0016/0020).
-                  "Bash(gh api -X:*)"],
+        # `Bash(terraform apply:*)` is in both halves. The subtraction is what
+        # keeps deny the stronger of the two, whichever half an entry came
+        # from - the property the template's own deny entries used to
+        # demonstrate, until ADR-0038 moved that control into the guard and
+        # left the template's deny list empty.
+        "allow": ["Bash(psql:*)", "Bash(terraform apply:*)"],
         "deny": ["Bash(terraform apply:*)"],
     }})
     perms = json.loads(install.render_settings(cfg))["permissions"]
     assert "Bash(sleep:*)" in perms["allow"], "standard set lost"
     assert "Bash(psql:*)" in perms["allow"], "the project's own allow is absent"
-    assert "Bash(gh api -X:*)" not in perms["allow"], \
-        "an extra allow beat a template deny"
-    assert "Bash(gh api -X:*)" in perms["deny"]
+    assert "Bash(terraform apply:*)" not in perms["allow"], \
+        "an allow beat a deny"
     assert "Bash(terraform apply:*)" in perms["deny"]
 
 
@@ -1033,7 +1035,9 @@ def test_a_config_without_permissions_renders_the_standard_set(tmp_path):
     cfg.pop("permissions", None)
     perms = json.loads(install.render_settings(cfg))["permissions"]
     assert "Bash(sleep:*)" in perms["allow"]
-    assert "Bash(gh api -X:*)" in perms["deny"]
+    # Empty since ADR-0038: the `gh api` write methods that lived here are the
+    # guard's now, and nothing else was ever denied.
+    assert perms["deny"] == []
 
 
 def test_drift_reports_a_hand_edited_settings_json(tmp_path):
@@ -1718,6 +1722,67 @@ def test_guard_refuses_a_sandbox_escape_when_unattended():
     assert "unattended" in (guard.check("Bash", payload, ctx, cfg) or "")
     ctx["unattended"] = False
     assert guard.check("Bash", payload, ctx, cfg) is None
+
+
+# The six flags `.claude/settings.json` denied until #235. The list is written
+# out here rather than read from the template on purpose: the template no
+# longer holds it, and the point of the pair of tests below is that what the
+# deny covered, the guard covers.
+DENIED_GH_API_WRITE_FLAGS = ("-X", "--method", "-f", "--field", "-F", "--input")
+
+
+@pytest.mark.parametrize("flag", DENIED_GH_API_WRITE_FLAGS + ("--raw-field",))
+def test_guard_refuses_a_write_api_call_when_unattended(flag):
+    """ADR-0038. A deny is absolute and never falls through to a prompt, so the
+    owner - at a keyboard, entitled to make the call - had no button. The
+    control moved here, where it can read who is asking: refused unattended,
+    and in an attended session the harness's own prompt is the button."""
+    cfg = qconfig.load(REPO)
+    ctx = {"branch": "master", "worktrees": 1, "unattended": True}
+    payload = {"command": f"gh api {flag} PUT repos/o/r/branches/master/protection"}
+    assert "unattended" in (guard.check("Bash", payload, ctx, cfg) or ""), \
+        f"gh api {flag} is not refused unattended"
+    ctx["unattended"] = False
+    assert guard.check("Bash", payload, ctx, cfg) is None, \
+        f"gh api {flag} is refused for the owner, who has the authority"
+
+
+def test_guard_lets_a_bare_gh_api_get_through_either_way():
+    cfg = qconfig.load(REPO)
+    payload = {"command": "gh api repos/o/r"}
+    for unattended in (True, False):
+        ctx = {"branch": "master", "worktrees": 1, "unattended": unattended}
+        assert guard.check("Bash", payload, ctx, cfg) is None
+
+
+def test_the_guard_reads_a_write_api_call_the_deny_pattern_missed():
+    """`Bash(gh api -X:*)` matched a command by prefix, so a chained call was
+    never denied. The guard reads argv (ADR-0021), so it is the same parse."""
+    cfg = qconfig.load(REPO)
+    ctx = {"branch": "master", "worktrees": 1, "unattended": True}
+    for cmd in ("gh pr list && gh api -X PATCH repos/o/r",
+                "gh api --method=DELETE repos/o/r/labels/x",
+                "bash -c 'gh api -F allow_auto_merge=true repos/o/r'"):
+        assert guard.check("Bash", {"command": cmd}, ctx, cfg), cmd
+
+
+def test_settings_no_longer_denies_what_the_guard_now_refuses():
+    """The swap, asserted as a swap: nothing may drop out of the deny list
+    without the guard picking it up. Iterating the same list is what makes
+    removing one from the template without teaching the guard a failure."""
+    cfg = qconfig.load(REPO)
+    # The render, not the installed copy: the render is what every consumer
+    # gets on its next `qops install`, and an installed copy that still holds
+    # them is `drift`'s report to make, not this one's.
+    perms = json.loads(install.render_settings(cfg))["permissions"]
+    assert not any(d.startswith("Bash(gh api") for d in perms.get("deny", [])), \
+        "the deny entries are back; the guard and the deny now disagree"
+    assert not any(a.startswith("Bash(gh api -X") for a in perms["allow"]), \
+        "a write method was allowlisted"
+    ctx = {"branch": "master", "worktrees": 1, "unattended": True}
+    for flag in DENIED_GH_API_WRITE_FLAGS:
+        assert guard.check("Bash", {"command": f"gh api {flag} POST repos/o/r"},
+                           ctx, cfg), f"the deny covered {flag}, the guard does not"
 
 
 # --------------------------------------------------------------------------

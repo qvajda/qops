@@ -23,8 +23,35 @@ Not done by `qops init` — the owner's or the machine's, not the package's:
   - python scripts/qops_import.py --labels
   - open a Claude Code session in this folder and run /interview to set the
     first goal
-  - branch protection on {default_branch}, with the gate as a required check
-  - "Allow auto-merge" and "Automatically delete head branches", both on
+  - branch protection on {default_branch}, with the gate as a required check,
+    plus "Allow auto-merge" and "Automatically delete head branches", both on.
+    Both are CADR-0003's recorded table, so they are two commands rather than
+    a browser trip. Run them at a keyboard: the guard refuses a `gh api` write
+    in an unattended run and prompts you in an attended one (#235).
+
+    Save this as protection.json — a file rather than a heredoc, because the
+    shell on this host is not assumed (ADR-0009):
+
+      {{
+        "required_status_checks": {{
+          "strict": true,
+          "contexts": ["test", "gate", "tripwires", "doc-links"]
+        }},
+        "enforce_admins": true,
+        "required_pull_request_reviews": {{"required_approving_review_count": 0}},
+        "restrictions": null,
+        "allow_force_pushes": false,
+        "allow_deletions": false
+      }}
+
+    then:
+
+      gh api -X PUT repos/{repo}/branches/{default_branch}/protection --input protection.json
+      gh api -X PATCH repos/{repo} -F allow_auto_merge=true -F delete_branch_on_merge=true
+
+    The approval count is 0 on purpose and 1 is the deadlock CADR-0003 records:
+    GitHub does not let a PR's author approve it, and with `enforce_admins` on
+    a one-maintainer repo there is no bypass either.
   - trust this workspace once (open Claude Code here interactively)
   - python -m qops install — renders the workflows AND registers pickup-loop's
     scheduled task on this host, disabled. Decline it with `pickup_task: false`

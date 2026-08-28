@@ -262,6 +262,60 @@ def origin_refusal(toks: list[str], ctx: dict) -> str | None:
     return None
 
 
+# The `gh api` flags that turn a GET into a write. Until #235 these were six
+# `permissions.deny` entries in `.claude/settings.json`; a deny is absolute, so
+# it never falls through to a prompt and the owner - entitled to make the call -
+# had no button. The control moved here, where it can read who is asking.
+# `--raw-field` is covered too: it was missing from the deny list, and wider
+# than what it replaces is the only direction this may move (ADR-0038).
+GH_API_WRITE_FLAGS = ("-X", "--method", "-f", "--field", "-F", "--input",
+                      "--raw-field")
+
+
+def gh_api_calls(toks: list[str]) -> list[list[str]]:
+    """The args of every `gh api` in these tokens - same parse as
+    `issue_filings`, same reason (ADR-0021). A chained `x && gh api -X POST`
+    is one of these; the deny pattern it replaces only ever matched a command
+    that *started* with the prefix."""
+    found = []
+    for i, t in enumerate(toks):
+        if t != "gh" or toks[i + 1:i + 2] != ["api"]:
+            continue
+        args = []
+        for a in toks[i + 2:]:
+            if a in _SEPARATORS:
+                break
+            args.append(a)
+        found.append(args)
+    return found
+
+
+def gh_api_refusal(toks: list[str], ctx: dict) -> str | None:
+    """A `gh api` call carrying a write method, in an unattended run (#235).
+
+    ADR-0038. The same distinction `dangerouslyDisableSandbox` already draws
+    (#122): an owner at a keyboard can make this call and now reaches the
+    harness's own prompt to approve it; a pickup-loop launch cannot, because
+    nobody is reading, and `--permission-mode acceptEdits` covers file edits
+    rather than Bash.
+
+    This is not a relaxation of ADR-0016/0020. A `permissions.allow` entry
+    written by a "yes, and don't ask again" is saved permanently per repository
+    and command; a PreToolUse hook is not consulted from the allow list, so it
+    still runs and still refuses. Reading `gh api` bare - a GET - is untouched.
+    """
+    if not ctx.get("unattended"):
+        return None
+    for args in gh_api_calls(toks):
+        for a in args:
+            if a in GH_API_WRITE_FLAGS or a.split("=", 1)[0] in GH_API_WRITE_FLAGS:
+                return (f"`gh api {a}` writes, and is refused in an unattended "
+                        f"run: branch protection and the repo settings "
+                        f"ADR-0016/0020 rest on are the owner's to set. Report "
+                        f"what needs changing on the issue instead.")
+    return None
+
+
 def role_refusal(toks: list[str], ctx: dict) -> str | None:
     """ADR-0033's per-role command cells that a tool list cannot express (P3).
     `ctx["role"]` is absent for an attended owner's session, and this returns
@@ -429,7 +483,8 @@ def check(tool_name: str, tool_input: dict, ctx: dict, cfg: dict) -> str | None:
 
         toks = argv_tokens(cmd)
         refusal = (head_moved_refusal(toks, ctx) or git_refusal(toks, ctx, cfg)
-                   or origin_refusal(toks, ctx) or role_refusal(toks, ctx))
+                   or origin_refusal(toks, ctx) or role_refusal(toks, ctx)
+                   or gh_api_refusal(toks, ctx))
         if refusal:
             return refusal
 
