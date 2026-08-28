@@ -3064,6 +3064,88 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path, monkeyp
     assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
 
 
+def test_reconcile_clears_a_blocker_it_closed_in_the_same_run(tmp_path, monkeypatch):
+    """#230: `unblock_stale()`/`strike_stale_blockers()` read the tracker
+    *before* `reconcile()` closed the blocker they're both reading for, so a
+    blocker closed by this run stayed unclear for a full day. `main()` now
+    runs `reconcile()` first. Stubs `subprocess.run` (not the sweeps, per the
+    pattern above) with a router over a mutable in-memory tracker, so a write
+    one sweep makes is visible to the sweeps after it — the same tracker,
+    not a cache passed between them."""
+    tracker = {
+        "1": {"state": "OPEN", "labels": ["state:blocked"],
+              "body": "**Blocked by #2.** Nothing to clear yet."},
+        "2": {"state": "OPEN", "labels": ["state:building", "gate:machine"]},
+    }
+    merged = [{"number": 200, "headRefName": "fix/2-blocker",
+               "mergedBy": {"login": "github-actions[bot]", "is_bot": True}}]
+
+    def route(args):
+        if args[:2] == ["pr", "list"]:
+            state = args[args.index("--state") + 1]
+            return json.dumps(merged if state == "merged" else [])
+        if args[:2] == ["issue", "list"]:
+            if "--label" in args:
+                label = args[args.index("--label") + 1]
+                if label == "state:blocked":
+                    nums = [n for n, i in tracker.items()
+                            if "state:blocked" in i["labels"]
+                            and i["state"] == "OPEN"]
+                    return json.dumps([{"number": int(n)} for n in nums])
+                return json.dumps([])  # origin:pending
+            items = [{"number": int(n), "body": i.get("body", ""),
+                      "labels": [{"name": l} for l in i["labels"]]}
+                     for n, i in tracker.items() if i["state"] == "OPEN"]
+            return json.dumps(items)
+        if args[:2] == ["issue", "view"]:
+            num = args[2]
+            fields = args[args.index("--json") + 1]
+            i = tracker[num]
+            out = {}
+            if "state" in fields:
+                out["state"] = i["state"]
+            if "labels" in fields:
+                out["labels"] = [{"name": l} for l in i["labels"]]
+            if "body" in fields:
+                out["body"] = i.get("body", "")
+            if "comments" in fields:
+                out["comments"] = []
+            return json.dumps(out)
+        if args[:2] == ["issue", "edit"]:
+            i = tracker[args[2]]
+            idx = 3
+            while idx < len(args):
+                if args[idx] == "--add-label":
+                    if args[idx + 1] not in i["labels"]:
+                        i["labels"].append(args[idx + 1])
+                    idx += 2
+                elif args[idx] == "--remove-label":
+                    if args[idx + 1] in i["labels"]:
+                        i["labels"].remove(args[idx + 1])
+                    idx += 2
+                elif args[idx] == "--body":
+                    i["body"] = args[idx + 1]
+                    idx += 2
+                else:
+                    idx += 1
+            return ""
+        if args[:2] == ["issue", "close"]:
+            tracker[args[2]]["state"] = "CLOSED"
+            return ""
+        return "[]"
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, route(cmd[1:]), "")
+
+    monkeypatch.setattr(reconcilemod.subprocess, "run", fake_run)
+    reconcilemod.main([], tmp_path, {"repo": "o/r"})
+
+    assert tracker["2"]["state"] == "CLOSED"
+    assert "state:blocked" not in tracker["1"]["labels"]
+    assert "state:triage" in tracker["1"]["labels"]
+    assert "~~**Blocked by #2.**~~" in tracker["1"]["body"]
+
+
 def test_a_failing_origin_sweep_does_not_take_the_backstop_down():
     """`derive_origin()` runs ahead of `reconcile()` in `main()`. Raising there
     would stop merged rows reaching `state:done` — the one job this module
