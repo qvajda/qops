@@ -76,9 +76,15 @@ def is_claimed(labels: set[str]) -> bool:
     it is *with* him, not waiting on him. `state:building` + `no-auto`
     together mark a build/fix session; `state:review` alone marks a review
     one — the same pair the alerter (#120) fires on, taught here so claiming
-    a row does not create a fresh edge into its own trigger set."""
+    a row does not create a fresh edge into its own trigger set.
+
+    `gate:taste` at `state:review` is the exception (ADR-0036): the sortie
+    that built it already stopped (CLAUDE.md — an unattended sortie opens a
+    PR and stops), so no live session holds it the way a `gate:machine` row's
+    reviewing session does. That row is still waiting on him, not with him —
+    `waiting_on_owner()` is where the alert fires."""
     return (("state:building" in labels and "no-auto" in labels)
-            or "state:review" in labels)
+            or ("state:review" in labels and "gate:taste" not in labels))
 
 
 def _session_for_issue(root: Path, num: int) -> str | None:
@@ -109,8 +115,6 @@ def waiting_on_owner(root: Path, rows: list[dict]) -> list[str]:
             continue
         if "priority:parked" in labels:
             continue
-        if "gate:taste" in labels:
-            out.append(f"#{num} {title} — gate:taste: a judgement is the deliverable")
         if "state:review" in labels:
             out.append(f"#{num} {title} — state:review: the loop asked for eyes")
         if "no-auto" in labels:
