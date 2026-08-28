@@ -6,6 +6,7 @@ A workflow nobody may hand-edit is the point: the CLAUDE.md line cap and the
 tripwire list live in config, and the workflow is a rendering of them.
 """
 
+import importlib
 import json
 import os
 import re
@@ -884,6 +885,48 @@ def shipped_taxonomy() -> set[str]:
     return out | set(labels.get("flags", []))
 
 
+def consumer_checks(root: Path, cfg: dict) -> list[str]:
+    """Run each `doctor_checks:` entry the consumer's own config declares
+    (#209).
+
+    `schema_drift` above is the only built-in check shaped by one project's
+    domain data, and it has no seam for a second one. `doctor_checks:` is
+    that seam: a list of `module:callable` strings, each imported from the
+    consumer's root and called as `fn(root, cfg)`, returning the strings that
+    merge into `doctor`'s problems exactly as a built-in check's would.
+
+    A config declaring none returns before `importlib` or `sys.path` are
+    touched at all. A declared entry that cannot be imported, or that does
+    not return a `list[str]`, is itself reported by name — a check that
+    silently declines to run is the exact failure `doctor` exists to catch.
+    """
+    entries = cfg.get("doctor_checks") or []
+    if not entries:
+        return []
+    root = Path(root)
+    problems = []
+    sys.path.insert(0, str(root))
+    try:
+        for entry in entries:
+            try:
+                mod_name, _, fn_name = str(entry).partition(":")
+                if not mod_name or not fn_name:
+                    raise ValueError(f"expected 'module:callable', got {entry!r}")
+                mod = importlib.import_module(mod_name)
+                fn = getattr(mod, fn_name)
+                result = fn(root, cfg)
+                if not isinstance(result, list) or not all(isinstance(s, str) for s in result):
+                    raise TypeError(
+                        f"must return list[str], got {result!r}")
+                problems += result
+            except Exception as e:
+                problems.append(
+                    f"doctor_checks entry {entry!r} failed: {e}")
+    finally:
+        sys.path.remove(str(root))
+    return problems
+
+
 def taxonomy_drift(cfg: dict) -> list[str]:
     """A value in qops's shipped taxonomy and absent from this project's
     (#178). A consumer that bumps its pin without hand-diffing config.yml
@@ -1746,6 +1789,7 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     problems += config_key_drift(cfg)
     problems += undeclared_labels(cfg)
     problems += taxonomy_drift(cfg)
+    problems += consumer_checks(root, cfg)
     problems += blocking_flags_drift()
     if issues is _UNFETCHED:
         issues = open_issues(cfg)
