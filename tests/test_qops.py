@@ -3222,6 +3222,70 @@ def test_taxonomy_drift_ignores_mission_which_is_each_projects_own():
     assert "mission:core" not in install.shipped_taxonomy()
 
 
+def test_doctor_runs_a_consumer_declared_check(tmp_path):
+    """A config declaring `doctor_checks: [mymod:check]` has that callable's
+    strings appear in `doctor`'s output — the seam #209 adds (no database
+    anywhere in the fixture)."""
+    (tmp_path / "mymod.py").write_text(
+        "def check(root, cfg):\n    return ['a consumer-owned problem']\n",
+        encoding="utf-8")
+    problems = install.consumer_checks(tmp_path, {"doctor_checks": ["mymod:check"]})
+    assert problems == ["a consumer-owned problem"]
+
+
+def test_doctor_imports_nothing_when_no_check_is_declared(tmp_path, monkeypatch):
+    def fail_if_called(name, *a, **k):
+        raise AssertionError("import_module must not be called")
+    monkeypatch.setattr(install.importlib, "import_module", fail_if_called)
+    before = list(sys.path)
+    assert install.consumer_checks(tmp_path, {}) == []
+    assert sys.path == before
+
+
+def test_doctor_reports_an_unimportable_consumer_check(tmp_path):
+    problems = install.consumer_checks(
+        tmp_path, {"doctor_checks": ["nosuchmodule:check"]})
+    assert len(problems) == 1
+    assert "nosuchmodule:check" in problems[0]
+
+
+def test_doctor_reports_a_consumer_check_that_returns_a_non_list(tmp_path):
+    (tmp_path / "badmod.py").write_text(
+        "def check(root, cfg):\n    return 'not a list'\n", encoding="utf-8")
+    problems = install.consumer_checks(tmp_path, {"doctor_checks": ["badmod:check"]})
+    assert len(problems) == 1
+    assert "badmod:check" in problems[0]
+
+
+def test_no_substrate_module_imports_sqlite3():
+    """#210: `schema_drift` and its SQL-schema parser moved to the consumer
+    that has a database. Nothing under `qops/` needs sqlite3 anymore."""
+    hits = [str(f.relative_to(REPO)) for f in (REPO / "qops").rglob("*.py")
+            if "sqlite3" in f.read_text(encoding="utf-8")]
+    assert hits == []
+
+
+def test_doctor_reports_a_removed_config_key():
+    problems = install.removed_keys({"schema_check": {"sql": "x", "db": "y"}})
+    assert len(problems) == 1
+    assert "schema_check" in problems[0]
+    assert "doctor_checks" in problems[0]
+
+
+def test_doctor_says_nothing_when_no_removed_key_is_declared():
+    assert install.removed_keys({}) == []
+
+
+def test_doctor_exits_1_on_a_removed_config_key(tmp_path, capsys):
+    install.render_all(tmp_path, qconfig.load(REPO))
+    install.write_scripts(tmp_path)
+    install.render_adr_consumer(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("hi\n", encoding="utf-8")
+    cfg = {**qconfig.load(REPO), "schema_check": {"sql": "x", "db": "y"}}
+    assert install.doctor_main([], tmp_path, cfg) == 1
+    assert "schema_check" in capsys.readouterr().err
+
+
 def test_blocking_flags_are_labels_the_taxonomy_ships():
     """#211: `BLOCKING_FLAGS` named bare `blocked`, a label neither tracker
     ships, since the set was written (#73) — `state:blocked` vetoed nothing.
@@ -4068,6 +4132,23 @@ def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
     body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
     assert not qops_pickup.eligible(
         _owner_issue("gate:taste", "state:planned", "origin:owner", body=body))
+
+
+def test_a_type_manual_row_is_never_eligible_to_build():
+    """#223: `eligible()` never read `type:`, so a `type:manual` row that
+    reached `state:planned` with a named test was launchable on both routes -
+    an unattended coder pointed at an owner-side action either writes code
+    nobody asked for or burns three strikes (#49)."""
+    body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "ready:auto", "type:manual", body=body))
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "type:manual", body=body))
+    assert qops_pickup.eligible(
+        _owner_issue("gate:machine", "state:planned", "origin:owner",
+                     "type:code", body=body))
 
 
 def test_the_triage_rules_send_an_unsure_row_to_the_machine():

@@ -6,11 +6,11 @@ A workflow nobody may hand-edit is the point: the CLAUDE.md line cap and the
 tripwire list live in config, and the workflow is a rendering of them.
 """
 
+import importlib
 import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -703,81 +703,18 @@ def agent_drift(root: Path, cfg: dict) -> list[str]:
     return problems
 
 
-_CREATE_TABLE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);",
-                            re.DOTALL)
-_TABLE_LEVEL = ("UNIQUE(", "UNIQUE (", "FOREIGN KEY", "CHECK(", "CHECK (",
-                "CONSTRAINT", "PRIMARY KEY(", "PRIMARY KEY (")
+# Config keys removed from the substrate: key -> its `doctor_checks:` era
+# replacement. A consumer still declaring one is told by name, never
+# silently ignored (#210).
+_REMOVED_KEYS = {"schema_check": "doctor_checks"}
 
 
-def _split_top_level(body: str) -> list[str]:
-    """Comma-separated column/constraint clauses, ignoring commas nested
-    inside a `CHECK(...)` or similar parenthesised clause."""
-    clauses, depth, start = [], 0, 0
-    for i, ch in enumerate(body):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            clauses.append(body[start:i])
-            start = i + 1
-    clauses.append(body[start:])
-    return clauses
-
-
-def _declared_schema(schema_sql: str) -> dict[str, set[str]]:
-    """table -> declared column names, parsed from the declared schema file."""
-    declared = {}
-    for table, body in _CREATE_TABLE.findall(schema_sql):
-        columns = set()
-        for clause in _split_top_level(body):
-            clause = clause.strip()
-            if not clause or clause.startswith(_TABLE_LEVEL):
-                continue
-            columns.add(clause.split()[0])
-        declared[table] = columns
-    return declared
-
-
-def schema_drift(root: Path, cfg: dict | None = None,
-                 db_path: Path | None = None) -> list[str]:
-    """Live DB has every table/column the declared schema declares (#160).
-
-    The schema file is all `CREATE TABLE IF NOT EXISTS`, so a new column added
-    there is a silent no-op against an already-created live table - GL-32
-    shipped a standalone migration script that nothing runs and nothing
-    checked for. A missing live DB (fresh checkout, CI) is not drift; there
-    is nothing to compare against.
-
-    Both paths are the *project's*, so they live in `.qops/config.yml` under
-    `schema_check:` and a config that omits the block gets no check. A
-    substrate repo has no database, and hardcoding one project's filenames
-    into the substrate is the leak this whole phase exists to remove.
-    """
-    root = Path(root)
-    spec = (cfg or {}).get("schema_check") or {}
-    sql_rel, db_rel = spec.get("sql"), spec.get("db")
-    if not sql_rel or not db_rel:
-        return []
-    db_path = Path(db_path) if db_path is not None else root / db_rel
-    if not db_path.exists():
-        return []
-    declared = _declared_schema((root / sql_rel).read_text(encoding="utf-8"))
-    problems = []
-    conn = sqlite3.connect(str(db_path))
-    try:
-        for table, columns in declared.items():
-            live = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-            if not live:
-                problems.append(f"schema drift: table `{table}` is in {sql_rel} "
-                                f"and missing from the live DB")
-                continue
-            for col in sorted(columns - live):
-                problems.append(f"schema drift: `{table}.{col}` is in {sql_rel} "
-                                f"and missing from the live DB - run its migration")
-    finally:
-        conn.close()
-    return problems
+def removed_keys(cfg: dict) -> list[str]:
+    """Every removed key still declared in `.qops/config.yml` is reported by
+    name, with its replacement, and never just stops being read (#210)."""
+    return [f"`.qops/config.yml` declares `{key}:`, removed from qops - use "
+            f"`{replacement}:` instead"
+            for key, replacement in _REMOVED_KEYS.items() if key in cfg]
 
 
 # A key the template fills with a value unique to the project, not a shared
@@ -884,6 +821,49 @@ def shipped_taxonomy() -> set[str]:
     return out | set(labels.get("flags", []))
 
 
+def consumer_checks(root: Path, cfg: dict) -> list[str]:
+    """Run each `doctor_checks:` entry the consumer's own config declares
+    (#209).
+
+    A check shaped by one project's domain data belongs to that project, not
+    the substrate — `schema_drift` was the last built-in one of those, moved
+    out in #210. `doctor_checks:` is the seam it left behind: a list of
+    `module:callable` strings, each imported from the
+    consumer's root and called as `fn(root, cfg)`, returning the strings that
+    merge into `doctor`'s problems exactly as a built-in check's would.
+
+    A config declaring none returns before `importlib` or `sys.path` are
+    touched at all. A declared entry that cannot be imported, or that does
+    not return a `list[str]`, is itself reported by name — a check that
+    silently declines to run is the exact failure `doctor` exists to catch.
+    """
+    entries = cfg.get("doctor_checks") or []
+    if not entries:
+        return []
+    root = Path(root)
+    problems = []
+    sys.path.insert(0, str(root))
+    try:
+        for entry in entries:
+            try:
+                mod_name, _, fn_name = str(entry).partition(":")
+                if not mod_name or not fn_name:
+                    raise ValueError(f"expected 'module:callable', got {entry!r}")
+                mod = importlib.import_module(mod_name)
+                fn = getattr(mod, fn_name)
+                result = fn(root, cfg)
+                if not isinstance(result, list) or not all(isinstance(s, str) for s in result):
+                    raise TypeError(
+                        f"must return list[str], got {result!r}")
+                problems += result
+            except Exception as e:
+                problems.append(
+                    f"doctor_checks entry {entry!r} failed: {e}")
+    finally:
+        sys.path.remove(str(root))
+    return problems
+
+
 def taxonomy_drift(cfg: dict) -> list[str]:
     """A value in qops's shipped taxonomy and absent from this project's
     (#178). A consumer that bumps its pin without hand-diffing config.yml
@@ -939,8 +919,17 @@ def eligible(issue: dict) -> bool:
     Lives here, not in `scripts/qops_pickup.py`, so `doctor` (#71) can call
     the same predicate `pickup-loop` uses without `qops/` importing from
     `scripts/` — the dependency has to run the other way.
+
+    `type:manual` refuses on both routes, before either branches: the label
+    already states the deliverable is an owner action outside the repo, and
+    an unattended coder pointed at one either writes code nobody asked for or
+    burns three strikes and marks the row struck out (#49) — which reads as
+    "the loop tried and this is hard" rather than "this was never the loop's
+    to take" (#223).
     """
     labels = {l["name"] for l in issue.get("labels", [])}
+    if "type:manual" in labels:
+        return False
     if "state:planned" not in labels:
         return False
     if labels & BLOCKING_FLAGS:
@@ -1733,10 +1722,11 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     problems += skill_body_drift(root, cfg)
     problems += agent_drift(root, cfg)
     problems += script_drift(root)
-    problems += schema_drift(root, cfg)
+    problems += removed_keys(cfg)
     problems += config_key_drift(cfg)
     problems += undeclared_labels(cfg)
     problems += taxonomy_drift(cfg)
+    problems += consumer_checks(root, cfg)
     problems += blocking_flags_drift()
     if issues is _UNFETCHED:
         issues = open_issues(cfg)
