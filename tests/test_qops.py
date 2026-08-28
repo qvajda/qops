@@ -5779,6 +5779,61 @@ def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
     assert len(install.owner_preconditions(tmp_path, cfg)) == 3
 
 
+def test_unreadable_branch_protection_is_not_a_strict_problem(
+        tmp_path, monkeypatch, capsys):
+    """#231. A token with no permission to read a setting reads the same as
+    an unset one today, which makes `digest.yml` permanently red on a repo
+    that is actually configured correctly. Permission-denied — an `HTTP 403`,
+    or a `200` whose payload omits the admin-only keys — must be a note, not
+    a problem."""
+    cfg = {"repo": "qvajda/qops", "default_branch": "master"}
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["gh", "api"] and "protection" in cmd[2]:
+            return subprocess.CompletedProcess(
+                cmd, 1, "", 'gh: HTTP 403: Resource not accessible')
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"full_name": "qvajda/qops"}), "")
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+    monkeypatch.setattr(install, "_trust_state", lambda root: "trusted")
+
+    problems = install.owner_preconditions(tmp_path, cfg)
+    assert problems == [], problems
+    out = capsys.readouterr().out
+    assert "branch protection" in out and "403" in out
+    assert "allow-auto-merge" in out.lower() or "auto-merge" in out.lower()
+    assert "admin-only" in out
+
+
+def test_branch_protection_confirmed_off_is_still_a_problem(
+        tmp_path, monkeypatch):
+    """#231. The fail-closed half must survive: a real misconfiguration, or a
+    repo that plain does not exist yet, is exactly what contract #6 / #7
+    exist to catch, and must not be swallowed as "unreadable"."""
+    cfg = {"repo": "qvajda/qops", "default_branch": "master"}
+    monkeypatch.setattr(install, "_trust_state", lambda root: "trusted")
+
+    # required_status_checks absent, repo settings present and false.
+    def fake_run_off(cmd, **kw):
+        if "protection" in cmd[2]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({}), "")
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"allow_auto_merge": False,
+                                "delete_branch_on_merge": False}), "")
+    monkeypatch.setattr(install.subprocess, "run", fake_run_off)
+    problems = install.owner_preconditions(tmp_path, cfg)
+    assert any("branch protection" in p for p in problems)
+    assert any("auto-merge" in p for p in problems)
+
+    # A 404 (repo does not exist yet) fails closed on both, not "unreadable".
+    def fake_run_404(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, "", "gh: HTTP 404: Not Found")
+    monkeypatch.setattr(install.subprocess, "run", fake_run_404)
+    problems = install.owner_preconditions(tmp_path, cfg)
+    assert any("branch protection" in p for p in problems)
+    assert any("auto-merge" in p for p in problems)
+
+
 def test_doctor_reports_an_untrusted_root_without_writing_to_it(
         tmp_path, monkeypatch):
     root = tmp_path / "repo"
