@@ -16,7 +16,7 @@ reads nothing, and exits 0 doing it.
 Eligibility is deliberately narrow, and every condition is the owner's to grant:
 
     state:planned  AND  NOT no-auto  AND  gate: is not none
-    AND ( ready:auto  OR  ( origin:owner  AND  NOT gate:taste  AND  body names a test ) )
+    AND ( ready:auto  OR  ( origin:owner  AND  body names a test ) )
 
 `ready:auto` is never applied by the triager (see .claude/agents/triager.md) —
 only the owner grants it. `gate:none` blocks pickup because a sortie with no
@@ -313,7 +313,21 @@ def alert_prompt(num: int, clause: str) -> str:
     `pending` render — two concurrent alerts would each recite the other.
     Short by construction: the issue body is never embedded in argv,
     `review.WINDOWS_CMDLINE_MAX` is a live failure mode on this host
-    (#111)."""
+    (#111).
+
+    The review clause (`pending.py`'s "the loop asked for eyes") gets its own
+    text (ADR-0036 §5): that clause is the row's one owner moment end to end,
+    artefact in hand, not a proposal-and-wait. Every other clause keeps
+    today's text. Matched on the clause's own wording, not a new label
+    literal — the alerter still holds no trigger predicate of its own."""
+    if clause.endswith("the loop asked for eyes"):
+        return (
+            f"Read issue #{num} on this repo's tracker and its open PR - "
+            f"the loop asked for eyes. Present the artefact and what the "
+            f"row asked for. If the owner approves, merge. If the owner "
+            f"rejects, ask what comes next (abandon / retry in-session / "
+            f"record the feedback on the row / something else the context "
+            f"suggests) - do not choose for them.")
     return (
         f"Read issue #{num} on this repo's tracker - it is waiting on the "
         f"owner ({clause}). State the situation in a few lines, propose "

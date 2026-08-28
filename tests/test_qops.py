@@ -4193,10 +4193,26 @@ def test_ready_auto_without_a_named_test_is_not_eligible():
                      body="Expected to touch: `tests/test_qops.py`\n"))
 
 
-def test_gate_taste_is_never_eligible_by_the_owner_filed_route():
+def test_eligible_accepts_a_gate_taste_owner_row():
+    """ADR-0036: `gate:taste` no longer vetoes the owner-filed route - a
+    named test is the same bar every other gate clears here, and the taste
+    judgement is read once, at `state:review`, not withheld from the build."""
     body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
-    assert not qops_pickup.eligible(
+    assert qops_pickup.eligible(
         _owner_issue("gate:taste", "state:planned", "origin:owner", body=body))
+    assert not qops_pickup.eligible(
+        _owner_issue("gate:taste", "state:planned", "origin:owner",
+                     body="no test named here"))
+
+
+def test_type_research_may_carry_gate_taste():
+    """ADR-0036's critic §3: no code enforces ADR-0026's R4 today, so a
+    `type:research` + `gate:taste` + `origin:owner` row naming a test is
+    eligible like any other owner-filed row."""
+    body = "## Files\n\nExpected to touch: `tests/test_qops.py::test_x`\n"
+    assert qops_pickup.eligible(
+        _owner_issue("gate:taste", "state:planned", "origin:owner",
+                     "type:research", body=body))
 
 
 def test_a_type_manual_row_is_never_eligible_to_build():
@@ -5747,6 +5763,10 @@ def test_pending_names_the_owner_actions_and_the_loop_queue(tmp_path, monkeypatc
     decompose_row = {"number": 3, "title": "decompose me",
                      "updatedAt": "2026-08-03T00:00:00Z", "body": _INTERVIEWED_EPIC_BODY,
                      "labels": [{"name": "type:epic"}, {"name": "gate:machine"}]}
+    # ADR-0036: a fresh `gate:taste` row no longer alerts the owner at entry —
+    # it is eligible for unattended pickup like any other owner-filed row,
+    # and its one owner moment moved to `state:review` (`review_row` covers
+    # that clause already).
     taste_row = {"number": 4, "title": "judge me", "updatedAt": "2026-08-04T00:00:00Z",
                 "body": "n/a", "labels": [{"name": "gate:taste"}, {"name": "state:planned"}]}
     review_row = {"number": 5, "title": "review me", "updatedAt": "2026-08-05T00:00:00Z",
@@ -5791,7 +5811,7 @@ def test_pending_names_the_owner_actions_and_the_loop_queue(tmp_path, monkeypatc
     assert len(calls) == 1
     assert doctor_calls == [rows]
 
-    assert "#4" in text and "gate:taste" in text
+    assert "#4 judge me" not in text  # gate:taste alone no longer waits on him (ADR-0036)
     assert "#6" in text and "no-auto" in text
     assert "#7" in text and "struck out" in text
     assert "#8" in text and "cannot close itself" in text
@@ -5873,6 +5893,48 @@ def test_parked_is_the_priority_floor(tmp_path):
 
     out = pendingmod.waiting_on_owner(root, [parked_taste])
     assert not out
+
+
+# --------------------------------------------------------------------------
+# ADR-0036 (#220) — `gate:taste` stops alerting at entry, becomes eligible on
+# the owner-filed route, and gets its own review prompt: the row's one owner
+# moment moves to `state:review`, not fired twice.
+# --------------------------------------------------------------------------
+
+def test_gate_taste_is_not_an_entry_clause():
+    """Asserted over `waiting_on_owner`'s own source, the shape of
+    `test_the_alerter_holds_no_trigger_predicate`: a fixture-only test can
+    pass by accident, a source assertion cannot."""
+    import inspect
+    src = inspect.getsource(pendingmod.waiting_on_owner)
+    assert "gate:taste" not in src
+
+
+def test_a_fresh_taste_row_does_not_wait_on_the_owner(tmp_path):
+    root = _root(tmp_path)
+    fresh_taste = {"number": 10, "title": "judge me",
+                   "labels": [{"name": "gate:taste"}, {"name": "state:planned"}]}
+    out = pendingmod.waiting_on_owner(root, [fresh_taste])
+    assert not out
+
+
+def test_a_taste_row_at_review_waits_on_the_owner(tmp_path):
+    root = _root(tmp_path)
+    reviewed_taste = {"number": 11, "title": "judge me",
+                      "labels": [{"name": "gate:taste"}, {"name": "state:review"}]}
+    out = pendingmod.waiting_on_owner(root, [reviewed_taste])
+    assert "#11" in "\n".join(out) and "the loop asked for eyes" in "\n".join(out)
+
+
+def test_the_bar_still_refuses_a_taste_row_naming_no_artefact():
+    """ADR-0036's critic §4: `_BAR_EXEMPT` is keyed on `state:`, never on
+    `gate:`, so a `gate:taste` row at `state:planned` with no acceptance
+    content is still refused. Pins that while the comment's struck premise
+    changes."""
+    no_body_taste = {"number": 12, "title": "judge me", "body": "n/a",
+                     "labels": [{"name": "gate:taste"}, {"name": "state:planned"}]}
+    problems = install.issue_invariants([no_body_taste], {})
+    assert any("states no outcome" in p for p in problems)
 
 
 def test_pending_says_an_empty_queue_and_an_unreadable_tracker_apart(tmp_path, monkeypatch):
@@ -5988,7 +6050,7 @@ def test_loops_records_that_a_role_edit_needs_a_restart():
 # silence only someone already looking at the tracker would notice.
 # --------------------------------------------------------------------------
 
-def _alert_row(number, extra=("gate:taste",), state="state:planned"):
+def _alert_row(number, extra=("no-auto",), state="state:planned"):
     labels = [{"name": state}, {"name": "gate:machine"}, *({"name": n} for n in extra)]
     return {"number": number, "title": f"row {number}", "labels": labels,
             "body": "n/a", "updatedAt": "2026-08-01T00:00:00Z"}
@@ -6019,7 +6081,7 @@ def test_an_attention_row_launches_one_remote_session(tmp_path, monkeypatch):
     argv = launched[0]
     assert "--remote-control" in argv
     name = argv[argv.index("--remote-control") + 1]
-    assert "#40" in name and "gate:taste" in name
+    assert "#40" in name and "no-auto" in name
 
     # Claimed before the launch: one `gh issue edit` call, ahead of `Popen`.
     assert len(edits) == 1
@@ -6112,6 +6174,20 @@ def test_the_alert_session_name_carries_the_project():
     assert len(truncated) == qops_pickup.ALERT_NAME_MAX
 
 
+def test_the_review_prompt_names_the_merge_and_the_reject_question():
+    """ADR-0036 §5. Stated limit (the ADR's critic §6): the session's conduct
+    is a prompt and a prompt is a preference, so this proves the text exists,
+    not that the session obeys — the only control available for an act that
+    is interactive by design."""
+    review_prompt = qops_pickup.alert_prompt(
+        220, "state:review: the loop asked for eyes")
+    assert "merge" in review_prompt.lower()
+    assert "ask what comes next" in review_prompt.lower()
+
+    other_prompt = qops_pickup.alert_prompt(220, "no-auto: withholds a spend")
+    assert "merge" not in other_prompt.lower()
+
+
 def test_the_alerter_holds_no_trigger_predicate():
     """ADR-0031 §1: the set is `pending.waiting_on_owner()`, never
     re-derived. No `gate:` literal anywhere, and no `state:` literal other
@@ -6171,7 +6247,7 @@ def test_a_dead_alert_session_releases_its_claim(tmp_path, monkeypatch, capsys):
     # The tracker, not the in-memory row, is what changed - so this pass's
     # own `waiting_on_owner()` still treats the row as claimed. The *next*
     # pass, reading the tracker's now-released labels, alerts again.
-    row["labels"] = [{"name": "state:planned"}, {"name": "gate:taste"}]
+    row["labels"] = [{"name": "state:planned"}, {"name": "no-auto"}]
     edits.clear()
     assert qops_pickup._alert([], root, cfg) == 0
     assert edits == []

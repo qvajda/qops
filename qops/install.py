@@ -913,8 +913,9 @@ def blocking_flags_drift() -> list[str]:
 def eligible(issue: dict) -> bool:
     """`ready:auto` is one route in; `origin:owner` naming a test is the other
     (ADR-0023). The second route writes no label — the filing was the grant,
-    so it stays a predicate, never an edit. `gate:taste` never qualifies by
-    that route: judgement is exactly what a named test cannot substitute for.
+    so it stays a predicate, never an edit. `gate:taste` qualifies by that
+    route too (ADR-0036): the owner's judgement is stated in the row and read
+    once, at `state:review`, not withheld from the build itself.
 
     Lives here, not in `scripts/qops_pickup.py`, so `doctor` (#71) can call
     the same predicate `pickup-loop` uses without `qops/` importing from
@@ -947,7 +948,7 @@ def eligible(issue: dict) -> bool:
         # `body` absent means the caller passed a fixture that cannot answer,
         # the same convention `doctor`'s R8 invariant uses.
         return names_a_test or issue.get("body") is None
-    if "gate:taste" in labels or "origin:owner" not in labels:
+    if "origin:owner" not in labels:
         return False
     return names_a_test
 
@@ -1121,9 +1122,10 @@ _ACCEPTANCE = re.compile(r"^\s*(?:#{1,6}\s*|\*{1,2})?acceptance\b[:*\s]*", re.I)
 # because the bar exists so *downstream* can tell what done looks like, and
 # nothing is downstream of done - a decision row goes `triage -> done` with no
 # build in between, so it never meets a planner that would have written an
-# acceptance section, and a `gate:taste` row cannot state a machine criterion
-# by its own nature. #46 resolved that way and turned the gate red on the PR
-# recording the decision (#89). `None` is a caller that cannot answer.
+# acceptance section. #46 resolved that way and turned the gate red on the PR
+# recording the decision (#89). `None` is a caller that cannot answer. Keyed on
+# `state:`, never on `gate:` - a `gate:taste` row is buildable (ADR-0036) and
+# still meets this bar like any other.
 _BAR_EXEMPT = (None, "state:triage", "state:done", "state:cancelled")
 
 
