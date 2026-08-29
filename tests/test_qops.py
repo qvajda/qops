@@ -5938,6 +5938,50 @@ def test_init_refuses_a_repo_that_already_has_a_config(tmp_path):
     assert rc == 2
 
 
+def test_init_scaffolds_a_repo_whose_ci_can_run(tmp_path):
+    """#252: a fresh scaffold had neither requirements.txt nor pyproject.toml,
+    so INSTALL_DEPS took its "neither" branch and every rendered job that
+    imports qops died with ModuleNotFoundError — and the default
+    `ci.test_command` exited 5 ("no tests ran") independently of that.
+    """
+    rc = initmod.main(["--project", "demo", "--repo", "a/b",
+                       "--python", "python3"], tmp_path, {})
+    assert rc == 0
+
+    from importlib.metadata import version as qops_version
+    req = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
+    assert f"qops=={qops_version('qops')}" in req
+
+    # the install block's first branch is the one this tree now selects
+    assert (tmp_path / "requirements.txt").exists()
+
+    cfg = qconfig.load(tmp_path)
+    cmd = install.context(cfg)["test_command"]
+    run = subprocess.run(cmd.split(), cwd=tmp_path, capture_output=True,
+                         text=True)
+    assert run.returncode == 0, f"{cmd}: {run.stdout}\n{run.stderr}"
+
+
+def test_doctor_reports_a_tree_whose_ci_cannot_start(tmp_path):
+    rc = initmod.main(["--project", "demo", "--repo", "a/b",
+                       "--python", "python3"], tmp_path, {})
+    assert rc == 0
+    cfg = qconfig.load(tmp_path)
+    assert install.install_branch_problem(tmp_path) == []
+
+    (tmp_path / "requirements.txt").unlink()
+    problems = install.install_branch_problem(tmp_path)
+    assert len(problems) == 1
+    assert "install block" in problems[0]
+
+
+def test_doctor_does_not_report_the_substrates_own_repo_for_the_install_branch():
+    """This repo has a pyproject.toml and correctly takes the second branch —
+    the check must key on which branch the tree selects, not on
+    `requirements.txt` being absent alone."""
+    assert install.install_branch_problem(REPO) == []
+
+
 def test_init_missing_flags_refuses_without_a_tty(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     rc = initmod.main(["--project", "x"], tmp_path, {})

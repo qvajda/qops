@@ -9,6 +9,7 @@ loaded config every other verb gets.
 
 import json
 import sys
+from importlib.metadata import version as _qops_version
 from pathlib import Path
 
 from . import install
@@ -151,6 +152,23 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     (root / "skills-lock.json").write_text(
         json.dumps({"version": 1, "skills": {}}, indent=2) + "\n",
         encoding="utf-8", newline="\n")
+
+    # #252: the install block's first branch (already correct, ADR-0024) only
+    # fires in a repo that pins qops — a fresh scaffold had neither
+    # requirements.txt nor pyproject.toml, took the "qops is a subdirectory"
+    # branch instead, and every rendered job died with ModuleNotFoundError.
+    # Pinned to the qops that is actually running `init`, not a hardcoded
+    # string that would go stale at the next tag.
+    (root / "requirements.txt").write_text(
+        f"qops=={_qops_version('qops')}\n", encoding="utf-8", newline="\n")
+
+    # ci.test_command defaults to `python -m pytest -q`, which exits 5 ("no
+    # tests ran") on an empty tree — a new repo needs a test file to exist
+    # anyway, since R8 refuses `ready:auto` on a body that names none.
+    tests_dir = root / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "test_config.py").write_text(
+        _render("test_config.py.tmpl", values), encoding="utf-8", newline="\n")
 
     for p in install.render_all(root, new_cfg) + install.render_adr_consumer(root):
         print(f"rendered {Path(p).relative_to(root)}")
