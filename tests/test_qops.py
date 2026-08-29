@@ -6765,3 +6765,76 @@ def test_a_conflicted_pr_check_skips_quietly_when_gh_fails(monkeypatch):
         raise RuntimeError("gh pr list: not authenticated")
     monkeypatch.setattr(install.reconcile, "open_prs", boom)
     assert install.conflicted_prs(cfg) == []
+
+
+def test_a_planned_row_missing_a_require_on_open_axis_returns_to_triage():
+    """#245: three rows split from one epic carried `state:planned` and no
+    `type:`/`gate:`. `state:planned` is the state the picker reads, so an
+    unspecified row sat in the queue looking queued. One reconcile pass pulls
+    it back to `state:triage` and names the axis."""
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 240, "labels": [
+                {"name": "state:planned"}, {"name": "origin:owner"},
+                {"name": "mission:post-launch"}]}])
+        return ""
+
+    cfg = {"validate": {"require_on_open": ["type", "state", "gate", "origin"]}}
+    report = reconcilemod.retriage_underspecified("o/r", cfg, run=run)
+    assert report["retriaged"] == [("240", ["type", "gate"])]
+    edit = next(c for c in calls if c[:2] == ["issue", "edit"])
+    assert "--add-label" in edit and "state:triage" in edit
+    assert edit[edit.index("--remove-label") + 1:].count("state:planned") == 1
+    assert "state:triage" not in [edit[i + 1] for i, a in enumerate(edit)
+                                  if a == "--remove-label"]
+    comment = next(c for c in calls if c[:2] == ["issue", "comment"])
+    assert "gate" in comment[-1] and "type" in comment[-1]
+
+
+def test_a_triage_row_missing_a_require_on_open_axis_is_not_recommented():
+    """#117: a row already in the state this sweep returns rows to gets no
+    edit and no repeat comment — otherwise every daily run says the same
+    sentence again."""
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([{"number": 241, "labels": [
+                {"name": "state:triage"}, {"name": "origin:owner"}]}])
+        raise AssertionError(f"unexpected call: {args}")
+
+    cfg = {"validate": {"require_on_open": ["type", "state", "gate", "origin"]}}
+    report = reconcilemod.retriage_underspecified("o/r", cfg, run=run)
+    assert report["retriaged"] == []
+    assert report["skipped"] == [("241", "already state:triage, missing "
+                                         "type, gate")]
+
+
+def test_require_on_open_retriage_spares_done_labelled_and_status_rows():
+    """The three ways this sweep would be wrong: demoting a finished row,
+    touching a fully-labelled one, and reading the pinned bookkeeping issue
+    (#167) as an unspecified sortie."""
+    def run(args):
+        if args[:2] == ["issue", "list"]:
+            return json.dumps([
+                {"number": 1, "labels": [{"name": "state:done"}]},
+                {"number": 2, "labels": [
+                    {"name": "state:planned"}, {"name": "type:code"},
+                    {"name": "gate:machine"}, {"name": "origin:owner"}]},
+                {"number": 3, "labels": [{"name": "qops:status"}]},
+            ])
+        raise AssertionError(f"unexpected call: {args}")
+
+    cfg = {"validate": {"require_on_open": ["type", "state", "gate", "origin"]},
+           "ci": {"status_issue_label": "qops:status"}}
+    report = reconcilemod.retriage_underspecified("o/r", cfg, run=run)
+    assert report["retriaged"] == []
+    assert dict(report["skipped"]) == {
+        "1": "state:done exempt",
+        "2": "carries every required axis",
+        "3": "bookkeeping row",
+    }

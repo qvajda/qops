@@ -26,6 +26,15 @@ If the work does not fit one session, say so and propose the split. Do not
 widen the issue to cover the mission, and do not fold in adjacent problems you
 noticed on the way. A sortie that no longer fits is a finding to report.
 
+**Every child of a split carries the full taxonomy, not just the parent's.**
+Copying `mission:` and `origin:` down and leaving `type:` and `gate:` to be
+decided later is how a row leaves triage having never been in it (CADR-0011) —
+`state:planned` is the state the picker reads, so an unspecified child sits in
+the queue looking queued. Deciding the gate in the child's prose ("Gate:
+machine.") is not deciding it: the label is what anything reads. `qops
+reconcile` returns such a row to `state:triage` and names the missing axis
+(#245), which is a repair, not a substitute for filing it right.
+
 ## Search before you draft
 
 Read the open backlog in **one** `gh issue list --state open --json
