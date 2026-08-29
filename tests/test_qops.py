@@ -184,6 +184,63 @@ def test_skill_body_drift_ignores_skills_qops_does_not_ship(tmp_path):
     assert install.skill_body_drift(tmp_path, cfg) == []
 
 
+# --------------------------------------------------------------------------
+# install refreshes the .claude/ bodies it already owns — #234, ADR-0037.
+# --------------------------------------------------------------------------
+
+def test_install_refreshes_a_stale_skill_body_and_role_file(tmp_path, capsys):
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-234-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+    (tmp_path / ".claude" / "skills" / "triage" / "SKILL.md").write_text(
+        "stale\n", encoding="utf-8")
+    (tmp_path / ".claude" / "agents" / "coder.md").write_text(
+        "stale\n", encoding="utf-8")
+
+    cfg = dict(qconfig.load(tmp_path), pickup_task=False)
+    capsys.readouterr()
+    rc = install.main([], tmp_path, cfg)
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    assert install.skill_body_drift(tmp_path, cfg) == []
+    assert install.agent_drift(tmp_path, cfg) == []
+    out = out.replace("\\", "/")
+    assert "rendered .claude/skills/triage/SKILL.md" in out
+    assert "rendered .claude/agents/coder.md" in out
+
+
+def test_install_leaves_declared_customizations_alone(tmp_path):
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-234-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+
+    cfg = dict(qconfig.load(tmp_path), pickup_task=False)
+    cfg["skills"] = dict(cfg["skills"], accept_drift=["triage"],
+                         native_skip=["pending"])
+    cfg["agents"] = dict(cfg.get("agents") or {}, coder={"accept_drift": True})
+
+    stale = {
+        tmp_path / ".claude" / "skills" / "triage" / "SKILL.md": b"stale triage\n",
+        tmp_path / ".claude" / "skills" / "pending" / "SKILL.md": b"stale pending\n",
+        tmp_path / ".claude" / "agents" / "coder.md": b"stale coder\n",
+    }
+    for path, body in stale.items():
+        path.write_bytes(body)
+
+    rc = install.main([], tmp_path, cfg)
+    assert rc == 0
+
+    for path, body in stale.items():
+        assert path.read_bytes() == body
+
+
+def test_unwritable_is_not_widened_by_the_refresh():
+    assert install.UNWRITABLE == (".claude/",)
+
+
 def test_gh_api_writes_are_never_allowlisted():
     """Sign-off item 10, as ADR-0038 leaves it. `gh api` bare is a GET and is
     allowlisted; a write to repo settings is an owner decision, and since #235

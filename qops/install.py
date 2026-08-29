@@ -216,6 +216,35 @@ def render_all(root: Path, cfg: dict) -> list[str]:
     return written
 
 
+def render_claude_bodies(root: Path, cfg: dict) -> list[str]:
+    """Refresh a consumer's `.claude/skills/<name>/SKILL.md` and
+    `.claude/agents/<role>.md` bodies to qops's current copy (ADR-0037).
+
+    `qops init` writes these once on a fresh repo and refuses on an existing
+    one; nothing after that ever rewrote them, so a consumer that bumped its
+    pin got `skill_body_drift`/`agent_drift` red with no verb that fixes
+    either. `refreshable_skills`/`refreshable_roles` are the same predicates
+    those checks read, so what gets skipped here is exactly what the check
+    exempts.
+    """
+    written = []
+    for name in refreshable_skills(cfg):
+        dest = Path(root) / ".claude" / "skills" / name / "SKILL.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        src = SKILL_TEMPLATES / name / "SKILL.md"
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8",
+                        newline="\n")
+        written.append(str(dest))
+    for role in refreshable_roles(cfg):
+        dest = Path(root) / ".claude" / "agents" / f"{role}.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        src = AGENT_TEMPLATES / f"{role}.md"
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8",
+                        newline="\n")
+        written.append(str(dest))
+    return written
+
+
 def drift(root: Path, cfg: dict) -> list[str]:
     problems = []
     for name in WORKFLOWS:
@@ -624,6 +653,24 @@ def upstream_skill_drift(declared: dict) -> list[str]:
 SKILL_TEMPLATES = TEMPLATES / "skills"
 
 
+def refreshable_skills(cfg: dict) -> list[str]:
+    """The native skill names `skill_body_drift` checks and `install` writes —
+    one predicate, two callers, so the writer cannot disagree with the check
+    (ADR-0037)."""
+    declared = cfg.get("skills") or {}
+    accepted = set(declared.get("accept_drift") or [])
+    skip = set(declared.get("native_skip") or [])
+    names = set(declared.get("native", [])) - accepted - skip
+    return sorted(n for n in names if (SKILL_TEMPLATES / n / "SKILL.md").exists())
+
+
+def refreshable_roles(cfg: dict) -> list[str]:
+    """The agent roles `agent_drift` checks and `install` writes (ADR-0037)."""
+    declared = cfg.get("agents") or {}
+    return [role for role in AGENT_ROLES
+            if not bool((declared.get(role) or {}).get("accept_drift", False))]
+
+
 def _differs(ref: Path, theirs: Path) -> bool:
     """One installed file against the copy qops ships, newline-insensitively —
     a consumer on Windows has CRLF where the package has LF, and that is not
@@ -651,15 +698,13 @@ def skill_body_drift(root: Path, cfg: dict) -> list[str]:
     names for the same reason `skills.native_skip` is one - the declared set
     is a list, not a map.
     """
-    declared = cfg.get("skills") or {}
-    accepted = set(declared.get("accept_drift") or [])
     problems = []
-    for name in sorted(set(declared.get("native", [])) - accepted):
+    for name in refreshable_skills(cfg):
         ref = SKILL_TEMPLATES / name / "SKILL.md"
         theirs = Path(root) / ".claude" / "skills" / name / "SKILL.md"
         # A missing one is `skill_drift`'s report, not this one's: two lines
         # for one fact is how a green run stops being read.
-        if not ref.exists() or not theirs.exists():
+        if not theirs.exists():
             continue
         if _differs(ref, theirs):
             problems.append(
@@ -686,10 +731,7 @@ def agent_drift(root: Path, cfg: dict) -> list[str]:
     merges it or accepts it deliberately - it never auto-overwrites.
     """
     problems = []
-    declared = cfg.get("agents") or {}
-    for role in AGENT_ROLES:
-        if bool((declared.get(role) or {}).get("accept_drift", False)):
-            continue
+    for role in refreshable_roles(cfg):
         ref = AGENT_TEMPLATES / f"{role}.md"
         theirs = Path(root) / ".claude" / "agents" / f"{role}.md"
         if not theirs.exists():
@@ -1782,7 +1824,8 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     if "--unregister-task" in argv:
         print(unregister_task(root, cfg))
         return 0
-    written = render_all(root, cfg) + render_adr_consumer(root)
+    written = (render_all(root, cfg) + render_adr_consumer(root)
+               + render_claude_bodies(root, cfg))
     for p in written:
         print(f"rendered {Path(p).relative_to(Path(root))}")
     for msg in write_scripts(root):
