@@ -263,6 +263,92 @@ def strike_stale_blockers(repo: str, limit: int = 50, run=gh) -> dict:
             report["failed"].append((issue, str(exc)))
     return report
 
+# #245: `validate.require_on_open` already makes a missing axis a defect
+# `issue_invariants` reports and `pending` surfaces - but tracker-wide, off a
+# PR, days after the splitting session ended. Nothing repaired it, and nothing
+# stopped the row advancing meanwhile: a sub-issue split from an epic is filed
+# `state:planned` with no `type:` and no `gate:`, and `state:planned` is the
+# state the picker reads. ADR-0028: a row may not leave `state:triage` unless
+# it is specified - a split row leaves triage having never been in it.
+#
+# Same exemption `strike_stale_blockers` makes, for the same reason: a
+# finished row is not going back through triage to be relabelled.
+_RETRIAGE_EXEMPT = ("state:done", "state:cancelled")
+
+
+def missing_axes(names: set[str], axes: list[str]) -> list[str]:
+    """The `require_on_open` namespaces this row carries no label in. Absence
+    only - a row carrying *two* `gate:` labels is a different defect, and
+    triage cannot repair it by re-reading the parent either; that one stays
+    `issue_invariants`' to report."""
+    return [ns for ns in axes
+            if not any(n.startswith(f"{ns}:") for n in names)]
+
+
+def retriage_underspecified(repo: str, cfg: dict, limit: int = 50,
+                            run=gh) -> dict:
+    """#245: an open row missing any `validate.require_on_open` axis is pulled
+    back to `state:triage` and told which axis is missing - the same shape
+    `unblock_stale` uses, where re-entering triage is the return path and
+    which state it deserves next is a planning read.
+
+    It never invents the missing label. `type:` and `gate:` are not derivable
+    from a parent epic the way `origin:` is (`derive_origin`): the first is a
+    read of the deliverable and the second is a judgement, and a machine
+    guessing either is worse than a row that says it does not know.
+
+    A row already in `state:triage` is skipped with a reason and no comment -
+    a check that comments the same sentence onto the same row forever is #117.
+    """
+    report = {"retriaged": [], "skipped": [], "failed": []}
+    axes = cfg.get("validate", {}).get("require_on_open",
+                                       ["type", "state", "gate"])
+    # The pinned status issue carries exactly one label by design, and
+    # `issue_invariants` already exempts it (#167). Demoting it to triage would
+    # be this sweep making machine bookkeeping look like an unspecified sortie.
+    bookkeeping = cfg.get("ci", {}).get("status_issue_label")
+    out = run(["issue", "list", "--repo", repo, "--state", "open",
+               "--limit", str(limit), "--json", "number,labels"])
+    for item in json.loads(out or "[]"):
+        issue = str(item["number"])
+        names = {l["name"] for l in item.get("labels", [])}
+        if bookkeeping and bookkeeping in names:
+            report["skipped"].append((issue, "bookkeeping row"))
+            continue
+        state = next((n for n in names if n.startswith("state:")), None)
+        if state in _RETRIAGE_EXEMPT:
+            report["skipped"].append((issue, f"{state} exempt"))
+            continue
+        if "no-auto" in names:
+            report["skipped"].append((issue, "no-auto"))
+            continue
+        missing = missing_axes(names, axes)
+        if not missing:
+            report["skipped"].append((issue, "carries every required axis"))
+            continue
+        if state == "state:triage":
+            report["skipped"].append(
+                (issue, f"already state:triage, missing {', '.join(missing)}"))
+            continue
+        try:
+            edit = ["issue", "edit", issue, "--repo", repo,
+                    "--add-label", "state:triage"]
+            for label in STATE_LABELS:
+                if label != "state:triage":
+                    edit += ["--remove-label", label]
+            run(edit)
+            run(["issue", "comment", issue, "--repo", repo, "--body",
+                 f"Returned to `state:triage` by `qops reconcile`: this row "
+                 f"carries no `{'` and no `'.join(missing)}` label, and "
+                 f"`validate.require_on_open` wants one of each. It is not "
+                 f"guessed here — a `type:` is a read of the deliverable and "
+                 f"a `gate:` is a judgement (ADR-0026, ADR-0028). Label it "
+                 f"and move it back on."])
+            report["retriaged"].append((issue, missing))
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            report["failed"].append((issue, str(exc)))
+    return report
+
 
 def merged_prs(repo: str, limit: int, run=gh) -> list[dict]:
     out = run(["pr", "list", "--repo", repo, "--state", "merged",
@@ -492,6 +578,13 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"strike skipped #{issue}: {why}")
     for issue, why in strike_report["failed"]:
         print(f"strike FAILED #{issue}: {why}", file=sys.stderr)
+    retriage_report = retriage_underspecified(repo, cfg, limit=limit)
+    for issue, missing in retriage_report["retriaged"]:
+        print(f"retriaged #{issue}: missing {', '.join(missing)}")
+    for issue, why in retriage_report["skipped"]:
+        print(f"retriage skipped #{issue}: {why}")
+    for issue, why in retriage_report["failed"]:
+        print(f"retriage FAILED #{issue}: {why}", file=sys.stderr)
     behind_report = advance_behind(repo, limit=limit)
     for issue, pr in behind_report["advanced"]:
         print(f"update-branch #{issue}: PR #{pr} was BEHIND")
@@ -502,4 +595,5 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     # either.
     return 1 if (report["failed"] or origin_report["failed"]
                  or unblock_report["failed"] or behind_report["failed"]
-                 or strike_report["failed"]) else 0
+                 or strike_report["failed"]
+                 or retriage_report["failed"]) else 0
