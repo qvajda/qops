@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import config, ledger
+from . import brief, config, ledger
 
 # git subcommands that write to the current branch
 _WRITES = {"commit", "push", "merge", "rebase"}
@@ -625,6 +625,10 @@ def hook(root: Path, cfg: dict) -> int:
         target = self_checkout(argv_tokens(cmd))
         if target:
             ledger.append(root, "checkout", {"session_id": session_id, "branch": target})
+            # The picker claims for an unattended run at pickup; a second
+            # writer on the same transition is the deadlock #60 was (#244).
+            if not ctx.get("unattended"):
+                brief.claim(root, target)
     return 0
 
 
