@@ -756,6 +756,50 @@ def test_brief_degrades_silently_when_labels_are_unavailable():
 
 
 # --------------------------------------------------------------------------
+# claim — #244. An interactive session that branches never wrote
+# `state:building`; only the picker did. `brief.claim` is the branch-time
+# writer, and it is the picker's own transition so it must never fire twice.
+# --------------------------------------------------------------------------
+
+class _ClaimGh:
+    def __init__(self, labels):
+        self.labels = labels
+        self.calls = []
+
+    def __call__(self, args):
+        self.calls.append(args)
+        if args[:2] == ["issue", "view"]:
+            return "\n".join(self.labels)
+        return ""
+
+
+def test_claim_moves_a_planned_row_to_building():
+    gh = _ClaimGh(["state:planned", "gate:machine"])
+    briefmod.claim(REPO, "feat/244-x", run=gh)
+    edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+    assert edits == [["issue", "edit", "244", "--add-label", "state:building",
+                      "--remove-label", "state:planned"]]
+
+
+def test_claim_is_silent_on_a_row_already_building():
+    gh = _ClaimGh(["state:building", "gate:machine"])
+    briefmod.claim(REPO, "feat/244-x", run=gh)
+    assert not [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+
+
+def test_claim_is_silent_on_a_row_in_review():
+    gh = _ClaimGh(["state:review", "gate:machine"])
+    briefmod.claim(REPO, "feat/244-x", run=gh)
+    assert not [c for c in gh.calls if c[:2] == ["issue", "edit"]]
+
+
+def test_claim_touches_nothing_off_a_no_issue_branch():
+    gh = _ClaimGh(["state:planned"])
+    briefmod.claim(REPO, "no-issue/quick-look", run=gh)
+    assert gh.calls == []
+
+
+# --------------------------------------------------------------------------
 # metrics — S1 must reproduce the Phase -1 method exactly
 # --------------------------------------------------------------------------
 
