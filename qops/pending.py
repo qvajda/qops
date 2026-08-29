@@ -123,6 +123,22 @@ def waiting_on_owner(root: Path, rows: list[dict]) -> list[str]:
                 and "no-auto" not in labels):
             out.append(f"#{num} {title} — gate:machine, state:done, still open: "
                        f"its PR merged and the row cannot close itself")
+        # #232: a row the launch cannot reach. `eligible()` accepts it, so it
+        # reads as queued, and `unwritable()` makes the picker skip it every
+        # pass, forever — the owner's own build, and nothing said so where he
+        # looks. Both predicates, never one: `unwritable()` alone is most of
+        # this backlog (every specced row names `.claude/` under *Must not
+        # touch*, which `unwritable()` does not read, but a row whose
+        # deliverable touches `.claude/` and is not eligible was never queued
+        # either), and reporting those fills this section with rows nothing
+        # was waiting on. No label follows — reach is a predicate, and
+        # `no-auto` here buys nothing (#127).
+        if install.eligible(row):
+            paths = install.unwritable(row.get("body") or "")
+            if paths:
+                out.append(f"#{num} {title} — the launch cannot write "
+                           f"{', '.join(paths)}: an owner session builds "
+                           f"this one (#71)")
         n = install.strikes(root, str(num), labels)
         if n >= install.STRIKES:
             out.append(f"#{num} {title} — struck out after {n} failed runs (#49)")

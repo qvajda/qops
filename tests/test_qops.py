@@ -322,6 +322,19 @@ def test_spec_to_issue_names_the_epic_adr_requirement():
         assert any(install.ADR_REF.fullmatch(tok) for tok in tokens),             f"{path}: no literal example path that ADR_REF accepts"
 
 
+def test_spec_to_issue_states_the_claude_reach_rule():
+    """#232: a row whose `Expected to touch:` names a `.claude/` path can never
+    be built unattended, and the filing surface that writes the `Files` section
+    said nothing about it — so such a row is filed looking queued. Both twins,
+    or `skill_body_drift` fails the next install."""
+    for path in SPEC_TO_ISSUE:
+        text = path.read_text(encoding="utf-8")
+        assert "Expected to touch:" in text, path
+        assert ".claude/" in text, path
+        assert "no-auto" in text, path
+        assert "#127" in text, path
+
+
 # --------------------------------------------------------------------------
 # guard — the hard blocks. ADR-0001: PreToolUse exit 2 blocks for real.
 # --------------------------------------------------------------------------
@@ -6175,6 +6188,33 @@ def test_a_claimed_row_is_with_the_owner_not_waiting_on_him(tmp_path, monkeypatc
 
     claims = pendingmod.claimed_rows(root, rows)
     assert {row["number"] for row, _ in claims} == {1, 3}
+
+
+def test_pending_lists_a_row_the_launch_cannot_reach(tmp_path):
+    """#232: `eligible()` accepts it and `unwritable()` makes the picker skip
+    it forever, so it reads as queued and is in no queue. Both predicates
+    together — a row naming `.claude/` that is not eligible was never queued,
+    and reporting it would fill the section with rows nothing waits on."""
+    root = _root(tmp_path)
+    labels = [{"name": "state:planned"}, {"name": "gate:machine"},
+              {"name": "origin:owner"}]
+
+    unreachable = {"number": 1, "title": "edit a role", "labels": labels,
+                   "body": "tests/test_qops.py::test_x" + _FILES_ROLE}
+    reachable = {"number": 2, "title": "edit a module", "labels": labels,
+                 "body": "tests/test_qops.py::test_x" + _FILES_OK}
+    claimed = {"number": 3, "title": "already with him",
+               "labels": labels + [{"name": "state:review"}],
+               "body": "tests/test_qops.py::test_x" + _FILES_ROLE}
+
+    text = "|".join(pendingmod.waiting_on_owner(
+        root, [unreachable, reachable, claimed]))
+
+    assert "#1" in text and ".claude/agents/triager.md" in text
+    assert "#2" not in text
+    # is_claimed() runs ahead of the clause: a live claim takes the row out
+    # of the set entirely, however unreachable the launch finds it.
+    assert "#3" not in text
 
 
 def test_parked_is_the_priority_floor(tmp_path):
