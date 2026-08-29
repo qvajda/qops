@@ -42,7 +42,7 @@ repo being operated on.
 ## Install
 
 ```bash
-pip install "qops @ git+https://github.com/qvajda/qops@v0.3.1"
+pip install "qops @ git+https://github.com/qvajda/qops@v0.4.0"
 ```
 
 Pin a tag, not a branch. A substrate that mutates under a live project is a
