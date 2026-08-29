@@ -66,7 +66,7 @@ from pathlib import Path
 # falls through to site-packages exactly as before.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from qops import config as qconfig, install, ledger, pending, review  # noqa: E402
+from qops import config as qconfig, install, ledger, pending, reconcile, review  # noqa: E402
 
 # eligible(), unwritable(), UNWRITABLE, plannable(), decomposable(),
 # interviewed(), strikes() and struck_out() live in qops/install.py (#71,
@@ -264,13 +264,20 @@ def main(argv: list[str]) -> int:
         return _review(root)
     if "--unreached-triage" in argv:
         return _print_unreached_triage(root)
+    cfg = qconfig.load(root)
+    # Rides this same registered run, ahead of `_run` (#241): the merge that
+    # triggered this fire cannot see itself on a later PR event, so a
+    # bot-merged row would otherwise sit `state:building` until the next PR
+    # event or the daily floor. `--launch`'s rule applies unchanged - a dry
+    # run reconciles nothing, same as `_review`.
+    reconcile_rc = _reconcile(root, cfg) if "--launch" in argv else 0
     rc = _run(argv, root)
     ledger.append(root, "pickup_ran", {"rc": rc})
     # The alert pass rides this run too (#120), and it owns its own read
     # rather than reusing `_run`'s: it must still fire when `_run` bailed
     # early, and `pending.backlog()` already prints the unreadable-vs-empty
     # distinction the pass needs.
-    alert_rc = _alert(argv, root, qconfig.load(root))
+    alert_rc = _alert(argv, root, cfg)
     # After the pickup and the alert, so a PR this run just opened is judged
     # this run - and behind `--launch`, by the rule this script already
     # follows: a dry run says what it would have done and writes nothing
@@ -279,7 +286,19 @@ def main(argv: list[str]) -> int:
     # a picker that could not pick.
     if "--launch" not in argv:
         return rc or alert_rc
-    return rc or alert_rc or _review(root)
+    return reconcile_rc or rc or alert_rc or _review(root)
+
+
+def _reconcile(root: Path, cfg: dict) -> int:
+    """The reconcile pass, ridden ahead of the picker rather than a second
+    scheduled task (#241). A config naming no tracker is a config defect
+    `doctor` already reports, not a picker failure repeated hourly - the same
+    reasoning `_alert` follows for the same check."""
+    if not cfg.get("repo"):
+        return 0
+    rc = reconcile.main([], root, cfg)
+    ledger.append(root, "reconcile_ran", {"rc": rc})
+    return rc
 
 
 def _review(root: Path) -> int:

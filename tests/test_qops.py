@@ -1050,6 +1050,15 @@ def test_write_scripts_writes_both_consumer_scripts(tmp_path):
     assert any("qops_pickup.py" in m for m in msgs)
 
 
+def test_the_two_pickup_script_copies_are_identical():
+    """`write_scripts` refuses to install when its two sources differ
+    (#241's own hazard: an edit landed in `scripts/qops_pickup.py` but not
+    `qops/templates/scripts/qops_pickup.py`, or the reverse, and nothing
+    caught it short of a consumer's `qops install` failing)."""
+    assert (REPO / "scripts" / "qops_pickup.py").read_text(encoding="utf-8") == \
+        (REPO / "qops" / "templates" / "scripts" / "qops_pickup.py").read_text(encoding="utf-8")
+
+
 def test_doctor_reports_a_missing_consumer_script(tmp_path):
     install.render_all(tmp_path, qconfig.load(REPO))
     install.write_scripts(tmp_path)
@@ -2652,6 +2661,8 @@ def test_an_unplannable_row_gets_one_clarification_and_stops(tmp_path, monkeypat
     monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
     monkeypatch.setattr(qops_pickup, "produced_plan", lambda *a, **k: False)
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    # This root names a tracker, so the reconcile pass would read it too.
+    monkeypatch.setattr(qops_pickup, "_reconcile", lambda root, cfg: 0)
     monkeypatch.setattr(qops_pickup, "backlog", lambda r: [_row(5)])
     # This root names a tracker, so the alert pass reads it too. Stub that
     # read: `qops.pending` binds its own `subprocess`, so patching this
@@ -2794,6 +2805,80 @@ def test_a_failed_decompose_does_not_touch_the_epics_labels(tmp_path, monkeypatc
     assert qops_pickup.strikes(root, "28") == 1
 
 
+# --- the reconcile pass rides the registered run (#241) ---
+#
+# `reconcile` can never see the merge that triggered its own run: on the
+# auto-merge path the merging PR event *is* the last PR event, so a
+# bot-merged row sat `state:building` for four hours on #234 until the owner
+# ran it by hand. `pickup-loop` is already registered hourly and names its
+# root, so the reconcile pass rides that run rather than a second cron (#12).
+
+def test_the_pickup_run_reconciles_before_it_picks(tmp_path, monkeypatch):
+    """Ordering is the assertion, not merely presence: a merge this same run
+    should observe must be cleared before `_run` reads the backlog, or the
+    picker still sees the shipped row as `state:building`."""
+    root = _root(tmp_path)
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/r\n",
+                                               encoding="utf-8")
+    order = []
+    monkeypatch.setattr(qops_pickup, "_reconcile",
+                        lambda root, cfg: order.append("reconcile") or 0)
+    monkeypatch.setattr(qops_pickup, "_run",
+                        lambda argv, root: order.append("run") or 0)
+    monkeypatch.setattr(qops_pickup, "_alert", lambda *a, **k: 0)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    assert order == ["reconcile", "run"]
+
+
+def test_a_dry_pickup_run_reconciles_nothing(tmp_path, monkeypatch):
+    """`_review`'s own rule, unchanged for the reconcile pass: a run without
+    `--launch` writes no tracker call anywhere."""
+    root = _root(tmp_path)
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/r\n",
+                                               encoding="utf-8")
+    called = []
+    monkeypatch.setattr(qops_pickup, "_reconcile",
+                        lambda root, cfg: called.append(True) or 0)
+    monkeypatch.setattr(qops_pickup, "_run", lambda argv, root: 0)
+    monkeypatch.setattr(qops_pickup, "_alert", lambda *a, **k: 0)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+
+    assert qops_pickup.main(["--root", str(root)]) == 0
+    assert called == []
+
+
+def test_a_launched_reconcile_pass_appends_a_ledger_entry(tmp_path, monkeypatch):
+    """Verify by measurement, not the exit code: a reconcile pass that ran
+    but left no ledger row did not happen, the same rule `_review`'s
+    `review_ran` follows."""
+    root = _root(tmp_path)
+    (root / ".qops" / "config.yml").write_text("project: x\nrepo: o/r\n",
+                                               encoding="utf-8")
+    monkeypatch.setattr(qops_pickup.reconcile, "main", lambda *a, **k: 0)
+    assert qops_pickup._reconcile(root, {"repo": "o/r"}) == 0
+    events = [r["event"] for r in ledger.read(root)]
+    assert "reconcile_ran" in events
+
+
+def test_a_reconcile_pass_reports_its_rc_in_the_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(qops_pickup.reconcile, "main", lambda *a, **k: 1)
+    assert qops_pickup._reconcile(tmp_path, {"repo": "o/r"}) == 1
+    rec = [r for r in ledger.read(tmp_path) if r["event"] == "reconcile_ran"][0]
+    assert rec["rc"] == 1
+
+
+def test_a_config_naming_no_tracker_reconciles_nothing_not_a_failure(tmp_path):
+    """The same reasoning `_alert` follows for its own repo check: a config
+    naming no tracker is `doctor`'s defect to report, not an hourly picker
+    failure."""
+    calls = []
+    assert qops_pickup._reconcile(tmp_path, {}) == 0
+    assert not [r for r in ledger.read(tmp_path) if r["event"] == "reconcile_ran"]
+    assert calls == []
+
+
 def test_an_unreadable_queue_fails_the_run_and_an_empty_one_does_not(tmp_path, monkeypatch):
     root = _root(tmp_path)
     # `backlog()` is the seam since #82: one query, two filters over it.
@@ -2869,6 +2954,7 @@ def test_a_clarification_clears_its_parent_or_marks_it_taste(tmp_path, monkeypat
     child = _clarification_row()
     monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
     monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    monkeypatch.setattr(qops_pickup, "_reconcile", lambda root, cfg: 0)
     monkeypatch.setattr(qops_pickup, "backlog", lambda r: [child])
     # This root names a tracker, so the alert pass reads it too. Stub that
     # read: `qops.pending` binds its own `subprocess`, so patching this
