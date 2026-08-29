@@ -122,6 +122,17 @@ row, so it never leaves `state:triage` and shows as an empty decompose queue
 never reaches it, and nothing reports the near-miss. Paste the path from the
 tree; do not retype it from the ADR's title.
 
+**A row whose `Expected to touch:` names a path under `.claude/` is an owner
+build, and the body must say so.** The unattended launch runs under
+`--permission-mode acceptEdits`, which grants file edits and *not* edits to the
+files that configure Claude Code itself — so the picker's reach check skips
+such a row, every pass, forever, while it still reads as queued. Write the fact
+in plain words: *the launch cannot write this path, so an owner session builds
+this one.* File it **without `no-auto`**: the reach check withholds the build
+for free, while the flag additionally costs a manual merge and a manual close
+(#127). `gate:` answers judgement and `no-auto` answers authority; this is
+reach, which is a predicate, not a label.
+
 ## Blocking edges
 
 Declare dependencies as native tracker links (`gh issue edit --add-sub-issue`,
