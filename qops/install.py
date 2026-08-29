@@ -133,6 +133,43 @@ def write_scripts(root: Path) -> list[str]:
     return messages
 
 
+# #252: a tree with neither `requirements.txt` nor `pyproject.toml` takes
+# `INSTALL_DEPS`'s third branch, which installs only pyyaml — every rendered
+# job that imports qops (`gate.yml`, `guard.yml`, `digest.yml`, `automerge.yml`'s
+# reconcile job, `reviewer.yml`) then dies with ModuleNotFoundError, and two of
+# those are required status checks, so nothing ever merges. Keyed on which
+# branch the tree selects, not on `requirements.txt` being absent alone — this
+# repo has a `pyproject.toml` and correctly takes the second branch.
+def install_branch_problem(root: Path) -> list[str]:
+    root = Path(root)
+    if (root / "requirements.txt").exists() or (root / "pyproject.toml").exists():
+        return []
+    return ["install block (INSTALL_DEPS) would take the `else` branch here "
+            "and install only pyyaml — every job that imports qops dies with "
+            "ModuleNotFoundError. Add a requirements.txt pinning qops."]
+
+
+# A test file named `test_*.py` or `*_test.py` anywhere in the tree — the
+# same loose shape `_NAMES_A_TEST` accepts. Cheap and mechanical: this does
+# not run pytest (`doctor` touches no network and spends nothing), it checks
+# for the one thing that makes the default `python -m pytest -q` exit 5 ("no
+# tests ran") on an otherwise-clean tree.
+def test_command_problem(root: Path, cfg: dict) -> list[str]:
+    cmd = context(cfg)["test_command"]
+    if "pytest" not in cmd:
+        return []                      # a custom command owns its own risk
+    root = Path(root)
+    for p in root.rglob("*.py"):
+        if ".git" in p.parts:
+            continue
+        if p.name.startswith("test_") or p.name.endswith("_test.py"):
+            return []
+    return [f"ci.test_command (`{cmd}`) would exit 5 on this tree — no "
+            f"test_*.py or *_test.py file exists; add one (a fresh repo needs "
+            f"a test file to exist anyway, since R8 refuses `ready:auto` on a "
+            f"body that names none)"]
+
+
 def script_drift(root: Path) -> list[str]:
     """Its own check, called from `doctor` beside `skill_drift` — not folded
     into `drift()`. `drift()` answers "does what `render_all` rendered still
@@ -1768,6 +1805,8 @@ def doctor(root: Path, cfg: dict, issues=_UNFETCHED) -> list[str]:
     here, so a run of both never issues the query twice."""
     problems = drift(root, cfg)
     problems += version_bump_required(root)
+    problems += install_branch_problem(root)
+    problems += test_command_problem(root, cfg)
     if not wants_the_task(cfg):
         # A project that declared no picker is not drifting from one. It is
         # still checked for the opposite: a task registered under this

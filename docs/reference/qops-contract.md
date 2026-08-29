@@ -204,10 +204,17 @@ Two scripts sit outside the CLI, both rooted the same way:
 3. a `skills:` block matching what is in `.claude/skills/`, with a
    `skills-lock.json` ref per external;
 4. the seven workflows rendered — `qops install`;
-5. the label taxonomy created — `python scripts/qops_import.py --labels`.
+5. the label taxonomy created — `python scripts/qops_import.py --labels`;
+6. a `requirements.txt` pinning qops, so the install block's first branch
+   fires instead of its "neither" one — otherwise every rendered job that
+   imports qops (`gate.yml`, `guard.yml`, `digest.yml`, `automerge.yml`'s
+   reconcile job, `reviewer.yml`) dies with `ModuleNotFoundError` (#252);
+7. a test file, so the default `ci.test_command` (`python -m pytest -q`)
+   does not exit 5 ("no tests ran") on an otherwise-clean tree (#252).
 
-`qops init` writes 1-4 in an empty folder and renders the workflows; it cannot
-do 5, because the labels live on a GitHub repo that has to exist first.
+`qops init` writes 1-4, 6 and 7 in an empty folder and renders the workflows;
+it cannot do 5, because the labels live on a GitHub repo that has to exist
+first.
 
 And two settings that are the repo owner's, not the package's, without which
 `automerge-loop` cannot do its job:
