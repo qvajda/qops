@@ -287,18 +287,39 @@ def test_the_pending_skill_defers_to_the_verb():
         assert forbidden not in installed, forbidden
 
 
+SPEC_TO_ISSUE = [
+    REPO / ".claude" / "skills" / "spec-to-issue" / "SKILL.md",
+    REPO / "qops" / "templates" / "skills" / "spec-to-issue" / "SKILL.md",
+]
+
+
 def test_spec_to_issue_searches_before_it_drafts():
     """#162: a parked row is a good idea made quiet, not gone — the skill must
-    check the backlog before drafting, or a later session re-files it fresh."""
-    paths = [
-        REPO / ".claude" / "skills" / "spec-to-issue" / "SKILL.md",
-        REPO / "qops" / "templates" / "skills" / "spec-to-issue" / "SKILL.md",
-    ]
-    for path in paths:
+    check the backlog before drafting, or a later session re-files it fresh.
+    #227 extends the same test rather than adding a second: `state:blocked` is
+    quiet for the same reason (it is in no queue at all), it has already cost
+    one duplicate, and two quiet-row rules held by one test cannot diverge."""
+    for path in SPEC_TO_ISSUE:
         text = path.read_text(encoding="utf-8")
         assert "gh issue list --state open" in text, path
         assert "priority:parked" in text, path
         assert "unpark" in text.lower(), path
+        assert "state:blocked" in text, path
+        assert "unblock" in text.lower(), path
+
+
+def test_spec_to_issue_names_the_epic_adr_requirement():
+    """#227 trap 1. The example path is executed against the regex, not read:
+    a section that names a path `ADR_REF` rejects would pass a text-only
+    assertion and leave the trap exactly where it was."""
+    for path in SPEC_TO_ISSUE:
+        text = path.read_text(encoding="utf-8")
+        assert "type:epic" in text, path
+        assert "docs/adr/" in text, path
+        # Split rather than pair backticks: the body template above is a
+        # fenced block, and its ``` runs make backtick pairing meaningless.
+        tokens = (tok.strip(".,;:—") for tok in re.split(r"[\s`]+", text))
+        assert any(install.ADR_REF.fullmatch(tok) for tok in tokens),             f"{path}: no literal example path that ADR_REF accepts"
 
 
 # --------------------------------------------------------------------------
