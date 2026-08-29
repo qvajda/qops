@@ -232,9 +232,13 @@ And one that is neither the package's nor the repo's, but the machine's:
 
 8. **The workspace must be trusted once** (`hasTrustDialogAccepted` in
    `~/.claude.json`, set by running Claude Code interactively in the root a
-   single time). Until it is, **every `permissions.allow` and `permissions.deny`
-   entry in `.claude/settings.json` is ignored** — including the `gh api -X`
-   denials that ADR-0016 and ADR-0020 rest on. It degrades quietly: a launched
-   sortie still works under `--permission-mode acceptEdits` and merely prints a
-   warning, so the controls are absent while the file that declares them, and
-   the test that asserts it, both look correct (#19).
+   single time). Until it is, **`permissions.allow` rules and
+   `additionalDirectories` are ignored** — trust gates what *grants* capability.
+   `deny` and `ask` rules are unaffected, because they only restrict, and
+   PreToolUse hooks fire in an untrusted folder too, which is why `qops guard`
+   holds on a `claude -p` launch that has never trusted its root (ADR-0038,
+   measured against Anthropic's published permissions documentation; this
+   corrects the wider reading of #19 that this item carried until then).
+   It still degrades quietly on the allow half: a launched sortie works under
+   `--permission-mode acceptEdits` and merely prints a warning, so an
+   allowlisted call the owner expected to run silently prompts or stops.

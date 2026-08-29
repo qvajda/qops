@@ -80,6 +80,44 @@ def issue_from_branch(branch: str):
     return int(m.group(1)) if m else None
 
 
+def _claim_gh(root: Path):
+    def run(args: list[str]) -> str:
+        p = subprocess.run(["gh", *args], cwd=root, capture_output=True,
+                           text=True, timeout=10)
+        if p.returncode != 0:
+            raise RuntimeError(p.stderr.strip())
+        return p.stdout.strip()
+    return run
+
+
+def claim(root: Path, branch: str, run=None) -> None:
+    """A branch an interactive session cuts claims the row it names (#244).
+
+    `state:planned` -> `state:building`, once, at the moment the branch is
+    cut - the picker takes this same transition for an unattended run, and a
+    second writer on it is the deadlock #60 was, so this reads the row first
+    and only writes when it is still `state:planned`. Silent on any other
+    state (already `state:building`, `state:review`, ...) and on a branch
+    the `<type>/<issue#>-<slug>` shape does not name (ADR-0019).
+    """
+    issue = issue_from_branch(branch)
+    if not issue:
+        return
+    call = run or _claim_gh(root)
+    try:
+        labels = call(["issue", "view", str(issue), "--json", "labels",
+                       "-q", ".labels[].name"]).split()
+    except Exception:
+        return
+    if "state:planned" not in labels:
+        return
+    try:
+        call(["issue", "edit", str(issue), "--add-label", "state:building",
+              "--remove-label", "state:planned"])
+    except Exception:
+        return
+
+
 def routing(labels: list[str]) -> str:
     """The ADR-0017 verdict for one issue, from its labels alone.
 
