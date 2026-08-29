@@ -24,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import install
+from . import install, ledger
 
 PLAN_NAME = "migrate-plan.json"
 
@@ -95,6 +95,35 @@ MECHANICAL = {"gate": "gate:machine", "origin": "origin:pending",
 _REQUIRED_FALLBACK = ("type", "state", "gate", "origin")
 
 
+def gate_verdict(names: set) -> dict | None:
+    """The `gate:` question for one row, under ADR-0036's predicate change —
+    or `None` where the row is untouched (the unsure default of CLAUDE.md
+    stays unsure, not re-tasted).
+
+    Only one direction is derivable from labels alone and so may be a
+    `flip` — everything else is real but needs the owner's read, so it goes
+    on `needs` instead of being written.
+    """
+    if "type:decision" in names and "gate:machine" in names:
+        return {"to": "gate:taste", "from": "gate:machine",
+                "reason": "type:decision builds a set of proposals under "
+                "ADR-0036 — the owner's review picks one, which is "
+                "gate:taste by construction."}
+    if "type:research" in names and "gate:machine" in names:
+        return {"needs": "gate",
+                "reason": "ADR-0036 struck ADR-0026 R4's wholesale "
+                "de-tasting of type:research — this row is gate:taste again "
+                "only if the finding is meant for the owner's eyes, not "
+                "derivable from labels."}
+    if "gate:taste" in names and "type:decision" not in names \
+            and "type:research" not in names:
+        return {"needs": "gate",
+                "reason": "labelled gate:taste because its deliverable was "
+                "a choice — under ADR-0036 that may now be an ordinary row "
+                "that builds unattended, or gate:machine outright."}
+    return None
+
+
 def propose(issues: list[dict], cfg: dict | None = None) -> dict:
     """Pure: issues in, a plan out. No I/O, so a fixture drives it directly.
 
@@ -115,20 +144,29 @@ def propose(issues: list[dict], cfg: dict | None = None) -> dict:
     rows = []
     for issue in in_scope(issues, cfg):
         names = {l["name"] for l in issue.get("labels", [])}
-        add, needs = [], []
+        add, remove, needs = [], [], []
         for ns in required:
             if any(n.startswith(f"{ns}:") for n in names):
                 continue
             (add.append(MECHANICAL[ns]) if ns in MECHANICAL
              else needs.append(ns))
+        gate_reason = None
+        verdict = gate_verdict(names)
+        if verdict is not None:
+            gate_reason = verdict["reason"]
+            if "to" in verdict:
+                add.append(verdict["to"])
+                remove.append(verdict["from"])
+            elif "gate" not in needs:
+                needs.append(verdict["needs"])
         body = issue.get("body") or ""
         state = next((n for n in names if n.startswith("state:")), None)
         new_body = None
         if state not in install._BAR_EXEMPT and not install.states_an_outcome(body):
             new_body = body.rstrip("\n") + _OUTCOME_STUB
         rows.append({"number": issue["number"], "add_labels": add,
-                     "remove_labels": [], "body": new_body, "needs": needs,
-                     "disposition": "keep"})
+                     "remove_labels": remove, "body": new_body, "needs": needs,
+                     "disposition": "keep", "gate_reason": gate_reason})
     return {"fingerprint": fingerprint(in_scope(issues, cfg)), "rows": rows,
             "applied": False}
 
@@ -178,6 +216,8 @@ def execute(root: Path, repo: str, cfg: dict | None = None,
         applied.append(num)
     plan["applied"] = True
     path.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+    ledger.append(root, "migrate_execute",
+                  {"repo": repo, "applied": len(applied)})
     return {"ok": True, "reason": "", "applied": applied}
 
 
@@ -232,6 +272,8 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
             if changes:
                 print(f"#{row['number']} [{row['disposition']}]: "
                       f"{'; '.join(changes)}")
+                if row.get("gate_reason"):
+                    print(f"    gate: {row['gate_reason']}")
         changed = sum(1 for r in plan["rows"]
                      if r["add_labels"] or r["remove_labels"]
                      or r["body"] is not None)

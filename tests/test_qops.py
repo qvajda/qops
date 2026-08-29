@@ -3121,6 +3121,88 @@ def test_a_failed_row_leaves_a_reason_behind_and_fails_the_run(tmp_path, monkeyp
     assert reconcilemod.main([], tmp_path, {"repo": "o/r"}) == 1
 
 
+def test_reconcile_clears_a_blocker_it_closed_in_the_same_run(tmp_path, monkeypatch):
+    """#230: `unblock_stale()`/`strike_stale_blockers()` read the tracker
+    *before* `reconcile()` closed the blocker they're both reading for, so a
+    blocker closed by this run stayed unclear for a full day. `main()` now
+    runs `reconcile()` first. Stubs `subprocess.run` (not the sweeps, per the
+    pattern above) with a router over a mutable in-memory tracker, so a write
+    one sweep makes is visible to the sweeps after it — the same tracker,
+    not a cache passed between them."""
+    tracker = {
+        "1": {"state": "OPEN", "labels": ["state:blocked"],
+              "body": "**Blocked by #2.** Nothing to clear yet."},
+        "2": {"state": "OPEN", "labels": ["state:building", "gate:machine"]},
+    }
+    merged = [{"number": 200, "headRefName": "fix/2-blocker",
+               "mergedBy": {"login": "github-actions[bot]", "is_bot": True}}]
+
+    def route(args):
+        if args[:2] == ["pr", "list"]:
+            state = args[args.index("--state") + 1]
+            return json.dumps(merged if state == "merged" else [])
+        if args[:2] == ["issue", "list"]:
+            if "--label" in args:
+                label = args[args.index("--label") + 1]
+                if label == "state:blocked":
+                    nums = [n for n, i in tracker.items()
+                            if "state:blocked" in i["labels"]
+                            and i["state"] == "OPEN"]
+                    return json.dumps([{"number": int(n)} for n in nums])
+                return json.dumps([])  # origin:pending
+            items = [{"number": int(n), "body": i.get("body", ""),
+                      "labels": [{"name": l} for l in i["labels"]]}
+                     for n, i in tracker.items() if i["state"] == "OPEN"]
+            return json.dumps(items)
+        if args[:2] == ["issue", "view"]:
+            num = args[2]
+            fields = args[args.index("--json") + 1]
+            i = tracker[num]
+            out = {}
+            if "state" in fields:
+                out["state"] = i["state"]
+            if "labels" in fields:
+                out["labels"] = [{"name": l} for l in i["labels"]]
+            if "body" in fields:
+                out["body"] = i.get("body", "")
+            if "comments" in fields:
+                out["comments"] = []
+            return json.dumps(out)
+        if args[:2] == ["issue", "edit"]:
+            i = tracker[args[2]]
+            idx = 3
+            while idx < len(args):
+                if args[idx] == "--add-label":
+                    if args[idx + 1] not in i["labels"]:
+                        i["labels"].append(args[idx + 1])
+                    idx += 2
+                elif args[idx] == "--remove-label":
+                    if args[idx + 1] in i["labels"]:
+                        i["labels"].remove(args[idx + 1])
+                    idx += 2
+                elif args[idx] == "--body":
+                    i["body"] = args[idx + 1]
+                    idx += 2
+                else:
+                    idx += 1
+            return ""
+        if args[:2] == ["issue", "close"]:
+            tracker[args[2]]["state"] = "CLOSED"
+            return ""
+        return "[]"
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 0, route(cmd[1:]), "")
+
+    monkeypatch.setattr(reconcilemod.subprocess, "run", fake_run)
+    reconcilemod.main([], tmp_path, {"repo": "o/r"})
+
+    assert tracker["2"]["state"] == "CLOSED"
+    assert "state:blocked" not in tracker["1"]["labels"]
+    assert "state:triage" in tracker["1"]["labels"]
+    assert "~~**Blocked by #2.**~~" in tracker["1"]["body"]
+
+
 def test_a_failing_origin_sweep_does_not_take_the_backstop_down():
     """`derive_origin()` runs ahead of `reconcile()` in `main()`. Raising there
     would stop merged rows reaching `state:done` — the one job this module
@@ -5537,6 +5619,66 @@ def test_migrate_propose_fills_only_the_mechanical_namespaces():
     assert row["needs"] == ["type"]
 
 
+def test_migrate_proposes_the_adr_0036_gate():
+    """ADR-0036's predicate replaces ADR-0026's: only type:decision's flip is
+    derivable from labels alone. type:research and a bare gate:taste land on
+    `needs`, an untouched type:code + gate:machine row stays untouched, and
+    every gate_reason in the fixture is a distinct sentence (#222)."""
+    decision = {"number": 400, "body": "## Acceptance\n\nchecked.",
+                "labels": [{"name": "type:decision"}, {"name": "gate:machine"},
+                          {"name": "state:planned"}, {"name": "origin:owner"}]}
+    research = {"number": 401, "body": "## Acceptance\n\nchecked.",
+                "labels": [{"name": "type:research"}, {"name": "gate:machine"},
+                          {"name": "state:planned"}, {"name": "origin:owner"}]}
+    taste_code = {"number": 402, "body": "## Acceptance\n\nchecked.",
+                  "labels": [{"name": "type:code"}, {"name": "gate:taste"},
+                            {"name": "state:planned"}, {"name": "origin:owner"}]}
+    untouched = {"number": 403, "body": "## Acceptance\n\nchecked.",
+                 "labels": [{"name": "type:code"}, {"name": "gate:machine"},
+                           {"name": "state:planned"}, {"name": "origin:owner"}]}
+    plan = migratemod.propose([decision, research, taste_code, untouched])
+    rows = {r["number"]: r for r in plan["rows"]}
+
+    d = rows[400]
+    assert "gate:taste" in d["add_labels"] and "gate:machine" in d["remove_labels"]
+    assert d["gate_reason"]
+
+    r = rows[401]
+    assert "gate" in r["needs"]
+    assert not any(l.startswith("gate:") for l in r["add_labels"] + r["remove_labels"])
+    assert r["gate_reason"]
+
+    t = rows[402]
+    assert "gate" in t["needs"]
+    assert not any(l.startswith("gate:") for l in t["add_labels"] + t["remove_labels"])
+    assert t["gate_reason"]
+
+    u = rows[403]
+    assert not any(l.startswith("gate:") for l in u["add_labels"] + u["remove_labels"])
+    assert "gate" not in u["needs"]
+    assert u["gate_reason"] is None
+
+    reasons = [d["gate_reason"], r["gate_reason"], t["gate_reason"]]
+    assert len(set(reasons)) == len(reasons)
+
+
+def test_migrate_execute_appends_one_ledger_event_on_success(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", run=gh)
+    migratemod.execute(tmp_path, "o/r", run=gh)
+    events = [e for e in ledger.read(tmp_path) if e["event"] == "migrate_execute"]
+    assert len(events) == 1 and events[0]["applied"] == 1
+
+
+def test_migrate_execute_appends_no_ledger_event_on_refusal(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    result = migratemod.execute(tmp_path, "o/r", run=gh)
+    assert not result["ok"]
+    assert [e for e in ledger.read(tmp_path) if e["event"] == "migrate_execute"] == []
+
+
 def test_migrate_execute_survives_the_bookkeeping_row_changing(tmp_path):
     """The fingerprint covers what the plan was drawn against, which is the
     rows the plan holds. Hashing the status issue too would let the 06:00
@@ -5752,6 +5894,61 @@ def test_doctor_does_not_judge_the_owner_preconditions_on_a_pull_request(
     # Not dropped, only moved off the merge path: the instrument still reads
     # them where they are answerable, and `init` prints them as next steps.
     assert len(install.owner_preconditions(tmp_path, cfg)) == 3
+
+
+def test_unreadable_branch_protection_is_not_a_strict_problem(
+        tmp_path, monkeypatch, capsys):
+    """#231. A token with no permission to read a setting reads the same as
+    an unset one today, which makes `digest.yml` permanently red on a repo
+    that is actually configured correctly. Permission-denied — an `HTTP 403`,
+    or a `200` whose payload omits the admin-only keys — must be a note, not
+    a problem."""
+    cfg = {"repo": "qvajda/qops", "default_branch": "master"}
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["gh", "api"] and "protection" in cmd[2]:
+            return subprocess.CompletedProcess(
+                cmd, 1, "", 'gh: HTTP 403: Resource not accessible')
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"full_name": "qvajda/qops"}), "")
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+    monkeypatch.setattr(install, "_trust_state", lambda root: "trusted")
+
+    problems = install.owner_preconditions(tmp_path, cfg)
+    assert problems == [], problems
+    out = capsys.readouterr().out
+    assert "branch protection" in out and "403" in out
+    assert "allow-auto-merge" in out.lower() or "auto-merge" in out.lower()
+    assert "admin-only" in out
+
+
+def test_branch_protection_confirmed_off_is_still_a_problem(
+        tmp_path, monkeypatch):
+    """#231. The fail-closed half must survive: a real misconfiguration, or a
+    repo that plain does not exist yet, is exactly what contract #6 / #7
+    exist to catch, and must not be swallowed as "unreadable"."""
+    cfg = {"repo": "qvajda/qops", "default_branch": "master"}
+    monkeypatch.setattr(install, "_trust_state", lambda root: "trusted")
+
+    # required_status_checks absent, repo settings present and false.
+    def fake_run_off(cmd, **kw):
+        if "protection" in cmd[2]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({}), "")
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"allow_auto_merge": False,
+                                "delete_branch_on_merge": False}), "")
+    monkeypatch.setattr(install.subprocess, "run", fake_run_off)
+    problems = install.owner_preconditions(tmp_path, cfg)
+    assert any("branch protection" in p for p in problems)
+    assert any("auto-merge" in p for p in problems)
+
+    # A 404 (repo does not exist yet) fails closed on both, not "unreadable".
+    def fake_run_404(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, "", "gh: HTTP 404: Not Found")
+    monkeypatch.setattr(install.subprocess, "run", fake_run_404)
+    problems = install.owner_preconditions(tmp_path, cfg)
+    assert any("branch protection" in p for p in problems)
+    assert any("auto-merge" in p for p in problems)
 
 
 def test_doctor_reports_an_untrusted_root_without_writing_to_it(
