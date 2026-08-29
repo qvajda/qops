@@ -1115,13 +1115,35 @@ def test_doctor_reports_a_missing_consumer_script(tmp_path):
     assert install.drift(tmp_path, qconfig.load(REPO)) == []
 
 
-def test_write_scripts_does_not_silently_overwrite_a_local_edit(tmp_path):
+def test_install_refreshes_a_stale_consumer_script(tmp_path, capsys):
+    rc = initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-256-fixture",
+         "--python", "python3"], tmp_path, {})
+    assert rc == 0
+    (tmp_path / "scripts" / "qops_pickup.py").write_text("stale\n", encoding="utf-8")
+
+    cfg = dict(qconfig.load(tmp_path), pickup_task=False)
+    capsys.readouterr()
+    rc = install.main([], tmp_path, cfg)
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    assert (tmp_path / "scripts" / "qops_pickup.py").read_text(encoding="utf-8") == \
+        (install.SCRIPTS_SRC / "qops_pickup.py").read_text(encoding="utf-8")
+    assert "qops_pickup.py" in out
+
+
+def test_script_drift_reports_a_stale_script(tmp_path):
     install.write_scripts(tmp_path)
-    edited = tmp_path / "scripts" / "qops_import.py"
-    edited.write_text("# a consumer's local edit\n", encoding="utf-8")
-    msgs = install.write_scripts(tmp_path)
-    assert edited.read_text(encoding="utf-8") == "# a consumer's local edit\n"
-    assert any("qops_import.py" in m and "differs" in m for m in msgs)
+    assert install.script_drift(tmp_path) == []
+
+    (tmp_path / "scripts" / "qops_pickup.py").write_text("stale\n", encoding="utf-8")
+    problems = " ".join(install.script_drift(tmp_path))
+    assert "qops_pickup.py" in problems
+
+    (tmp_path / "scripts" / "qops_pickup.py").unlink()
+    problems = " ".join(install.script_drift(tmp_path))
+    assert "qops_pickup.py" in problems and "missing" in problems
 
 
 # --------------------------------------------------------------------------

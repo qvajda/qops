@@ -110,10 +110,11 @@ SCRIPTS_SRC = TEMPLATES / "scripts"
 def write_scripts(root: Path) -> list[str]:
     """Copy the packaged consumer scripts into `root/scripts/`.
 
-    Not a rendering: these carry no `{{placeholder}}`, so a byte match against
-    the packaged copy is enough to tell "untouched" from "the consumer edited
-    this" — and only the second one is left alone, warned about instead of
-    silently overwritten.
+    Not a customization surface (#256): these carry no `{{placeholder}}`, so
+    a byte match against the packaged copy only ever tells "untouched" from
+    "stale" — a hand edit and an old release both read as "differs" and both
+    get replaced, same treatment `.github/workflows/*` and
+    `.claude/settings.json` already get from `render_all`.
     """
     out = Path(root) / "scripts"
     out.mkdir(parents=True, exist_ok=True)
@@ -121,15 +122,12 @@ def write_scripts(root: Path) -> list[str]:
     for name in CONSUMER_SCRIPTS:
         text = (SCRIPTS_SRC / name).read_text(encoding="utf-8")
         dest = out / name
-        if dest.exists():
-            if dest.read_text(encoding="utf-8") == text:
-                continue
-            messages.append(
-                f"scripts/{name}: exists and differs from the packaged copy "
-                f"— left untouched, remove it to re-pull the packaged version")
+        if dest.exists() and dest.read_text(encoding="utf-8") == text:
             continue
+        refreshed = dest.exists()
         dest.write_text(text, encoding="utf-8", newline="\n")
-        messages.append(f"wrote scripts/{name}")
+        messages.append(f"refreshed scripts/{name} — was stale"
+                         if refreshed else f"wrote scripts/{name}")
     return messages
 
 
@@ -177,9 +175,15 @@ def script_drift(root: Path) -> list[str]:
     does not write them. Folding it in made every `render_all` then
     `drift() == []` assertion fail on a file `render_all` never claimed.
     """
-    return [f"scripts/{name}: missing — run `qops install`"
-            for name in CONSUMER_SCRIPTS
-            if not (Path(root) / "scripts" / name).exists()]
+    problems = []
+    for name in CONSUMER_SCRIPTS:
+        dest = Path(root) / "scripts" / name
+        if not dest.exists():
+            problems.append(f"scripts/{name}: missing — run `qops install`")
+        elif _differs(SCRIPTS_SRC / name, dest):
+            problems.append(f"scripts/{name}: drifted from the packaged "
+                             f"copy — run `qops install`")
+    return problems
 
 
 SETTINGS = Path(".claude") / "settings.json"
