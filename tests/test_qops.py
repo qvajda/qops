@@ -4412,6 +4412,43 @@ def test_the_planner_splits_what_the_triager_refused():
 
 
 # --------------------------------------------------------------------------
+# #221 — ADR-0036 sortie (ii). A `type:decision` row builds proposals and the
+# owner's review picks one, but a review moment only exists where a PR does:
+# no diff means no PR means `automerge.yml` never writes `state:review` and
+# nothing ever alerts. So the proposals must land as a file on a branch, and
+# the two surfaces that shape the row — the planner and `spec-to-issue` — are
+# where that is said. Both assertions are about the file text, not the
+# behaviour: role definitions are snapshotted at session start (#57), so the
+# planner running this sortie keeps the old text however green this goes.
+# --------------------------------------------------------------------------
+
+def test_planner_plans_a_decision_row_as_a_document():
+    role = _role("planner")
+    assert "type:decision" in role
+    assert "docs/adr/" in role
+    assert "a file on a branch" in role
+    assert "state:review" in role
+    assert "cadr-0015" in role, "the citation must be the consumer-facing form"
+    assert "adr-0036" not in role,         "a consumer's own ADR-0036 is a different decision, so the bare number lies"
+    assert "one page" in role, "the artefact rule extends the cap, never replaces it"
+
+
+def test_spec_to_issue_files_a_decision_row_with_an_artefact():
+    """Both twins, the way `test_spec_to_issue_searches_before_it_drafts` reads
+    them: a rule in only one copy is drift the next `qops install` erases."""
+    paths = [
+        REPO / ".claude" / "skills" / "spec-to-issue" / "SKILL.md",
+        REPO / "qops" / "templates" / "skills" / "spec-to-issue" / "SKILL.md",
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "type:decision" in text, path
+        assert "output path" in text, path
+        assert "docs/adr/" in text, path
+        assert "state:triage" in text, path
+
+
+# --------------------------------------------------------------------------
 # ADR-0028 — the filing bar. With `ready:auto` mechanical on `origin:owner`
 # there is no grant-time left, so the row's body is the last thing between the
 # owner's direction and an unattended commit. R8 already checks that a row

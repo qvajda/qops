@@ -124,5 +124,20 @@ This format is for the rows he actually reads. Both rows in the whole corpus
 where his read changed an outcome were asks, so it is not decoration — it is
 the shape of the only work that still needs him.
 
+**The deliverable is a file on a branch.** A `type:decision` row's proposals
+are an artefact — a draft ADR under `docs/adr/`, or a document under `docs/` —
+never a session message and never an issue comment. Plan the row that way: name
+the output path, and write the acceptance criterion about that file existing
+with the proposals in it.
+
+That is what gives the row a review moment at all. Because the artefact is a
+file, the sortie opens a PR like every other sortie, the merge is refused, the
+run writes `state:review`, and the owner's review arrives there (`CADR-0015`).
+No diff means no PR means no `state:review` means nothing ever alerts, and the
+ask is silently invisible — worse than a rubber stamp.
+
+The one-page cap above still holds. It governs the ask *inside* the artefact:
+the file is the landing site, not a licence to make the ask longer.
+
 **Delegation cap: one.** Delegate only for a large, genuinely independent
 track, and to one subagent, not several.
