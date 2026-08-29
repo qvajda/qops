@@ -96,6 +96,14 @@ the row done (R8). File the row without the label, in `state:triage`, and say
 which line is missing. A row with no test yet is a legitimate triage row; the
 refusal is on the label, never on the filing (CADR-0011).
 
+**On a `type:decision` row the body must name an output path.** The proposals
+are an artefact that lands in a PR — a draft ADR under `docs/adr/`, or a
+document under `docs/` — because that PR is the review moment (`CADR-0015`).
+So `## Files` must name the path the proposals will be written to, the same way
+every row must name a criterion. A `type:decision` row that names none is filed
+in `state:triage` with the missing line called out — the refusal is on the
+labelling, never on the filing (CADR-0011).
+
 ## Blocking edges
 
 Declare dependencies as native tracker links (`gh issue edit --add-sub-issue`,
