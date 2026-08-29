@@ -5480,6 +5480,66 @@ def test_migrate_propose_fills_only_the_mechanical_namespaces():
     assert row["needs"] == ["type"]
 
 
+def test_migrate_proposes_the_adr_0036_gate():
+    """ADR-0036's predicate replaces ADR-0026's: only type:decision's flip is
+    derivable from labels alone. type:research and a bare gate:taste land on
+    `needs`, an untouched type:code + gate:machine row stays untouched, and
+    every gate_reason in the fixture is a distinct sentence (#222)."""
+    decision = {"number": 400, "body": "## Acceptance\n\nchecked.",
+                "labels": [{"name": "type:decision"}, {"name": "gate:machine"},
+                          {"name": "state:planned"}, {"name": "origin:owner"}]}
+    research = {"number": 401, "body": "## Acceptance\n\nchecked.",
+                "labels": [{"name": "type:research"}, {"name": "gate:machine"},
+                          {"name": "state:planned"}, {"name": "origin:owner"}]}
+    taste_code = {"number": 402, "body": "## Acceptance\n\nchecked.",
+                  "labels": [{"name": "type:code"}, {"name": "gate:taste"},
+                            {"name": "state:planned"}, {"name": "origin:owner"}]}
+    untouched = {"number": 403, "body": "## Acceptance\n\nchecked.",
+                 "labels": [{"name": "type:code"}, {"name": "gate:machine"},
+                           {"name": "state:planned"}, {"name": "origin:owner"}]}
+    plan = migratemod.propose([decision, research, taste_code, untouched])
+    rows = {r["number"]: r for r in plan["rows"]}
+
+    d = rows[400]
+    assert "gate:taste" in d["add_labels"] and "gate:machine" in d["remove_labels"]
+    assert d["gate_reason"]
+
+    r = rows[401]
+    assert "gate" in r["needs"]
+    assert not any(l.startswith("gate:") for l in r["add_labels"] + r["remove_labels"])
+    assert r["gate_reason"]
+
+    t = rows[402]
+    assert "gate" in t["needs"]
+    assert not any(l.startswith("gate:") for l in t["add_labels"] + t["remove_labels"])
+    assert t["gate_reason"]
+
+    u = rows[403]
+    assert not any(l.startswith("gate:") for l in u["add_labels"] + u["remove_labels"])
+    assert "gate" not in u["needs"]
+    assert u["gate_reason"] is None
+
+    reasons = [d["gate_reason"], r["gate_reason"], t["gate_reason"]]
+    assert len(set(reasons)) == len(reasons)
+
+
+def test_migrate_execute_appends_one_ledger_event_on_success(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    migratemod.dry_run(tmp_path, "o/r", run=gh)
+    migratemod.execute(tmp_path, "o/r", run=gh)
+    events = [e for e in ledger.read(tmp_path) if e["event"] == "migrate_execute"]
+    assert len(events) == 1 and events[0]["applied"] == 1
+
+
+def test_migrate_execute_appends_no_ledger_event_on_refusal(tmp_path):
+    (tmp_path / ".qops").mkdir()
+    gh = FakeMigrateGh([_undermigrated_row()])
+    result = migratemod.execute(tmp_path, "o/r", run=gh)
+    assert not result["ok"]
+    assert [e for e in ledger.read(tmp_path) if e["event"] == "migrate_execute"] == []
+
+
 def test_migrate_execute_survives_the_bookkeeping_row_changing(tmp_path):
     """The fingerprint covers what the plan was drawn against, which is the
     rows the plan holds. Hashing the status issue too would let the 06:00
