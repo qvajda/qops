@@ -463,20 +463,6 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"origin skipped #{issue}: {why}")
     for issue, why in origin_report["failed"]:
         print(f"origin FAILED #{issue}: {why}", file=sys.stderr)
-    unblock_report = unblock_stale(repo, limit=limit)
-    for issue, nums in unblock_report["unblocked"]:
-        print(f"unblocked #{issue}: closed #{', #'.join(nums)}")
-    for issue, why in unblock_report["skipped"]:
-        print(f"unblock skipped #{issue}: {why}")
-    for issue, why in unblock_report["failed"]:
-        print(f"unblock FAILED #{issue}: {why}", file=sys.stderr)
-    strike_report = strike_stale_blockers(repo, limit=limit)
-    for issue, nums in strike_report["struck"]:
-        print(f"struck #{issue}: closed #{', #'.join(nums)}")
-    for issue, why in strike_report["skipped"]:
-        print(f"strike skipped #{issue}: {why}")
-    for issue, why in strike_report["failed"]:
-        print(f"strike FAILED #{issue}: {why}", file=sys.stderr)
     report = reconcile(repo, limit=limit)
     for issue, pr in report["advanced"]:
         print(f"advanced #{issue}: PR #{pr} merged")
@@ -492,6 +478,20 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     if report["failed"]:
         for issue, why in report["failed"]:
             print(f"FAILED #{issue}: {why}", file=sys.stderr)
+    unblock_report = unblock_stale(repo, limit=limit)
+    for issue, nums in unblock_report["unblocked"]:
+        print(f"unblocked #{issue}: closed #{', #'.join(nums)}")
+    for issue, why in unblock_report["skipped"]:
+        print(f"unblock skipped #{issue}: {why}")
+    for issue, why in unblock_report["failed"]:
+        print(f"unblock FAILED #{issue}: {why}", file=sys.stderr)
+    strike_report = strike_stale_blockers(repo, limit=limit)
+    for issue, nums in strike_report["struck"]:
+        print(f"struck #{issue}: closed #{', #'.join(nums)}")
+    for issue, why in strike_report["skipped"]:
+        print(f"strike skipped #{issue}: {why}")
+    for issue, why in strike_report["failed"]:
+        print(f"strike FAILED #{issue}: {why}", file=sys.stderr)
     behind_report = advance_behind(repo, limit=limit)
     for issue, pr in behind_report["advanced"]:
         print(f"update-branch #{issue}: PR #{pr} was BEHIND")

@@ -1499,6 +1499,13 @@ def owner_preconditions(root: Path, cfg: dict) -> list[str]:
     as a checked "no" rather than being silently skipped (contrast
     `open_issues`, which is right to skip: those invariants are read from a
     tracker this instrument already trusts to exist).
+
+    The two `gh api` reads are three-state, not two: a permission-denied
+    response (an `HTTP 403`, or a `200` whose payload omits the admin-only
+    keys — GitHub does both depending on the endpoint) means the setting is
+    **unreadable**, not off, and prints a note instead of counting a problem.
+    Every other shape — 404, `gh` missing, a timeout, a malformed payload, or
+    the keys present and false — still fails closed as a confirmed "no" (#231).
     """
     root = Path(root)
     problems = []
@@ -1506,7 +1513,9 @@ def owner_preconditions(root: Path, cfg: dict) -> list[str]:
     branch = cfg.get("default_branch", "master")
 
     protected = False
+    protected_unreadable = None
     auto_merge_ready = False
+    auto_merge_unreadable = None
     if repo:
         try:
             p = subprocess.run(
@@ -1518,6 +1527,11 @@ def owner_preconditions(root: Path, cfg: dict) -> list[str]:
                 contexts = set(checks.get("contexts") or [])
                 contexts |= {c.get("context") for c in checks.get("checks", [])}
                 protected = any("gate" in (c or "") for c in contexts)
+            elif "HTTP 403" in (p.stdout + p.stderr):
+                protected_unreadable = (
+                    "branch protection on {branch} could not be read "
+                    "(HTTP 403) — the token cannot see it, the setting is "
+                    "not judged").format(branch=branch)
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
             pass
         try:
@@ -1525,16 +1539,33 @@ def owner_preconditions(root: Path, cfg: dict) -> list[str]:
                                capture_output=True, text=True, timeout=15)
             if p.returncode == 0:
                 data = json.loads(p.stdout)
-                auto_merge_ready = bool(data.get("allow_auto_merge")) and \
-                    bool(data.get("delete_branch_on_merge"))
+                if "allow_auto_merge" not in data or \
+                        "delete_branch_on_merge" not in data:
+                    auto_merge_unreadable = (
+                        "\"Allow auto-merge\" / \"Automatically delete head "
+                        "branches\" could not be read (admin-only fields "
+                        "absent from the response) — the setting is not "
+                        "judged")
+                else:
+                    auto_merge_ready = bool(data.get("allow_auto_merge")) and \
+                        bool(data.get("delete_branch_on_merge"))
+            elif "HTTP 403" in (p.stdout + p.stderr):
+                auto_merge_unreadable = (
+                    "\"Allow auto-merge\" / \"Automatically delete head "
+                    "branches\" could not be read (HTTP 403) — the token "
+                    "cannot see it, the setting is not judged")
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
             pass
 
-    if not protected:
+    if protected_unreadable:
+        print(f"doctor: {protected_unreadable}")
+    elif not protected:
         problems.append(
             f"branch protection on {branch} with the gate as a required "
             f"status check is not confirmed — the owner's to set (contract #6)")
-    if not auto_merge_ready:
+    if auto_merge_unreadable:
+        print(f"doctor: {auto_merge_unreadable}")
+    elif not auto_merge_ready:
         problems.append(
             "\"Allow auto-merge\" and \"Automatically delete head branches\" "
             "are not both confirmed on — the owner's to set (contract #7)")
