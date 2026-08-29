@@ -30,18 +30,25 @@ noticed on the way. A sortie that no longer fits is a finding to report.
 
 Read the open backlog in **one** `gh issue list --state open --json
 number,title,labels` call — the same single-call discipline `/triage` already
-keeps. A call that filters parked rows out is the failure this step exists to
-prevent: `priority:parked` is a good idea deliberately made quiet, not one
-that has stopped existing.
+keeps. A call that filters the quiet rows out is the failure this step exists
+to prevent, and there are two of them. `priority:parked` is a good idea
+deliberately made quiet, not one that has stopped existing. `state:blocked` is
+quiet for the same reason and easier to miss: a blocked row carries a blocking
+flag, so `plannable()` and `decomposable()` refuse it and it appears in no
+queue at all — which makes it the row most likely to be re-filed, because it
+is the one nothing has touched recently.
 
 Report near-matches by **number and title** before drafting anything. Where a
 near-match carries `priority:parked`, propose **unparking that row** — drop
 the label, update its body if the ask has grown — instead of drafting a new
-one. The outcome is one row, not two with a cross-reference.
+one. Where it carries `state:blocked`, propose **unblocking and updating that
+row** the same way. The outcome is one row, not two with a cross-reference.
 
 **Invocable by the model; the edit is not.** Same rule as the publish step
-below: proposing the unpark is the reflex we want, editing either row is not.
-The owner decides; this skill never edits the matched row or files a
+below: proposing the unpark or the unblock is the reflex we want, editing
+either row is not. `state:blocked` in particular means the owner is already
+handling it — which is precisely why the row is quiet. The owner decides; this
+skill never edits, unparks or unblocks the matched row, and never files a
 duplicate alongside it.
 
 ## The body
@@ -103,6 +110,17 @@ So `## Files` must name the path the proposals will be written to, the same way
 every row must name a criterion. A `type:decision` row that names none is filed
 in `state:triage` with the missing line called out — the refusal is on the
 labelling, never on the filing (CADR-0011).
+
+**On a `type:epic` row the body must cite its interview ADR by path.**
+`install.interviewed()` accepts an epic only when its body names a
+repo-relative path of the shape `docs/adr/NNNN-slug.md` — for example
+`docs/adr/0029-the-loop-plans-what-the-owner-licensed.md`. That shape and
+nothing else: a title, a bare number, or a `docs/adr/consumer/CADR-…` path
+does not match and does not count. No match means `decomposable()` refuses the
+row, so it never leaves `state:triage` and shows as an empty decompose queue
+— the epic looks correctly filed and correctly labelled, the loop simply
+never reaches it, and nothing reports the near-miss. Paste the path from the
+tree; do not retype it from the ADR's title.
 
 ## Blocking edges
 
