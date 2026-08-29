@@ -6004,6 +6004,32 @@ def test_init_refuses_a_repo_that_already_has_a_config(tmp_path):
     assert rc == 2
 
 
+def test_init_writes_an_installable_qops_pin(tmp_path):
+    """#260: `qops=={version}` is a PyPI pin and qops is not on PyPI, so
+    `pip install -r requirements.txt` resolved to nothing and CI was red on the
+    first push anyway — #252 moved its failure from ModuleNotFoundError to the
+    install step rather than closing it. Worse, the name is unclaimed on PyPI:
+    if anyone publishes under it, that pin resolves to a stranger's package.
+
+    The URL is asserted against the running package's own metadata, not a
+    literal, so a hardcoded second copy of `pyproject.toml`'s `[project.urls]`
+    fails here the same way every other drift does.
+    """
+    from importlib.metadata import metadata as qops_metadata
+    from importlib.metadata import version as qops_version
+
+    rc = initmod.main(["--project", "demo", "--repo", "a/b",
+                       "--python", "python3"], tmp_path, {})
+    assert rc == 0
+    req = (tmp_path / "requirements.txt").read_text(encoding="utf-8").strip()
+
+    homepage = next(v.split(",", 1)[1].strip()
+                    for k, v in qops_metadata("qops").items()
+                    if k == "Project-URL" and v.lower().startswith("homepage,"))
+    assert req == f"qops @ git+{homepage}@v{qops_version('qops')}", req
+    assert not re.match(r"^qops==", req), "the PyPI-shaped pin is back (#260)"
+
+
 def test_init_scaffolds_a_repo_whose_ci_can_run(tmp_path):
     """#252: a fresh scaffold had neither requirements.txt nor pyproject.toml,
     so INSTALL_DEPS took its "neither" branch and every rendered job that
@@ -6014,11 +6040,10 @@ def test_init_scaffolds_a_repo_whose_ci_can_run(tmp_path):
                        "--python", "python3"], tmp_path, {})
     assert rc == 0
 
-    from importlib.metadata import version as qops_version
-    req = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
-    assert f"qops=={qops_version('qops')}" in req
-
-    # the install block's first branch is the one this tree now selects
+    # the install block's first branch is the one this tree now selects.
+    # The pin's *shape* is #260's, asserted by
+    # test_init_writes_an_installable_qops_pin — this row only cares that the
+    # file is there, which is what moves INSTALL_DEPS off its "neither" branch.
     assert (tmp_path / "requirements.txt").exists()
 
     cfg = qconfig.load(tmp_path)

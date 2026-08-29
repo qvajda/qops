@@ -9,6 +9,7 @@ loaded config every other verb gets.
 
 import json
 import sys
+from importlib.metadata import metadata as _qops_metadata
 from importlib.metadata import version as _qops_version
 from pathlib import Path
 
@@ -59,6 +60,30 @@ Not done by `qops init` — the owner's or the machine's, not the package's:
     in .qops/config.yml first; `qops init` has registered nothing.
   - enable the loop, once you want it: it is the one that costs money
 """.strip("\n")
+
+
+def _qops_pin() -> str:
+    """The `requirements.txt` line a consumer pins qops with.
+
+    #260: this was `qops=={version}` for one release, which is a PyPI pin, and
+    qops is not on PyPI — `pip install -r requirements.txt` resolved to nothing
+    and CI stayed red on the first push anyway, so #252 moved its failure from
+    ModuleNotFoundError to the install step rather than closing it. The name is
+    also unclaimed on PyPI, so a bare pin is a dependency-confusion exposure
+    the day anyone publishes under it. The git URL is the only form that
+    installs, and it is the one `README.md`'s install line already shows.
+
+    Both halves are derived from the running package rather than written down a
+    second time: the version from `_qops_version`, the URL from the
+    `Project-URL` entry `pyproject.toml`'s `[project.urls]` produces.
+    `Home-page` is `None` under both install shapes measured — a git-tag
+    install and an editable one — so `Project-URL` is the entry to read.
+    """
+    homepage = next(
+        value.split(",", 1)[1].strip()
+        for key, value in _qops_metadata("qops").items()
+        if key == "Project-URL" and value.lower().startswith("homepage,"))
+    return f"qops @ git+{homepage}@v{_qops_version('qops')}"
 
 
 def _render(name: str, values: dict) -> str:
@@ -159,8 +184,8 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     # branch instead, and every rendered job died with ModuleNotFoundError.
     # Pinned to the qops that is actually running `init`, not a hardcoded
     # string that would go stale at the next tag.
-    (root / "requirements.txt").write_text(
-        f"qops=={_qops_version('qops')}\n", encoding="utf-8", newline="\n")
+    (root / "requirements.txt").write_text(_qops_pin() + "\n",
+                                           encoding="utf-8", newline="\n")
 
     # ci.test_command defaults to `python -m pytest -q`, which exits 5 ("no
     # tests ran") on an empty tree — a new repo needs a test file to exist
