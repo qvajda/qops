@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 revisit-after: 2026-12-15
 amends: 0016, 0020
 depends-on: 0009, 0019, 0021, 0025
@@ -11,9 +11,10 @@ depends-on: 0009, 0019, 0021, 0025
 where they rest on `.claude/settings.json` denying `gh api` writes, and the
 CLAUDE.md line that records that denial as a taken decision.
 
-**Status is `proposed`.** The row is `gate:taste`: the owner reads the PR and
-either takes the move or keeps the deny (ADR-0036). The code is here to be
-judged, not to pre-empt the judgement.
+**Accepted 2026-08-29**, on #253. The row was `gate:taste`: the owner read the
+PR and took the move rather than keeping the deny (ADR-0036). What follows is
+the decision as taken, including the measurement that killed one of the two
+properties the row was filed on.
 
 ## Context
 
