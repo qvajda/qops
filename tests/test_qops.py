@@ -6004,6 +6004,77 @@ def test_init_refuses_a_repo_that_already_has_a_config(tmp_path):
     assert rc == 2
 
 
+def test_init_writes_a_dev_requirements_file(tmp_path):
+    """#264: `INSTALL_DEPS` installs `requirements-dev.txt` when it exists and
+    nothing wrote one, so the seeded `tests/test_config.py` was a test the
+    rendered CI could not execute. The cheap half of the pair below, so a
+    failure says which end broke without waiting on the slow one.
+    """
+    assert initmod.main(["--project", "demo", "--repo", "a/b",
+                         "--python", "python3"], tmp_path, {}) == 0
+    dev = (tmp_path / "requirements-dev.txt").read_text(encoding="utf-8")
+    assert "pytest" in dev, dev
+    # never in the runtime pin: that would put a test runner in every
+    # consumer's production install.
+    assert "pytest" not in (tmp_path / "requirements.txt").read_text(
+        encoding="utf-8")
+
+
+def _posix_bash() -> bool:
+    """Whether `bash` on this PATH is a POSIX shell that actually runs.
+
+    ADR-0009: nothing here assumes POSIX. On a Windows desktop `bash` resolves
+    to WSL's launcher, which exits non-zero with "no installed distributions"
+    and never runs the script - so the probe is behavioural, not a `which`.
+    """
+    try:
+        p = subprocess.run(["bash", "-c", "echo ok"], capture_output=True,
+                           text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return p.returncode == 0 and p.stdout.strip() == "ok"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _posix_bash(),
+                    reason="no POSIX bash here - INSTALL_DEPS is a runner's "
+                           "shell script, and the runner is ubuntu-latest")
+def test_a_scaffolds_ci_chain_runs_green(tmp_path):
+    """The assertion the three-release regression chain never had (#264).
+
+    #252 (no requirements.txt), #260 (one that could not resolve) and #264 (a
+    resolvable one with no test runner) are one failure class: each fix
+    inspected the part that had just broken and left the next part of the same
+    chain unmeasured. The chain has one observable end state - a scaffold's CI
+    runs green - so this runs it: `INSTALL_DEPS` verbatim into a throwaway
+    venv, then the scaffold's own `ci.test_command`.
+
+    `install.INSTALL_DEPS` is executed, never paraphrased. A copy of the block
+    here would drift from the one the workflows render, which is the defect
+    this test exists to catch.
+    """
+    assert initmod.main(["--project", "demo", "--repo", "a/b",
+                         "--python", "python3"], tmp_path, {}) == 0
+
+    venv = tmp_path / ".venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True,
+                   capture_output=True)
+    py = venv / ("Scripts" if os.name == "nt" else "bin") / "python"
+
+    # The block is written for a runner's `bash`, and `python`/`pip` in it mean
+    # the venv's. Prepending its Scripts/bin to PATH is what a runner's
+    # activation does, so the block runs unmodified.
+    env = {**os.environ, "PATH": str(py.parent) + os.pathsep + os.environ["PATH"]}
+    deps = subprocess.run(["bash", "-c", install.INSTALL_DEPS], cwd=tmp_path,
+                          env=env, capture_output=True, text=True)
+    assert deps.returncode == 0, deps.stdout + deps.stderr
+
+    cmd = install.context(qconfig.load(tmp_path))["test_command"]
+    run = subprocess.run(cmd.split(), cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+
 def test_init_writes_an_installable_qops_pin(tmp_path):
     """#260: `qops=={version}` is a PyPI pin and qops is not on PyPI, so
     `pip install -r requirements.txt` resolved to nothing and CI was red on the

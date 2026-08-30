@@ -38,6 +38,16 @@ RUNNER_ENV = ("GITHUB_BASE_REF", "GITHUB_HEAD_REF", "QOPS_STRICT",
               "QOPS_UNATTENDED", "QOPS_ROLE", "PR_NUMBER", "PR_HEAD_SHA")
 
 
+def pytest_configure(config):
+    """Registered here rather than in `pyproject.toml` (#264): the marker is a
+    fact about this suite, and `pyproject.toml` is the packaging surface the
+    version tests already police."""
+    config.addinivalue_line(
+        "markers",
+        "slow: spawns a venv and installs over the network — runs in CI, "
+        "deselect locally with `-m 'not slow'`")
+
+
 @pytest.fixture(autouse=True)
 def _no_ambient_runner_env(monkeypatch):
     for name in RUNNER_ENV:
