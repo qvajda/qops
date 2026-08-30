@@ -6035,6 +6035,20 @@ def _posix_bash() -> bool:
     return p.returncode == 0 and p.stdout.strip() == "ok"
 
 
+def _run_install_deps(root, env):
+    """`INSTALL_DEPS` under the shell a runner actually uses.
+
+    #268: GitHub Actions runs a `run:` block as `bash -e` - the rendered
+    workflows set no `shell:`, so that is the Linux default. Invoked without
+    `-e`, the block's exit code is its *last* command's, so a failing
+    `pip install -r requirements.txt` was masked by the `requirements-dev.txt`
+    install succeeding after it, and the chain test passed with no qops
+    installed. The `-e` is the whole point of this helper existing.
+    """
+    return subprocess.run(["bash", "-e", "-c", install.INSTALL_DEPS],
+                          cwd=root, env=env, capture_output=True, text=True)
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(not _posix_bash(),
                     reason="no POSIX bash here - INSTALL_DEPS is a runner's "
@@ -6052,9 +6066,24 @@ def test_a_scaffolds_ci_chain_runs_green(tmp_path):
     `install.INSTALL_DEPS` is executed, never paraphrased. A copy of the block
     here would drift from the one the workflows render, which is the defect
     this test exists to catch.
+
+    **Two claims, kept apart (#268).** Whether the *pin `init` writes* is
+    installable belongs to `test_init_writes_an_installable_qops_pin`, which is
+    what covers #260 and which needs no network. This test's claim is narrower:
+    given a qops, the block and the scaffold's test command run green together.
+    Conflating them made this test unpassable on any version-bump commit - in
+    CI qops is installed from the checkout, so the scaffold pins the version
+    `pyproject.toml` declares, and on the bump itself that tag does not exist
+    yet. So the scaffold's pin is repointed at the qops under test below.
     """
     assert initmod.main(["--project", "demo", "--repo", "a/b",
                          "--python", "python3"], tmp_path, {}) == 0
+
+    # The published pin is not this test's subject, and on a bump commit it
+    # names a tag that does not exist. Point it at the tree under test, which
+    # is also the qops whose INSTALL_DEPS is being exercised.
+    (tmp_path / "requirements.txt").write_text(
+        f"-e {REPO.as_posix()}\n", encoding="utf-8", newline="\n")
 
     venv = tmp_path / ".venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True,
@@ -6065,14 +6094,27 @@ def test_a_scaffolds_ci_chain_runs_green(tmp_path):
     # the venv's. Prepending its Scripts/bin to PATH is what a runner's
     # activation does, so the block runs unmodified.
     env = {**os.environ, "PATH": str(py.parent) + os.pathsep + os.environ["PATH"]}
-    deps = subprocess.run(["bash", "-c", install.INSTALL_DEPS], cwd=tmp_path,
-                          env=env, capture_output=True, text=True)
+    deps = _run_install_deps(tmp_path, env)
     assert deps.returncode == 0, deps.stdout + deps.stderr
 
     cmd = install.context(qconfig.load(tmp_path))["test_command"]
     run = subprocess.run(cmd.split(), cwd=tmp_path, env=env,
                          capture_output=True, text=True)
     assert run.returncode == 0, run.stdout + run.stderr
+
+    # The #264 regression stays caught: without the dev requirements the block
+    # installs no pytest and the same test command fails.
+    (tmp_path / "requirements-dev.txt").unlink()
+    bare = tmp_path / "bare"
+    subprocess.run([sys.executable, "-m", "venv", str(bare)], check=True,
+                   capture_output=True)
+    bare_py = bare / ("Scripts" if os.name == "nt" else "bin") / "python"
+    bare_env = {**os.environ,
+                "PATH": str(bare_py.parent) + os.pathsep + os.environ["PATH"]}
+    assert _run_install_deps(tmp_path, bare_env).returncode == 0
+    without = subprocess.run(cmd.split(), cwd=tmp_path, env=bare_env,
+                             capture_output=True, text=True)
+    assert without.returncode != 0, "no pytest installed, yet the suite ran"
 
 
 def test_init_writes_an_installable_qops_pin(tmp_path):
