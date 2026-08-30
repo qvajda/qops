@@ -187,6 +187,15 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     (root / "requirements.txt").write_text(_qops_pin() + "\n",
                                            encoding="utf-8", newline="\n")
 
+    # #264: INSTALL_DEPS installs `requirements-dev.txt` when it exists, and
+    # nothing wrote one — so the seeded test below was a test the rendered CI
+    # could not execute, and `test` and `gate` both died with "No module named
+    # pytest". pytest belongs here and not in `requirements.txt`: a substrate
+    # that drags a test runner into every consumer's runtime install is worse
+    # than the defect it fixes.
+    (root / "requirements-dev.txt").write_text("pytest\n", encoding="utf-8",
+                                               newline="\n")
+
     # ci.test_command defaults to `python -m pytest -q`, which exits 5 ("no
     # tests ran") on an empty tree — a new repo needs a test file to exist
     # anyway, since R8 refuses `ready:auto` on a body that names none.
