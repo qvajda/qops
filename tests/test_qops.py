@@ -6020,6 +6020,59 @@ def test_init_writes_a_dev_requirements_file(tmp_path):
         encoding="utf-8")
 
 
+def test_init_writes_a_gitignore_covering_qops_machine_state(tmp_path):
+    """#272: a fresh scaffold wrote no `.gitignore` at all, so
+    `.qops/runs/` (an unattended run's transcript, on a public repo) and
+    `.claude/settings.local.json` (absolute host paths) were one `git add -A`
+    away with nothing telling the consumer otherwise.
+
+    The expected paths are parsed out of this repo's own `.gitignore` rather
+    than restated, so the two lists cannot drift apart silently again.
+    """
+    repo_lines = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
+    marker_idx = next(i for i, line in enumerate(repo_lines)
+                      if line.startswith("# qops machine state"))
+    expected = [line for line in repo_lines[marker_idx:]
+               if line.strip() and not line.startswith("#")]
+    assert expected, "this repo's own .gitignore names no machine state"
+
+    assert initmod.main(["--project", "demo", "--repo", "a/b",
+                         "--python", "python3"], tmp_path, {}) == 0
+    scaffolded = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    for path in expected:
+        assert path in scaffolded, f"{path} missing from scaffolded .gitignore"
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    ignored = expected + [".qops/config.yml"]
+    for path in ignored:
+        rc = subprocess.run(["git", "check-ignore", "-q", path],
+                            cwd=tmp_path).returncode
+        should_be_ignored = path != ".qops/config.yml"
+        if should_be_ignored:
+            assert rc == 0, f"{path} is not ignored"
+        else:
+            assert rc == 1, f"{path} is ignored, but must be tracked"
+
+    tracked = ["CLAUDE.md", "requirements.txt", "requirements-dev.txt",
+              "tests/test_config.py", "skills-lock.json"]
+    for path in tracked:
+        rc = subprocess.run(["git", "check-ignore", "-q", path],
+                            cwd=tmp_path).returncode
+        assert rc == 1, f"{path} is ignored, but a rendered surface must be tracked"
+
+
+def test_init_appends_to_an_existing_gitignore(tmp_path):
+    """A hand-seeded `.gitignore` is appended to, never overwritten — the
+    scope note in #272 rules out clobbering a consumer's own lines.
+    """
+    (tmp_path / ".gitignore").write_text("*.local\n", encoding="utf-8")
+    assert initmod.main(["--project", "demo", "--repo", "a/b",
+                         "--python", "python3"], tmp_path, {}) == 0
+    text = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert text.startswith("*.local\n"), text
+    assert ".qops/runs/" in text
+
+
 def _posix_bash() -> bool:
     """Whether `bash` on this PATH is a POSIX shell that actually runs.
 
