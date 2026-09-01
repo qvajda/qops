@@ -7172,3 +7172,14 @@ def test_require_on_open_retriage_spares_done_labelled_and_status_rows():
         "2": "carries every required axis",
         "3": "bookkeeping row",
     }
+
+
+def test_adr_0039_answers_the_three_conflicts():
+    """#274. Measures the file, not the behaviour — the ADR decides, it does
+    not implement, so there is nothing else in this sortie to assert."""
+    path = REPO / "docs" / "adr" / "0039-releases-and-feature-branches.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert re.search(r"^status:\s*\S+", text, re.MULTILINE)
+    for token in ("ADR-0016", "ADR-0020", "protected_branches", "type:epic"):
+        assert text.count(token) > 0, f"{token} missing from ADR-0039"
