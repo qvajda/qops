@@ -7167,6 +7167,28 @@ def test_filing_skills_refuse_ready_auto_without_a_named_test():
         assert "R8" in text
 
 
+def test_the_filing_skill_scopes_the_ready_auto_notice_to_agent_origin():
+    """#273: the non-grant announcement is false on an `origin:owner` row -
+    since ADR-0028 the filing itself is the grant. Both copies of SKILL.md
+    must condition the notice on `origin:agent` and state the owner-origin
+    fact instead, or the owner keeps reading a refusal that does not apply."""
+    live = (REPO / ".claude" / "skills" / "spec-to-issue"
+            / "SKILL.md").read_text(encoding="utf-8")
+    tmpl = (REPO / "qops" / "templates" / "skills" / "spec-to-issue"
+            / "SKILL.md").read_text(encoding="utf-8")
+    for text in (live, tmpl):
+        paragraphs = text.split("\n\n")
+        non_grant = [p for p in paragraphs if "never apply" in p.lower() and "ready:auto" in p]
+        assert non_grant, "non-grant notice paragraph missing"
+        assert all("origin:agent" in p for p in non_grant)
+
+        owner_grant = [p for p in paragraphs if "origin:owner" in p and "CADR-0011" in p]
+        assert owner_grant, "origin:owner grant paragraph missing"
+        assert any("is the grant" in p for p in owner_grant)
+
+        assert "ready:auto" in text
+
+
 def test_r8_names_a_test_reports_tracker_wide(monkeypatch):
     """The five rows in #194 sat mislabelled for hours and only a PR made
     them visible — a tracker-wide sweep must report R8 on every such row,
