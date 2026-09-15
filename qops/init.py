@@ -18,6 +18,31 @@ from . import install
 TEMPLATES = Path(__file__).parent / "templates"
 SKILLS = ("interview", "spec-to-issue", "triage", "pending")
 
+# This repo's own `.gitignore` machine-state block, verbatim in intent.
+# `.qops/config.yml` is TRACKED and is the whole point; everything else qops
+# writes under .qops/ is per-machine and is not. The header line below is
+# both the human-facing comment and the append marker: no second marker to
+# keep true.
+GITIGNORE_BLOCK = """
+# qops machine state. `.qops/config.yml` is TRACKED and is the whole point;
+# everything else qops writes under .qops/ is per-machine and is not.
+.qops/state.json
+.qops/resume.md
+.qops/ledger.jsonl
+.qops/outbox.jsonl
+.qops/state-report.md
+.qops/migrate-plan.json
+.qops/wt/
+# Transcripts of unattended runs. A public repo is public, and a run log is
+# whatever the launched session printed.
+.qops/runs/
+
+# Per-machine Claude settings. settings.json is tracked; the .local one holds
+# absolute paths and is a machine fact.
+.claude/settings.local.json
+.claude/worktrees/
+"""
+
 NEXT_STEPS = """
 Not done by `qops init` — the owner's or the machine's, not the package's:
 
@@ -195,6 +220,18 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
     # than the defect it fixes.
     (root / "requirements-dev.txt").write_text("pytest\n", encoding="utf-8",
                                                newline="\n")
+
+    gitignore = root / ".gitignore"
+    marker = GITIGNORE_BLOCK.strip("\n").splitlines()[0]
+    if not gitignore.exists():
+        gitignore.write_text(GITIGNORE_BLOCK.lstrip("\n"), encoding="utf-8",
+                             newline="\n")
+    else:
+        existing_text = gitignore.read_text(encoding="utf-8")
+        if marker not in existing_text:
+            sep = "\n" if existing_text.endswith("\n") else "\n\n"
+            gitignore.write_text(existing_text + sep + GITIGNORE_BLOCK.lstrip("\n"),
+                                 encoding="utf-8", newline="\n")
 
     # ci.test_command defaults to `python -m pytest -q`, which exits 5 ("no
     # tests ran") on an empty tree — a new repo needs a test file to exist

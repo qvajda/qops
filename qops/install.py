@@ -1080,12 +1080,18 @@ def unwritable(body: str) -> list[str]:
 ADR_REF = re.compile(r"docs/adr/\d+-[\w-]+\.md")
 
 
+def interview_adr(root: Path, issue: dict) -> Path | None:
+    """The ADR file the epic's body names, if it exists in this repo."""
+    for m in ADR_REF.finditer(issue.get("body") or ""):
+        path = Path(root) / m.group(0)
+        if path.exists():
+            return path
+    return None
+
+
 def interviewed(root: Path, issue: dict) -> bool:
     """The epic's body names an ADR file that exists in this repo."""
-    for m in ADR_REF.finditer(issue.get("body") or ""):
-        if (Path(root) / m.group(0)).exists():
-            return True
-    return False
+    return interview_adr(root, issue) is not None
 
 
 def plannable(issue: dict) -> bool:
