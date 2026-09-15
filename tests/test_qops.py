@@ -5289,7 +5289,8 @@ def _ledger(tmp_path, *events):
     d.mkdir(exist_ok=True)
     with (d / "ledger.jsonl").open("w", encoding="utf-8") as fh:
         for i, (event, num) in enumerate(events):
-            fh.write(json.dumps({"ts": f"2026-08-20T{i:02d}:00:00+00:00",
+            ts = _ago(len(events) - i)
+            fh.write(json.dumps({"ts": ts,
                                  "event": event, "issue": str(num)}) + "\n")
     return tmp_path
 
