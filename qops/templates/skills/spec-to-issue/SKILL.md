@@ -102,8 +102,16 @@ Exactly one `type:`, one `state:` and one `gate:`, from `.qops/config.yml`:
   session this is and refuses a filing that claims the other one (CADR-0007). It
   is the input to the `ready:auto` grant, which is why it is not yours to pick.
 
-**Never apply `ready:auto`.** It means an unattended agent may start the work
-unsupervised, and it is the owner's alone to grant (CADR-0005, `loops.md`).
+**On `origin:agent` or `origin:pending`, never apply `ready:auto`.** It means an
+unattended agent may start the work unsupervised, and on these rows nothing but
+the owner may write it — an agent may only propose it, and the owner grants by
+batch approval (CADR-0005, `loops.md`).
+
+**On `origin:owner`, the filing already is the grant.** Since CADR-0011, no
+label write is needed: `install.eligible()` takes the row through the second
+route unlabelled, and the picker starts it. Say that, not a refusal — the line
+that decides whether the picker takes the row is R8 below, the body naming a
+test.
 
 **Refuse `ready:auto` when the body names no test.** Even when the owner asks
 for the label in this session, do not apply `ready:auto` to a body that names
