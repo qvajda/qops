@@ -335,6 +335,22 @@ def test_spec_to_issue_states_the_claude_reach_rule():
         assert "#127" in text, path
 
 
+def test_the_filing_skill_routes_a_goal_shaped_ask_to_an_epic():
+    """#271: a goal-shaped ask was filed as one sortie and never decomposed —
+    the epic path existed and was never reached. The routing clause must run
+    before the body template, not after: a clause read once a draft already
+    exists is too late to prevent the draft. Both twins, the way
+    `test_spec_to_issue_searches_before_it_drafts` reads them."""
+    for path in SPEC_TO_ISSUE:
+        text = path.read_text(encoding="utf-8")
+        assert "goal-shaped" in text, path
+        assert "type:epic" in text, path
+        assert "refuses to draft" in text, path
+        route_at = text.index("goal-shaped")
+        body_at = text.index("## The body")
+        assert route_at < body_at,             f"{path}: routing clause must precede the body template"
+
+
 # --------------------------------------------------------------------------
 # guard — the hard blocks. ADR-0001: PreToolUse exit 2 blocks for real.
 # --------------------------------------------------------------------------

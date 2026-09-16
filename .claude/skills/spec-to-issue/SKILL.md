@@ -60,6 +60,27 @@ handling it — which is precisely why the row is quiet. The owner decides; this
 skill never edits, unparks or unblocks the matched row, and never files a
 duplicate alongside it.
 
+## Route before you draft
+
+A **goal-shaped ask** is one whose outcome needs more than one deliverable —
+more than one thing to build, more than one gate, or an acceptance criterion
+that cannot be written as a single command or file state. On such an ask this
+skill **refuses to draft a sortie** and instead proposes a `type:epic` row
+plus the interview that must precede it, naming what made the ask
+goal-shaped.
+
+The ADR-path requirement for that epic row is stated once, below (`On a
+type:epic row the body must cite its interview ADR by path`) — this step
+points there rather than restating it.
+
+**Invocable by the model; the filing is not.** The refusal is on the
+*drafting*: proposing the `type:epic` row is the reflex we want, publishing it
+is not, same as every other row this skill drafts. An epic proposed and not
+confirmed is still the owner's to publish.
+
+This is not a mechanical size check — no line count, no bullet count, no
+threshold. It is a judgement this skill states and the owner sees.
+
 ## The body
 
 ```markdown
