@@ -5814,12 +5814,19 @@ def test_a_no_auto_that_only_restates_reach_is_reported():
         "labels": [{"name": "state:planned"}, {"name": "gate:taste"},
                    {"name": "no-auto"}],
     }
+    claimed = {
+        # the alert pass's own claim, not the owner's flag.
+        "number": 88, "body": _ROLE_FILES,
+        "labels": [{"name": "state:building"}, {"name": "gate:machine"},
+                   {"name": "no-auto"}],
+    }
     problems = install.redundant_no_auto(
-        [redundant, no_no_auto, no_auto_but_writable, no_auto_wrong_gate])
+        [redundant, no_no_auto, no_auto_but_writable, no_auto_wrong_gate, claimed])
     assert len(problems) == 1
     assert "#57" in problems[0]
     assert ".claude/agents/triager.md" in problems[0]
-    assert not any("#13" in p or "#70" in p or "#42" in p for p in problems)
+    assert not any("#13" in p or "#70" in p or "#42" in p or "#88" in p
+                   for p in problems)
 
 
 # --------------------------------------------------------------------------

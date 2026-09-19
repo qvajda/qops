@@ -1390,6 +1390,10 @@ def redundant_no_auto(issues: list[dict]) -> list[str]:
     Advisory only, deliberately: only the owner knows whether a given
     `no-auto` means "the launch cannot reach this" or "I am handling this
     one myself" — this reports the redundancy, it never removes the label.
+
+    A live claim is not that flag: the alert pass writes `state:building` +
+    `no-auto` itself (`pending.is_claimed`) and the reaper takes both off, so
+    reporting it failed the `gate` on the claimed row's own PR.
     """
     return [f"#{i['number']}: `no-auto` on a `gate:machine` row that already "
             f"cannot write {', '.join(unwritable(i.get('body') or ''))} — "
@@ -1398,6 +1402,7 @@ def redundant_no_auto(issues: list[dict]) -> list[str]:
             for i in issues
             if "no-auto" in {l["name"] for l in i.get("labels", [])}
             and "gate:machine" in {l["name"] for l in i.get("labels", [])}
+            and "state:building" not in {l["name"] for l in i.get("labels", [])}
             and unwritable(i.get("body") or "")]
 
 
