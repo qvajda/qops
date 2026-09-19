@@ -7172,3 +7172,30 @@ def test_require_on_open_retriage_spares_done_labelled_and_status_rows():
         "2": "carries every required axis",
         "3": "bookkeeping row",
     }
+
+
+def _fake_root(tmp_path, monkeypatch, branch="feature-x"):
+    (tmp_path / ".qops").mkdir(parents=True)
+    (tmp_path / ".qops" / "config.yml").write_text("x: 1\n")
+    monkeypatch.setattr(guard, "git_context", lambda r: {"branch": branch})
+    monkeypatch.setattr(guard.config, "load",
+                        lambda r: {"protected_branches": ["master"]})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Git Bash drive paths are a Windows form")
+def test_a_git_bash_dash_c_path_resolves_to_its_own_root(tmp_path, monkeypatch):
+    wt = tmp_path / "wt"
+    _fake_root(wt, monkeypatch)
+    p = wt.as_posix()
+    gitbash = f"/{p[0].lower()}{p[2:]}"
+    cmd = f"git -C {gitbash} commit -m x"
+    ctx = dict(CTX, other_roots=guard.other_git_roots(cmd, tmp_path))
+    assert guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC) is None
+
+
+def test_an_unresolvable_dash_c_is_refused_as_unjudgeable(tmp_path, monkeypatch):
+    cmd = "git -C $W commit -m x"
+    ctx = dict(CTX, other_roots=guard.other_git_roots(cmd, tmp_path))
+    reason = guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC)
+    assert reason and "could not be resolved" in reason and "$W" in reason
+    assert "master" not in reason
