@@ -60,6 +60,27 @@ handling it — which is precisely why the row is quiet. The owner decides; this
 skill never edits, unparks or unblocks the matched row, and never files a
 duplicate alongside it.
 
+## Route before you draft
+
+A **goal-shaped ask** is one whose outcome needs more than one deliverable —
+more than one thing to build, more than one gate, or an acceptance criterion
+that cannot be written as a single command or file state. On such an ask this
+skill **refuses to draft a sortie** and instead proposes a `type:epic` row
+plus the interview that must precede it, naming what made the ask
+goal-shaped.
+
+The ADR-path requirement for that epic row is stated once, below (`On a
+type:epic row the body must cite its interview ADR by path`) — this step
+points there rather than restating it.
+
+**Invocable by the model; the filing is not.** The refusal is on the
+*drafting*: proposing the `type:epic` row is the reflex we want, publishing it
+is not, same as every other row this skill drafts. An epic proposed and not
+confirmed is still the owner's to publish.
+
+This is not a mechanical size check — no line count, no bullet count, no
+threshold. It is a judgement this skill states and the owner sees.
+
 ## The body
 
 ```markdown
@@ -102,8 +123,16 @@ Exactly one `type:`, one `state:` and one `gate:`, from `.qops/config.yml`:
   session this is and refuses a filing that claims the other one (CADR-0007). It
   is the input to the `ready:auto` grant, which is why it is not yours to pick.
 
-**Never apply `ready:auto`.** It means an unattended agent may start the work
-unsupervised, and it is the owner's alone to grant (CADR-0005, `loops.md`).
+**On `origin:agent` or `origin:pending`, never apply `ready:auto`.** It means an
+unattended agent may start the work unsupervised, and on these rows nothing but
+the owner may write it — an agent may only propose it, and the owner grants by
+batch approval (CADR-0005, `loops.md`).
+
+**On `origin:owner`, the filing already is the grant.** Since CADR-0011, no
+label write is needed: `install.eligible()` takes the row through the second
+route unlabelled, and the picker starts it. Say that, not a refusal — the line
+that decides whether the picker takes the row is R8 below, the body naming a
+test.
 
 **Refuse `ready:auto` when the body names no test.** Even when the owner asks
 for the label in this session, do not apply `ready:auto` to a body that names

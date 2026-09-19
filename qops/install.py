@@ -1076,12 +1076,18 @@ def unwritable(body: str) -> list[str]:
 ADR_REF = re.compile(r"docs/adr/\d+-[\w-]+\.md")
 
 
+def interview_adr(root: Path, issue: dict) -> Path | None:
+    """The ADR file the epic's body names, if it exists in this repo."""
+    for m in ADR_REF.finditer(issue.get("body") or ""):
+        path = Path(root) / m.group(0)
+        if path.exists():
+            return path
+    return None
+
+
 def interviewed(root: Path, issue: dict) -> bool:
     """The epic's body names an ADR file that exists in this repo."""
-    for m in ADR_REF.finditer(issue.get("body") or ""):
-        if (Path(root) / m.group(0)).exists():
-            return True
-    return False
+    return interview_adr(root, issue) is not None
 
 
 def plannable(issue: dict) -> bool:
@@ -1380,6 +1386,10 @@ def redundant_no_auto(issues: list[dict]) -> list[str]:
     Advisory only, deliberately: only the owner knows whether a given
     `no-auto` means "the launch cannot reach this" or "I am handling this
     one myself" — this reports the redundancy, it never removes the label.
+
+    A live claim is not that flag: the alert pass writes `state:building` +
+    `no-auto` itself (`pending.is_claimed`) and the reaper takes both off, so
+    reporting it failed the `gate` on the claimed row's own PR.
     """
     return [f"#{i['number']}: `no-auto` on a `gate:machine` row that already "
             f"cannot write {', '.join(unwritable(i.get('body') or ''))} — "
@@ -1388,6 +1398,7 @@ def redundant_no_auto(issues: list[dict]) -> list[str]:
             for i in issues
             if "no-auto" in {l["name"] for l in i.get("labels", [])}
             and "gate:machine" in {l["name"] for l in i.get("labels", [])}
+            and "state:building" not in {l["name"] for l in i.get("labels", [])}
             and unwritable(i.get("body") or "")]
 
 
