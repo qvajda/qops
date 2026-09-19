@@ -1019,6 +1019,26 @@ def test_main_rejects_unrecognised_flag(tmp_path, capsys):
 # install / doctor — rendered workflows, and drift is detectable
 # --------------------------------------------------------------------------
 
+def test_install_is_idempotent_against_the_working_tree(tmp_path):
+    """#285: a checkout carries the platform's line ending; a render that
+    pins LF rewrites every file with no content change."""
+    cfg = qconfig.load(REPO)
+
+    def render():
+        return [install.render_all(tmp_path, cfg),
+                install.render_adr_consumer(tmp_path),
+                install.render_claude_bodies(tmp_path, cfg)]
+
+    files = {p for group in render() for p in group}
+    for p in files:
+        f = Path(p)
+        f.write_bytes(f.read_bytes().replace(b"\r\n", b"\n")
+                      .replace(b"\n", os.linesep.encode()))
+    before = {p: Path(p).read_bytes() for p in files}
+    render()
+    assert {p: Path(p).read_bytes() for p in files} == before
+
+
 def test_install_renders_the_seven_workflows(tmp_path):
     written = install.render_all(tmp_path, qconfig.load(REPO))
     names = {Path(p).name for p in written}
