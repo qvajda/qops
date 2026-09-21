@@ -7365,6 +7365,25 @@ def test_require_on_open_retriage_spares_done_labelled_and_status_rows():
     }
 
 
+def test_install_no_task_renders_without_registering(tmp_path, capsys, monkeypatch):
+    assert initmod.main(
+        ["--project", "demo", "--repo", "qvajda/qops-286-fixture",
+         "--python", "python3"], tmp_path, {}) == 0
+    cfg = qconfig.load(tmp_path)
+    calls = []
+    monkeypatch.setattr(install, "register_task",
+                        lambda *a: calls.append(a) or "registered")
+    capsys.readouterr()
+    assert install.main(["--no-task"], tmp_path, cfg) == 0
+    out = capsys.readouterr().out
+    assert calls == []
+    assert "--no-task" in out
+    with_task = sorted(str(p) for p in tmp_path.rglob("*") if p.is_file())
+    assert install.main([], tmp_path, cfg) == 0
+    assert calls
+    assert sorted(str(p) for p in tmp_path.rglob("*") if p.is_file()) == with_task
+
+
 def test_adr_0039_answers_the_three_conflicts():
     """#274. Measures the file, not the behaviour — the ADR decides, it does
     not implement, so there is nothing else in this sortie to assert."""
