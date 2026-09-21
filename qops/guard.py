@@ -419,8 +419,9 @@ def git_refusal(toks: list[str], ctx: dict, cfg: dict) -> str | None:
     """The six git checks, over one parse. None allows.
 
     A `git -C <path>` command is judged by that path's own root, if `hook()`
-    resolved one into `ctx["other_roots"]` - a `-C` under no qops root falls
-    back to this root's rules, unchanged (#122).
+    resolved one into `ctx["other_roots"]`. A `-C` marked unresolved is
+    refused for write verbs (#284); one absent from `other_roots` falls back
+    to this root's rules (#122).
     """
     branch = ctx.get("branch") or ""
     protected = cfg.get("protected_branches", [])
@@ -434,6 +435,12 @@ def git_refusal(toks: list[str], ctx: dict, cfg: dict) -> str | None:
                          for verb, args, _ in commands)
     for verb, args, cpath in commands:
         other = other_roots.get(cpath) if cpath else None
+        if other and other.get("unresolved"):
+            if verb == "push" or verb in _WRITES:
+                return (f"'{verb}' with -C {cpath}: that path could not be "
+                        f"resolved to a qops root, so the guard cannot judge "
+                        f"it. Spell the path out (C:/...), no variables.")
+            continue
         own_branch = other["branch"] if other else branch
         own_protected = other["protected"] if other else protected
         if verb == "push":
@@ -580,9 +587,9 @@ def other_git_roots(cmd: str, root: Path) -> dict:
     protected list - keyed by the literal `-C` value so `git_refusal` can look
     a command's `cpath` straight up.
 
-    A `-C` path under no qops root is left out: it is judged by this root's
-    rules unchanged, which is `argv_tokens`' own rule (read less, never
-    nothing) applied to roots instead of tokens. The subprocess call and file
+    A `-C` path that resolves to no qops root is marked `unresolved`, and
+    `git_refusal` refuses its write verbs rather than judge it by this root's
+    branch (#284). The guard reads argv; it does not expand `$W`. The subprocess call and file
     read live here, not in `check()` - that is the one function the
     parametrized refusal tests drive directly (#122).
     """
@@ -590,11 +597,17 @@ def other_git_roots(cmd: str, root: Path) -> dict:
     for _, _, cpath in git_commands(argv_tokens(cmd)):
         if not cpath or cpath in other:
             continue
-        candidate = Path(cpath)
+        # Git Bash spells C:/x as /c/x, which Windows reads as drive-less.
+        gitbash = re.match(r"^/([A-Za-z])/", cpath)
+        candidate = Path(f"{gitbash[1]}:/{cpath[3:]}" if gitbash and os.name == "nt"
+                         else cpath)
         if not candidate.is_absolute():
             candidate = root / candidate
-        found = config.find_root(candidate)
-        if not (found / ".qops" / "config.yml").exists():
+        # find_root walks UP, so from a missing path it lands in an unrelated
+        # root; resolve only from a path that exists (#284).
+        found = config.find_root(candidate) if candidate.exists() else None
+        if not (found and (found / ".qops" / "config.yml").exists()):
+            other[cpath] = {"unresolved": True}
             continue
         other[cpath] = {"branch": git_context(found)["branch"],
                          "protected": config.load(found).get("protected_branches", [])}
