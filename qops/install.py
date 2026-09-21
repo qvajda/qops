@@ -1911,7 +1911,11 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"rendered {Path(p).relative_to(Path(root))}")
     for msg in write_scripts(root):
         print(msg)
-    print(register_task(root, cfg))
+    if "--no-task" in argv:
+        print("task not registered: --no-task (`qops doctor` still reports a "
+              "missing task)")
+    else:
+        print(register_task(root, cfg))
     return 0
 
 
