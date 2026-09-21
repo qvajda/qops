@@ -335,6 +335,22 @@ def test_spec_to_issue_states_the_claude_reach_rule():
         assert "#127" in text, path
 
 
+def test_the_filing_skill_routes_a_goal_shaped_ask_to_an_epic():
+    """#271: a goal-shaped ask was filed as one sortie and never decomposed —
+    the epic path existed and was never reached. The routing clause must run
+    before the body template, not after: a clause read once a draft already
+    exists is too late to prevent the draft. Both twins, the way
+    `test_spec_to_issue_searches_before_it_drafts` reads them."""
+    for path in SPEC_TO_ISSUE:
+        text = path.read_text(encoding="utf-8")
+        assert "goal-shaped" in text, path
+        assert "type:epic" in text, path
+        assert "refuses to draft" in text, path
+        route_at = text.index("goal-shaped")
+        body_at = text.index("## The body")
+        assert route_at < body_at,             f"{path}: routing clause must precede the body template"
+
+
 # --------------------------------------------------------------------------
 # guard — the hard blocks. ADR-0001: PreToolUse exit 2 blocks for real.
 # --------------------------------------------------------------------------
@@ -1002,6 +1018,26 @@ def test_main_rejects_unrecognised_flag(tmp_path, capsys):
 # --------------------------------------------------------------------------
 # install / doctor — rendered workflows, and drift is detectable
 # --------------------------------------------------------------------------
+
+def test_install_is_idempotent_against_the_working_tree(tmp_path):
+    """#285: a checkout carries the platform's line ending; a render that
+    pins LF rewrites every file with no content change."""
+    cfg = qconfig.load(REPO)
+
+    def render():
+        return [install.render_all(tmp_path, cfg),
+                install.render_adr_consumer(tmp_path),
+                install.render_claude_bodies(tmp_path, cfg)]
+
+    files = {p for group in render() for p in group}
+    for p in files:
+        f = Path(p)
+        f.write_bytes(f.read_bytes().replace(b"\r\n", b"\n")
+                      .replace(b"\n", os.linesep.encode()))
+    before = {p: Path(p).read_bytes() for p in files}
+    render()
+    assert {p: Path(p).read_bytes() for p in files} == before
+
 
 def test_install_renders_the_seven_workflows(tmp_path):
     written = install.render_all(tmp_path, qconfig.load(REPO))
@@ -2869,6 +2905,78 @@ def test_a_failed_decompose_does_not_touch_the_epics_labels(tmp_path, monkeypatc
     edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
     assert not any("--add-label" in c for c in edits), edits
     assert qops_pickup.strikes(root, "28") == 1
+
+
+# --- decomposition is judged by ADR coverage, not child count (#270) ---
+
+def _coverage_harness(monkeypatch, root, num, verdict_text):
+    """A fake tracker: `gh issue comment` remembers what it was told, and
+    `gh issue view --json comments` reads it back - so a verdict posted
+    during `_decompose()` is what `first_decomposable()` reads afterward,
+    same as the real tracker round-trips it."""
+    posted: dict[str, list[str]] = {}
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "issue", "comment"]:
+            body = cmd[cmd.index("--body") + 1]
+            posted.setdefault(cmd[3], []).append(body)
+        elif cmd[:3] == ["gh", "issue", "view"] and "comments" in cmd:
+            out = "\n".join(posted.get(cmd[3], []))
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    # `sub_issues()` starts empty, so `first_decomposable()` picks the epic
+    # before it has children, the same as the real tracker - then
+    # `produced_children()` "files" the child the decompose run would have,
+    # so `covers()` has something to read.
+    state = {"children": []}
+
+    def fake_produced_children(*a, **k):
+        state["children"] = [{"number": 100, "title": "child",
+                              "body": "covers some scope"}]
+        return True
+
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup, "plan_argv", lambda p, c: ["true"])
+    monkeypatch.setattr(qops_pickup, "produced_children", fake_produced_children)
+    monkeypatch.setattr(qops_pickup, "sub_issues",
+                        lambda *a, **k: list(state["children"]))
+    monkeypatch.setattr(qops_pickup.review, "ask", lambda prompt, root: verdict_text)
+    monkeypatch.setattr(qops_pickup, "_review", lambda root: 0)
+    epic = _row(num, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+    monkeypatch.setattr(qops_pickup, "backlog", lambda r: [epic])
+    return epic, calls
+
+
+def test_a_decomposition_that_misses_the_adrs_outcome_is_not_accepted(tmp_path, monkeypatch):
+    root = _with_adr(_root(tmp_path))
+    epic, calls = _coverage_harness(
+        monkeypatch, root, 29,
+        "VERDICT: does-not-cover\nnothing covers the migration step.")
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 1
+    comments = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
+    assert any(qops_pickup.COVERAGE_MARKER in c[c.index("--body") + 1]
+               and "does-not-cover" in c[c.index("--body") + 1]
+               for c in comments), comments
+    edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
+    assert not any("--add-label" in c for c in edits), edits
+    assert qops_pickup.strikes(root, "29") == 1
+    assert qops_pickup.first_decomposable(root, "o/r", [epic]) == epic
+
+
+def test_a_covering_decomposition_is_accepted(tmp_path, monkeypatch):
+    root = _with_adr(_root(tmp_path))
+    epic, calls = _coverage_harness(
+        monkeypatch, root, 30, "VERDICT: covers\nthe set reaches the ADR's outcome.")
+
+    assert qops_pickup.main(["--root", str(root), "--launch"]) == 0
+    comments = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
+    assert any("covers" in c[c.index("--body") + 1] for c in comments), comments
+    assert qops_pickup.strikes(root, "30") == 0
+    assert qops_pickup.first_decomposable(root, "o/r", [epic]) is None
 
 
 # --- the reconcile pass rides the registered run (#241) ---
@@ -5289,7 +5397,8 @@ def _ledger(tmp_path, *events):
     d.mkdir(exist_ok=True)
     with (d / "ledger.jsonl").open("w", encoding="utf-8") as fh:
         for i, (event, num) in enumerate(events):
-            fh.write(json.dumps({"ts": f"2026-08-20T{i:02d}:00:00+00:00",
+            ts = _ago(len(events) - i)
+            fh.write(json.dumps({"ts": ts,
                                  "event": event, "issue": str(num)}) + "\n")
     return tmp_path
 
@@ -5725,12 +5834,19 @@ def test_a_no_auto_that_only_restates_reach_is_reported():
         "labels": [{"name": "state:planned"}, {"name": "gate:taste"},
                    {"name": "no-auto"}],
     }
+    claimed = {
+        # the alert pass's own claim, not the owner's flag.
+        "number": 88, "body": _ROLE_FILES,
+        "labels": [{"name": "state:building"}, {"name": "gate:machine"},
+                   {"name": "no-auto"}],
+    }
     problems = install.redundant_no_auto(
-        [redundant, no_no_auto, no_auto_but_writable, no_auto_wrong_gate])
+        [redundant, no_no_auto, no_auto_but_writable, no_auto_wrong_gate, claimed])
     assert len(problems) == 1
     assert "#57" in problems[0]
     assert ".claude/agents/triager.md" in problems[0]
-    assert not any("#13" in p or "#70" in p or "#42" in p for p in problems)
+    assert not any("#13" in p or "#70" in p or "#42" in p or "#88" in p
+                   for p in problems)
 
 
 # --------------------------------------------------------------------------
@@ -6018,6 +6134,59 @@ def test_init_writes_a_dev_requirements_file(tmp_path):
     # consumer's production install.
     assert "pytest" not in (tmp_path / "requirements.txt").read_text(
         encoding="utf-8")
+
+
+def test_init_writes_a_gitignore_covering_qops_machine_state(tmp_path):
+    """#272: a fresh scaffold wrote no `.gitignore` at all, so
+    `.qops/runs/` (an unattended run's transcript, on a public repo) and
+    `.claude/settings.local.json` (absolute host paths) were one `git add -A`
+    away with nothing telling the consumer otherwise.
+
+    The expected paths are parsed out of this repo's own `.gitignore` rather
+    than restated, so the two lists cannot drift apart silently again.
+    """
+    repo_lines = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
+    marker_idx = next(i for i, line in enumerate(repo_lines)
+                      if line.startswith("# qops machine state"))
+    expected = [line for line in repo_lines[marker_idx:]
+               if line.strip() and not line.startswith("#")]
+    assert expected, "this repo's own .gitignore names no machine state"
+
+    assert initmod.main(["--project", "demo", "--repo", "a/b",
+                         "--python", "python3"], tmp_path, {}) == 0
+    scaffolded = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    for path in expected:
+        assert path in scaffolded, f"{path} missing from scaffolded .gitignore"
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    ignored = expected + [".qops/config.yml"]
+    for path in ignored:
+        rc = subprocess.run(["git", "check-ignore", "-q", path],
+                            cwd=tmp_path).returncode
+        should_be_ignored = path != ".qops/config.yml"
+        if should_be_ignored:
+            assert rc == 0, f"{path} is not ignored"
+        else:
+            assert rc == 1, f"{path} is ignored, but must be tracked"
+
+    tracked = ["CLAUDE.md", "requirements.txt", "requirements-dev.txt",
+              "tests/test_config.py", "skills-lock.json"]
+    for path in tracked:
+        rc = subprocess.run(["git", "check-ignore", "-q", path],
+                            cwd=tmp_path).returncode
+        assert rc == 1, f"{path} is ignored, but a rendered surface must be tracked"
+
+
+def test_init_appends_to_an_existing_gitignore(tmp_path):
+    """A hand-seeded `.gitignore` is appended to, never overwritten — the
+    scope note in #272 rules out clobbering a consumer's own lines.
+    """
+    (tmp_path / ".gitignore").write_text("*.local\n", encoding="utf-8")
+    assert initmod.main(["--project", "demo", "--repo", "a/b",
+                         "--python", "python3"], tmp_path, {}) == 0
+    text = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert text.startswith("*.local\n"), text
+    assert ".qops/runs/" in text
 
 
 def _posix_bash() -> bool:
@@ -7042,6 +7211,28 @@ def test_filing_skills_refuse_ready_auto_without_a_named_test():
         assert "R8" in text
 
 
+def test_the_filing_skill_scopes_the_ready_auto_notice_to_agent_origin():
+    """#273: the non-grant announcement is false on an `origin:owner` row -
+    since ADR-0028 the filing itself is the grant. Both copies of SKILL.md
+    must condition the notice on `origin:agent` and state the owner-origin
+    fact instead, or the owner keeps reading a refusal that does not apply."""
+    live = (REPO / ".claude" / "skills" / "spec-to-issue"
+            / "SKILL.md").read_text(encoding="utf-8")
+    tmpl = (REPO / "qops" / "templates" / "skills" / "spec-to-issue"
+            / "SKILL.md").read_text(encoding="utf-8")
+    for text in (live, tmpl):
+        paragraphs = text.split("\n\n")
+        non_grant = [p for p in paragraphs if "never apply" in p.lower() and "ready:auto" in p]
+        assert non_grant, "non-grant notice paragraph missing"
+        assert all("origin:agent" in p for p in non_grant)
+
+        owner_grant = [p for p in paragraphs if "origin:owner" in p and "CADR-0011" in p]
+        assert owner_grant, "origin:owner grant paragraph missing"
+        assert any("is the grant" in p for p in owner_grant)
+
+        assert "ready:auto" in text
+
+
 def test_r8_names_a_test_reports_tracker_wide(monkeypatch):
     """The five rows in #194 sat mislabelled for hours and only a PR made
     them visible — a tracker-wide sweep must report R8 on every such row,
@@ -7199,3 +7390,14 @@ def test_an_unresolvable_dash_c_is_refused_as_unjudgeable(tmp_path, monkeypatch)
     reason = guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC)
     assert reason and "could not be resolved" in reason and "$W" in reason
     assert "master" not in reason
+
+
+def test_adr_0039_answers_the_three_conflicts():
+    """#274. Measures the file, not the behaviour — the ADR decides, it does
+    not implement, so there is nothing else in this sortie to assert."""
+    path = REPO / "docs" / "adr" / "0039-releases-and-feature-branches.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert re.search(r"^status:\s*\S+", text, re.MULTILINE)
+    for token in ("ADR-0016", "ADR-0020", "protected_branches", "type:epic"):
+        assert text.count(token) > 0, f"{token} missing from ADR-0039"
