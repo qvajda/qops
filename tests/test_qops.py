@@ -1524,6 +1524,15 @@ def test_automerge_never_interpolates_the_branch_into_a_shell():
     assert "$REF" in text
 
 
+def test_automerge_enable_can_label_the_issue():
+    """#290. `enable` relabels a non-machine row `state:review`; without
+    `issues: write` that edit fails and the row never shows as waiting."""
+    job = _automerge_text().split("\n  enable:", 1)[1]
+    body = re.split(r"\n  \w+:\n", job, maxsplit=1)[0]
+    assert "gh issue edit" in body
+    assert "issues: write" in body
+
+
 def test_automerge_squashes():
     """Branch deletion is the repo's `delete_branch_on_merge` setting since
     qops#3 - it was a flag on the call that fix removed."""
