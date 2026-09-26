@@ -225,7 +225,7 @@ def render_from(state: dict, cfg: dict) -> str:
     if state.get("branch") in cfg.get("protected_branches", []):
         lines.append(f"On `{state['branch']}` (protected). Branch before committing.")
     if state.get("worktrees", 0) >= cfg.get("max_worktrees", 99):
-        lines.append(f"{state['worktrees']} worktrees live — at the cap.")
+        lines.append(f"{state['worktrees']} worktrees live - at the cap.")
 
     head = f"qops {state.get('version') or qops_version()} | `{state.get('branch','?')}`"
     if state.get("ahead"):
