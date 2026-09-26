@@ -52,6 +52,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # #290: the non-machine branch relabels the issue `state:review`.
+      issues: write
     steps:
       - name: the linked issue authorises an unread merge
         id: check
