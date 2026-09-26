@@ -4177,6 +4177,45 @@ def test_r8_accepts_a_test_that_fails_without_the_change(tmp_path):
     assert problems == []
 
 
+def test_r8_proof_reports_a_timeout_instead_of_crashing(tmp_path, monkeypatch,
+                                                       capsys):
+    """A named target that outruns the budget is a proof that did not run, and
+    `r8_proof` says so rather than raising.
+
+    qhoto_printshop#233 named two whole test files whose own `test` job takes
+    ~8.5 minutes. `run()` was the one subprocess call in `r8_proof` with no
+    `except` around it, so `TimeoutExpired` escaped it, escaped `doctor`, and
+    killed the `gate` step with a traceback — leaving every invariant after
+    R8 unevaluated and a `gate:machine` PR with auto-merge already on sitting
+    unmerged for days over a slow suite, not a violation (#291).
+
+    The overrun is injected rather than waited out: a fixture that really
+    sleeps past the budget would have to either spend the budget or shrink it
+    to a value the runner cannot distinguish from process start-up. Only the
+    `pytest` call is made to time out; the `git` calls around it still run.
+    """
+    root = _r8_repo(tmp_path, pkg_base="def thing():\n    return 1\n",
+                    pkg_head="def thing():\n    return 2\n",
+                    test_head="import pkg\n\n\ndef test_thing():\n"
+                              "    assert pkg.thing() == 2\n")
+    real = subprocess.run
+
+    def times_out(cmd, *args, **kwargs):
+        if "pytest" in cmd:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(install.subprocess, "run", times_out)
+    monkeypatch.setenv("QOPS_STRICT", "1")
+    problems = install.r8_proof(root, _R8_ISSUES, base_ref="master",
+                                head_ref="feat/27-fixture")
+    assert any("did not finish at HEAD" in p for p in problems), problems
+    # and the reason reaches the log, not only the return value
+    assert "did not finish at HEAD" in capsys.readouterr().out
+    # the budget is one named constant, so it can be raised in one place
+    assert install._R8_TIMEOUT >= 120
+
+
 def test_r8_is_silent_without_a_pr_context(monkeypatch, capsys):
     """No `GITHUB_BASE_REF`/`GITHUB_HEAD_REF` means no PR to prove anything
     about — a laptop `doctor` run must not try, let alone fail (#27)."""

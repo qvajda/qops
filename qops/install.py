@@ -1484,6 +1484,16 @@ def version_bump_required(root: Path, base_ref: str | None = None,
     return []
 
 
+# How long one half of R8's proof may take. R8 runs the named targets twice —
+# once at HEAD, once at the merge base — and a target may be a whole test file
+# rather than one function, so this is a suite's budget, not a test's. 120s fit
+# this repo's own suite and nothing else: qhoto_printshop#233 named two files
+# whose `test` job alone takes ~8.5 minutes (#291). A substrate constant rather
+# than a config key — the contract is frozen, and a consumer that needs longer
+# needs the budget raised for every consumer, not a knob.
+_R8_TIMEOUT = 600
+
+
 def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
              head_ref: str | None = None) -> list[str]:
     """ADR-0023's R8, made a proof rather than a filename regex.
@@ -1521,15 +1531,31 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
 
     last: list[str] = []
 
-    def run(cwd: Path) -> int:
+    def run(cwd: Path) -> int | None:
         # The output is kept, not discarded. "the test it names fails at HEAD"
         # with nothing after it is unactionable from a CI log, and a run that
         # only reproduces on the runner is exactly when it is needed.
-        out = subprocess.run([sys.executable, "-m", "pytest", "-q", *targets],
-                             cwd=cwd, capture_output=True, text=True,
-                             timeout=120)
+        #
+        # `None` is the budget overrun, and it is caught here rather than left
+        # to escape: every sibling subprocess call in this function returns a
+        # reason, and this one letting `TimeoutExpired` through took the whole
+        # of `doctor` down with a traceback - every invariant after R8 included
+        # - over a suite that was merely slow (#291).
+        try:
+            out = subprocess.run([sys.executable, "-m", "pytest", "-q", *targets],
+                                 cwd=cwd, capture_output=True, text=True,
+                                 timeout=_R8_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            last[:] = [f"timed out after {_R8_TIMEOUT}s"]
+            return None
         last[:] = (out.stdout + out.stderr).strip().splitlines()[-15:]
         return out.returncode
+
+    def timed_out(where: str) -> list[str]:
+        print(f"doctor: skipping R8 proof for #{num} — {targets} did not "
+              f"finish at {where} within {_R8_TIMEOUT}s")
+        return [f"#{num}: R8 proof did not run — the test it names did not "
+                f"finish at {where} within {_R8_TIMEOUT}s"] if strict() else []
 
     try:
         merge_base = subprocess.run(
@@ -1541,6 +1567,8 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
         return [f"#{num}: R8 proof did not run — {exc}"] if strict() else []
 
     head_rc = run(root)
+    if head_rc is None:
+        return timed_out("HEAD")
     if head_rc == 5:
         return [f"#{num}: {targets} resolves to no test at HEAD — R8 cannot "
                 f"prove it (ADR-0023)"]
@@ -1571,6 +1599,8 @@ def r8_proof(root: Path, issues: list[dict], base_ref: str | None = None,
             subprocess.run(["git", "worktree", "remove", "--force", base_dir],
                            cwd=root, capture_output=True, text=True, timeout=30)
 
+    if base_rc is None:
+        return timed_out("the merge base")
     if base_rc == 0:
         return [f"#{num}: the test it names passes without its change — R8 "
                 f"proves nothing (ADR-0023)"]
