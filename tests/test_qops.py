@@ -685,6 +685,17 @@ def test_brief_is_ascii():
     text.encode("ascii")
 
 
+def test_brief_is_ascii_at_the_worktree_cap():
+    """The cap line only renders in one state; test_brief_is_ascii alone never
+    reaches it unless the machine running it happens to be at the cap."""
+    cfg = qconfig.load(REPO)
+    state = {"branch": "master", "dirty": [], "worktrees": cfg.get("max_worktrees", 99),
+             "issue": None, "resume": "", "ahead": 0}
+    text = briefmod.render_from(state, cfg)
+    assert "at the cap" in text
+    text.encode("ascii")
+
+
 def test_brief_reports_dotted_paths_intact():
     """`git status --porcelain`'s first line starts with a space; stripping it
     took the first character of the path with it."""
