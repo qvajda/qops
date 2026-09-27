@@ -167,6 +167,12 @@ def head_moved_refusal(toks: list[str], ctx: dict) -> str | None:
     an observation. If it failed, HEAD never left the branch this session
     recorded just before it (`session_prior_branch`); that is a failed
     checkout, not an external move, and is not refused (#167).
+
+    The clearing act (#295): a `checkout`/`switch` that lands on the branch
+    HEAD is *already* on moves nothing further - it only lets `hook()` write
+    a `checkout` ledger record with the real branch, which is what the next
+    call's `session_branch` reads. `git status`, the old message's advice,
+    writes no ledger event and could never have cleared this.
     """
     session_branch = ctx.get("session_branch")
     branch = ctx.get("branch") or ""
@@ -174,11 +180,14 @@ def head_moved_refusal(toks: list[str], ctx: dict) -> str | None:
         return None
     if branch == ctx.get("session_prior_branch"):
         return None
-    if not any(verb in ("checkout", "switch") for verb, _, _ in git_commands(toks)):
+    commands = git_commands(toks)
+    if not any(verb in ("checkout", "switch") for verb, _, _ in commands):
+        return None
+    if all(checkout_target(v, a) in (None, branch) for v, a, _ in commands):
         return None
     return (f"HEAD moved under this session: last recorded on `{session_branch}`, "
-            f"now on `{branch}`. Something else moved the tree - re-read it "
-            f"(git status) before branching.")
+            f"now on `{branch}`. Something else moved the tree - run "
+            f"`git checkout {branch}` to sync the ledger to it, then continue.")
 
 
 def issue_filings(toks: list[str]) -> list[list[str]]:

@@ -628,6 +628,27 @@ def test_a_head_move_unexplained_by_a_failed_checkout_still_refuses():
     assert reason and "fix/128-x" in reason and "master" in reason
 
 
+def test_head_moved_refusal_is_cleared_by_the_act_it_names(tmp_path):
+    """The old message named `git status`, which writes no ledger event and
+    could never clear the refusal. The act it names now - checking out the
+    branch HEAD is already on - does, because that is the checkout `hook()`
+    records (#295)."""
+    ledger.append(tmp_path, "session_start", {"session_id": "s1", "branch": "master"})
+    ctx = {"branch": "fix/121-x", "worktrees": 1,
+           "session_branch": ledger.last_session_branch(tmp_path, "s1")}
+    cmd = "git checkout -b fix/128-x"
+    reason = guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC)
+    assert reason and "fix/121-x" in reason
+
+    act = f"git checkout {ctx['branch']}"
+    assert act in reason
+    assert guard.check("Bash", {"command": act}, ctx, SYNTHETIC) is None
+
+    ledger.append(tmp_path, "checkout", {"session_id": "s1", "branch": ctx["branch"]})
+    ctx["session_branch"] = ledger.last_session_branch(tmp_path, "s1")
+    assert guard.check("Bash", {"command": cmd}, ctx, SYNTHETIC) is None
+
+
 def test_ledger_prior_session_branch_reads_the_one_before_latest(tmp_path):
     ledger.append(tmp_path, "session_start", {"session_id": "s1", "branch": "master"})
     ledger.append(tmp_path, "checkout", {"session_id": "s1", "branch": "fix/128-x"})
