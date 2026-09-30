@@ -391,8 +391,25 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     if not waiting:
         print("pickup-loop: nothing waiting on the owner.")
         return reap_rc
-    line = waiting[0]
-    num = int(line.split()[0].lstrip("#"))
+    # A row whose last alert session is still running (or cannot be told) is
+    # skipped whatever relabelled it since (#300): the label claim is not the
+    # only writer, so the pid is asked here, in the one launch path.
+    image = Path(alert_argv(0, "", "")[0]).name
+    for line in waiting:
+        num = int(line.split()[0].lstrip("#"))
+        launch = None
+        for rec in ledger.read(root):
+            if rec.get("event") == "alert_launched" and rec.get("issue") == num:
+                launch = rec
+        if launch is None or "pid" not in launch:
+            break
+        if _pid_alive(launch["pid"], image) is False:
+            break
+        print(f"pickup-loop: #{num} is waiting on the owner but its alert "
+              f"session {launch['pid']} is still running - not launching "
+              f"another.")
+    else:
+        return reap_rc
     clause = line.split(" — ", 1)[1]
     name = alert_session_name(cfg.get("project", "qops"), num, clause)
     print(f"pickup-loop: #{num} is waiting on the owner - {clause}")
