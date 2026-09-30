@@ -402,7 +402,9 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     row = next((r for r in rows if r["number"] == num), None)
     existing = {l["name"] for l in (row or {}).get("labels", [])}
     prior_state = next((l for l in existing if l.startswith("state:")), None)
-    added = ["state:building", "no-auto"]
+    # Only what this claim adds: a label the owner put there is never recorded,
+    # so `_reap` can never take it away (#301).
+    added = [l for l in ("state:building", "no-auto") if l not in existing]
     claim = ["gh", "issue", "edit", str(num)]
     if prior_state:
         claim += ["--remove-label", prior_state]
@@ -490,14 +492,19 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     written here, so this function names no label of its own.
     """
     unreadable = False
-    for row, _ in pending.claimed_rows(root, rows):
+    # The latest launch/release per row: a launch is open until a release
+    # follows it, so a row is never reaped twice for one claim.
+    latest: dict = {}
+    for rec in ledger.read(root):
+        if rec.get("event") in ("alert_launched", "alert_released"):
+            latest[rec.get("issue")] = rec
+    for row in rows:
         num = row["number"]
-        launch = None
-        for rec in ledger.read(root):
-            if rec.get("event") == "alert_launched" and rec.get("issue") == num:
-                launch = rec
-        if launch is None or "pid" not in launch:
+        launch = latest.get(num)
+        if (launch is None or launch.get("event") != "alert_launched"
+                or "pid" not in launch):
             continue
+        labels = {l["name"] for l in row.get("labels", [])}
         image = Path(alert_argv(0, "", "")[0]).name
         alive = _pid_alive(launch["pid"], image)
         if alive is None:
@@ -505,15 +512,25 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
             continue
         if alive:
             continue
+        # A row someone else moved since (reconcile's done) is no longer
+        # claimed, but the launch's leftover labels still are ours (#301).
+        added = launch.get("added", [])
+        leftover = [l for l in added if l in labels]
+        if not leftover:
+            if "--launch" in argv:
+                ledger.append(root, "alert_released",
+                              {"issue": num, "pid": launch["pid"]})
+            continue
         if "--launch" not in argv:
             print(f"pickup-loop: dry run, would release #{num} - session "
                   f"{launch['pid']} is gone.")
             continue
         claim = ["gh", "issue", "edit", str(num)]
-        for label in launch.get("added", []):
+        for label in leftover:
             claim += ["--remove-label", label]
         prior_state = launch.get("prior_state")
-        if prior_state:
+        # Restored only while the state this claim wrote is still on the row.
+        if prior_state and any(l.startswith("state:") for l in leftover):
             claim += ["--add-label", prior_state]
         released = subprocess.run(claim, cwd=root, capture_output=True, text=True)
         if released.returncode:

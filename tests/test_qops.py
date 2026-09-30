@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import types
 import sys
 from pathlib import Path
 
@@ -7269,6 +7270,63 @@ def test_a_claim_with_no_alert_launched_is_never_reaped(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup.subprocess, "Popen",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
     assert qops_pickup._alert(["--launch"], root, cfg) == 0
+
+
+def test_a_reaped_alert_drops_only_the_labels_it_added(tmp_path, monkeypatch):
+    """#301: an owner's own `no-auto` is never recorded by the claim, so the
+    reap that follows never removes it."""
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(60, ("state:planned", "no-auto"))
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    edits = []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: types.SimpleNamespace(pid=4242))
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    launch = [r for r in qops_pickup.ledger.read(root)
+              if r.get("event") == "alert_launched"][-1]
+    assert launch["added"] == ["state:building"]
+
+    row["labels"] = [{"name": "state:building"}, {"name": "no-auto"}]
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: False)
+    edits.clear()
+    assert qops_pickup._reap(["--launch"], root, cfg, [row]) == 0
+    assert len(edits) == 1
+    assert edits[0].count("--remove-label") == 1
+    assert "no-auto" not in edits[0]
+
+
+def test_a_reconciled_alert_row_loses_its_claims_no_auto(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    row = _claimed_row(61, ("state:done", "no-auto"))
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 61, "session": "qops #61", "pid": 999,
+                               "prior_state": "state:review",
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: False)
+    edits = []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    assert qops_pickup._reap(["--launch"], root, cfg, [row]) == 0
+    assert len(edits) == 1
+    assert edits[0] == ["gh", "issue", "edit", "61", "--remove-label", "no-auto"]
+
+    # Next pass: the tracker no longer carries it, and nothing is re-edited.
+    row["labels"] = [{"name": "state:done"}]
+    edits.clear()
+    assert qops_pickup._reap(["--launch"], root, cfg, [row]) == 0
+    assert edits == []
+    assert not [l for l in qops_pickup.pending.waiting_on_owner(root, [row])
+                if "no-auto" in l]
 
 
 def test_digest_template_carries_no_telegram_step():
