@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import types
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -7204,6 +7205,35 @@ def test_a_live_alert_session_keeps_its_claim(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup.subprocess, "Popen",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
     assert qops_pickup._alert(["--launch"], root, cfg) == 0
+
+
+@pytest.mark.parametrize("alive, launches", [(True, 0), (None, 0), (False, 1)])
+def test_a_live_alert_session_suppresses_a_second_launch(
+        tmp_path, monkeypatch, alive, launches):
+    """#300: the row was relabelled (`state:done` + leftover `no-auto`) while
+    its first alert session is still open; only a session known dead may be
+    replaced."""
+    root = _root(tmp_path)
+    row = _claimed_row(60, ("state:done", "no-auto"))
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 60, "session": "qops #60", "pid": 4321,
+                               "prior_state": "state:review",
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: alive)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.pending, "waiting_on_owner",
+                        lambda root, rows: ["#60 row 60 — no-auto: withholds advancing this row"])
+    edits, popens = [], []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: popens.append(a) or types.SimpleNamespace(pid=9))
+    assert qops_pickup._alert(["--launch"], root, {"repo": "o/r"}) == 0
+    assert len(popens) == launches
+    assert len([e for e in edits if e[:3] == ["gh", "issue", "edit"]]) == launches
 
 
 def test_a_session_killed_without_session_end_is_dead(tmp_path, monkeypatch):
