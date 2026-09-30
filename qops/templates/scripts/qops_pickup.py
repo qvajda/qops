@@ -386,8 +386,13 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
               "state is UNKNOWN, which is not the same as empty.",
               file=sys.stderr)
         return 1
-    reap_rc = _reap(argv, root, cfg, rows)
-    waiting = pending.waiting_on_owner(root, rows)
+    freed: set = set()
+    reap_rc = _reap(argv, root, cfg, rows, freed)
+    # A row released this pass is judged on the next one: `rows` still shows
+    # the labels just taken off it, and a leftover hold read from there
+    # would relaunch - and reclaim - the very row it freed (#301).
+    waiting = [l for l in pending.waiting_on_owner(root, rows)
+               if int(l.split()[0].lstrip("#")) not in freed]
     if not waiting:
         print("pickup-loop: nothing waiting on the owner.")
         return reap_rc
@@ -419,7 +424,9 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     row = next((r for r in rows if r["number"] == num), None)
     existing = {l["name"] for l in (row or {}).get("labels", [])}
     prior_state = next((l for l in existing if l.startswith("state:")), None)
-    added = ["state:building", "no-auto"]
+    # Only what this claim adds: a label the owner put there is never recorded,
+    # so `_reap` can never take it away (#301).
+    added = [l for l in ("state:building", "no-auto") if l not in existing]
     claim = ["gh", "issue", "edit", str(num)]
     if prior_state:
         claim += ["--remove-label", prior_state]
@@ -491,7 +498,8 @@ def _pid_alive(pid: int, image: str) -> bool | None:
     return str(pid) in out.stdout
 
 
-def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
+def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict],
+          freed: set | None = None) -> int:
     """Release a claim whose session is gone (#147, ADR-0031 §5).
 
     Runs ahead of `waiting_on_owner()` (called from `_alert`, before it reads
@@ -507,13 +515,28 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     written here, so this function names no label of its own.
     """
     unreadable = False
-    for row, _ in pending.claimed_rows(root, rows):
+    # The latest launch/release per row: a launch is open until a release
+    # follows it, so a row is never reaped twice for one claim.
+    latest: dict = {}
+    for rec in ledger.read(root):
+        if rec.get("event") in ("alert_launched", "alert_released"):
+            latest[rec.get("issue")] = rec
+    for row in rows:
         num = row["number"]
-        launch = None
-        for rec in ledger.read(root):
-            if rec.get("event") == "alert_launched" and rec.get("issue") == num:
-                launch = rec
-        if launch is None or "pid" not in launch:
+        launch = latest.get(num)
+        if (launch is None or launch.get("event") != "alert_launched"
+                or "pid" not in launch):
+            continue
+        labels = {l["name"] for l in row.get("labels", [])}
+        # A row someone else moved since (reconcile's done) is no longer
+        # claimed, but the launch's leftover labels still are ours (#301).
+        # None left means nothing to release, so no pid is asked.
+        added = launch.get("added", [])
+        leftover = [l for l in added if l in labels]
+        if not leftover:
+            if "--launch" in argv:
+                ledger.append(root, "alert_released",
+                              {"issue": num, "pid": launch["pid"]})
             continue
         image = Path(alert_argv(0, "", "")[0]).name
         alive = _pid_alive(launch["pid"], image)
@@ -527,10 +550,11 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
                   f"{launch['pid']} is gone.")
             continue
         claim = ["gh", "issue", "edit", str(num)]
-        for label in launch.get("added", []):
+        for label in leftover:
             claim += ["--remove-label", label]
         prior_state = launch.get("prior_state")
-        if prior_state:
+        # Restored only while the state this claim wrote is still on the row.
+        if prior_state and any(l.startswith("state:") for l in leftover):
             claim += ["--add-label", prior_state]
         released = subprocess.run(claim, cwd=root, capture_output=True, text=True)
         if released.returncode:
@@ -539,6 +563,8 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
             unreadable = True
             continue
         ledger.append(root, "alert_released", {"issue": num, "pid": launch["pid"]})
+        if freed is not None:
+            freed.add(num)
         print(f"pickup-loop: released #{num} - session {launch['pid']} is gone.")
     if unreadable:
         print("pickup-loop: could not tell whether every claimed session is "
