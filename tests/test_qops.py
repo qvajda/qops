@@ -7021,10 +7021,12 @@ def test_an_attention_row_launches_one_remote_session(tmp_path, monkeypatch):
     assert "#40" in name and "no-auto" in name
 
     # Claimed before the launch: one `gh issue edit` call, ahead of `Popen`.
+    # The row's own `no-auto` is the owner's, so the claim neither adds nor
+    # records it (#301).
     assert len(edits) == 1
     claim = edits[0]
     assert claim[:3] == ["gh", "issue", "edit"]
-    assert "state:building" in claim and "no-auto" in claim
+    assert "state:building" in claim and "no-auto" not in claim
 
     # A second pass over the now-claimed row (state:building + no-auto)
     # launches nothing - `is_claimed()` removes it, no local state consulted.
@@ -7211,15 +7213,15 @@ def test_a_live_alert_session_keeps_its_claim(tmp_path, monkeypatch):
 @pytest.mark.parametrize("alive, launches", [(True, 0), (None, 0), (False, 1)])
 def test_a_live_alert_session_suppresses_a_second_launch(
         tmp_path, monkeypatch, alive, launches):
-    """#300: the row was relabelled (`state:done` + leftover `no-auto`) while
-    its first alert session is still open; only a session known dead may be
-    replaced."""
+    """#300: the row was relabelled (`state:done` + the owner's `no-auto`)
+    while its first alert session is still open; only a session known dead
+    may be replaced. A `no-auto` the claim added is #301's case instead."""
     root = _root(tmp_path)
     row = _claimed_row(60, ("state:done", "no-auto"))
     qops_pickup.ledger.append(root, "alert_launched",
                               {"issue": 60, "session": "qops #60", "pid": 4321,
                                "prior_state": "state:review",
-                               "added": ["state:building", "no-auto"]})
+                               "added": ["state:building"]})
     monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: alive)
     monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
     monkeypatch.setattr(qops_pickup.pending, "waiting_on_owner",
@@ -7357,6 +7359,30 @@ def test_a_reconciled_alert_row_loses_its_claims_no_auto(tmp_path, monkeypatch):
     assert edits == []
     assert not [l for l in qops_pickup.pending.waiting_on_owner(root, [row])
                 if "no-auto" in l]
+
+
+def test_a_released_alert_row_is_not_relaunched_in_the_same_pass(tmp_path, monkeypatch):
+    """#301: `rows` still shows the `no-auto` the reap just removed; read
+    from there, the dead session reads as replaceable and the done row would
+    be reclaimed."""
+    root = _root(tmp_path)
+    row = _claimed_row(62, ("state:done", "no-auto"))
+    qops_pickup.ledger.append(root, "alert_launched",
+                              {"issue": 62, "session": "qops #62", "pid": 999,
+                               "prior_state": "state:review",
+                               "added": ["state:building", "no-auto"]})
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: False)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    edits = []
+
+    def fake_run(cmd, **kw):
+        edits.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
+    assert qops_pickup._alert(["--launch"], root, {"repo": "o/r"}) == 0
+    assert edits == [["gh", "issue", "edit", "62", "--remove-label", "no-auto"]]
 
 
 def test_digest_template_carries_no_telegram_step():

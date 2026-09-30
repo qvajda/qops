@@ -386,8 +386,13 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
               "state is UNKNOWN, which is not the same as empty.",
               file=sys.stderr)
         return 1
-    reap_rc = _reap(argv, root, cfg, rows)
-    waiting = pending.waiting_on_owner(root, rows)
+    freed: set = set()
+    reap_rc = _reap(argv, root, cfg, rows, freed)
+    # A row released this pass is judged on the next one: `rows` still shows
+    # the labels just taken off it, and a leftover hold read from there
+    # would relaunch - and reclaim - the very row it freed (#301).
+    waiting = [l for l in pending.waiting_on_owner(root, rows)
+               if int(l.split()[0].lstrip("#")) not in freed]
     if not waiting:
         print("pickup-loop: nothing waiting on the owner.")
         return reap_rc
@@ -493,7 +498,8 @@ def _pid_alive(pid: int, image: str) -> bool | None:
     return str(pid) in out.stdout
 
 
-def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
+def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict],
+          freed: set | None = None) -> int:
     """Release a claim whose session is gone (#147, ADR-0031 §5).
 
     Runs ahead of `waiting_on_owner()` (called from `_alert`, before it reads
@@ -522,21 +528,22 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
                 or "pid" not in launch):
             continue
         labels = {l["name"] for l in row.get("labels", [])}
-        image = Path(alert_argv(0, "", "")[0]).name
-        alive = _pid_alive(launch["pid"], image)
-        if alive is None:
-            unreadable = True
-            continue
-        if alive:
-            continue
         # A row someone else moved since (reconcile's done) is no longer
         # claimed, but the launch's leftover labels still are ours (#301).
+        # None left means nothing to release, so no pid is asked.
         added = launch.get("added", [])
         leftover = [l for l in added if l in labels]
         if not leftover:
             if "--launch" in argv:
                 ledger.append(root, "alert_released",
                               {"issue": num, "pid": launch["pid"]})
+            continue
+        image = Path(alert_argv(0, "", "")[0]).name
+        alive = _pid_alive(launch["pid"], image)
+        if alive is None:
+            unreadable = True
+            continue
+        if alive:
             continue
         if "--launch" not in argv:
             print(f"pickup-loop: dry run, would release #{num} - session "
@@ -556,6 +563,8 @@ def _reap(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
             unreadable = True
             continue
         ledger.append(root, "alert_released", {"issue": num, "pid": launch["pid"]})
+        if freed is not None:
+            freed.add(num)
         print(f"pickup-loop: released #{num} - session {launch['pid']} is gone.")
     if unreadable:
         print("pickup-loop: could not tell whether every claimed session is "
