@@ -7652,3 +7652,17 @@ def test_adr_0039_answers_the_three_conflicts():
     assert re.search(r"^status:\s*\S+", text, re.MULTILINE)
     for token in ("ADR-0016", "ADR-0020", "protected_branches", "type:epic"):
         assert text.count(token) > 0, f"{token} missing from ADR-0039"
+
+
+def test_an_epic_whose_children_cannot_be_read_is_not_cut_again(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    monkeypatch.setattr(
+        qops_pickup.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "boom"))
+    epic = _row(29, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+
+    assert qops_pickup.sub_issues(root, "o/r", "29") is None
+    assert qops_pickup.sub_issue_count(root, "o/r", "29") is None
+    assert qops_pickup.first_decomposable(root, "o/r", [epic]) is None
+    assert not qops_pickup.produced_children(root, "o/r", "29", 0)
+    assert qops_pickup.strikes(root, "29") == 0

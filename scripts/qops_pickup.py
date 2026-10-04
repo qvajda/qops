@@ -1007,10 +1007,13 @@ def _decompose(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     if "--launch" not in argv:
         print("pickup-loop: dry run, not decomposing. Pass --launch to start an agent.")
         return 0
+    before = sub_issue_count(root, repo, num)
+    if before is None:
+        print(f"pickup-loop: #{num} - sub-issues unreadable; not decomposing.")
+        return 1
     log = run_log_path(root, num)
     ledger.append(root, "pickup", {"issue": num, "log": str(log), "mode": "decompose"})
     print(f"pickup-loop: run log {log}")
-    before = sub_issue_count(root, repo, num)
     with log.open("w", encoding="utf-8", errors="replace") as fh:
         # The planner role's toolset and model, reused rather than a second
         # role file: filing a child is `gh issue create`, which is Bash - the
@@ -1054,34 +1057,42 @@ def first_decomposable(root: Path, repo: str, rows: list[dict]) -> dict | None:
         # An epic with sub-issues is skipped unless it already carries a
         # does-not-cover verdict for exactly this child set - otherwise a
         # partial cut would be invisible to every later pass.
-        if sub_issue_count(root, repo, num) > 0 and not uncovered(root, repo, num):
+        count = sub_issue_count(root, repo, num)
+        if count is None:
+            print(f"pickup-loop: skipping #{num} - its sub-issues could not "
+                  f"be read, so it is not known to be uncut.")
+            continue
+        if count > 0 and not uncovered(root, repo, num):
             continue
         return row
     return None
 
 
-def sub_issues(root: Path, repo: str, num: str) -> list[dict]:
+def sub_issues(root: Path, repo: str, num: str) -> list[dict] | None:
     """The epic's native sub-issues, read through the REST endpoint
-    `qops/reconcile.py:parent_origin` already reads the other side of (#81)."""
+    `qops/reconcile.py:parent_origin` already reads the other side of (#81).
+    `None` is an unreadable list, which is not `[]` - "no children"."""
     out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/sub_issues"],
                          cwd=root, capture_output=True, text=True)
     if out.returncode:
-        return []
+        return None
     try:
         return json.loads(out.stdout or "[]")
     except json.JSONDecodeError:
-        return []
+        return None
 
 
-def sub_issue_count(root: Path, repo: str, num: str) -> int:
-    return len(sub_issues(root, repo, num))
+def sub_issue_count(root: Path, repo: str, num: str) -> int | None:
+    kids = sub_issues(root, repo, num)
+    return None if kids is None else len(kids)
 
 
 def produced_children(root: Path, repo: str, num: str, before: int) -> bool:
     """A session that exits 0 having filed nothing is a failed run, not a
     decomposed epic (the same rule `produced_work()` and `produced_plan()`
     apply to their own runs)."""
-    return sub_issue_count(root, repo, num) > before
+    after = sub_issue_count(root, repo, num)
+    return after is not None and before is not None and after > before
 
 
 COVERAGE_MARKER = "<!-- qops-coverage:"
