@@ -2920,6 +2920,13 @@ def test_an_interviewed_epic_decomposes_into_sorties(tmp_path, monkeypatch):
     assert decomposed == []
 
 
+def test_the_decompose_prompt_links_scope_already_filed():
+    """#307: an epic cut by hand reads as uncut; the session must link the
+    existing children rather than file duplicates. A prompt is a preference -
+    this proves the text exists, not that a session obeys."""
+    assert "link those instead of filing duplicates" in         qops_pickup.decompose_prompt("25")
+
+
 def test_a_second_pass_over_the_same_epic_files_no_duplicate_children(monkeypatch):
     """`first_decomposable()` skips an epic that already has a native
     sub-issue - the dedup that stops a second pass re-filing children."""
