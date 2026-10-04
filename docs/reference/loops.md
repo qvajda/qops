@@ -255,7 +255,9 @@ reference is skipped and says why (`interviewed()`, `decomposable()` in
   — inheritance is derived from a structural link, never claimed by the filer.
 - **Dedup is the sub-issue link itself.** An epic that already has one is
   skipped: a second pass over the same epic files no duplicate children
-  (`first_decomposable()`).
+  (`first_decomposable()`). A cut epic is not touched while any child is
+  open; once all are closed, a does-not-cover verdict for that child set
+  brings it back (#306).
 - **The epic itself is untouched apart from the links** — no label, no body
   edit. A failed decompose does not relabel it, same reasoning as a failed
   plan.

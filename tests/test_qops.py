@@ -2924,7 +2924,8 @@ def test_a_second_pass_over_the_same_epic_files_no_duplicate_children(monkeypatc
     """`first_decomposable()` skips an epic that already has a native
     sub-issue - the dedup that stops a second pass re-filing children."""
     epic = _row(27, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
-    monkeypatch.setattr(qops_pickup, "sub_issue_count", lambda *a, **k: 1)
+    monkeypatch.setattr(qops_pickup, "sub_issues",
+                        lambda *a, **k: [{"number": 1, "state": "open"}])
     assert qops_pickup.first_decomposable(REPO, "o/r", [epic]) is None
 
 
@@ -3007,6 +3008,13 @@ def test_a_decomposition_that_misses_the_adrs_outcome_is_not_accepted(tmp_path, 
     edits = [c for c in calls if c[:3] == ["gh", "issue", "edit"]]
     assert not any("--add-label" in c for c in edits), edits
     assert qops_pickup.strikes(root, "29") == 1
+    # the cut epic waits while its child is open (a missing `state` is not closed)...
+    for child in ({"number": 100, "state": "open"}, {"number": 100}):
+        monkeypatch.setattr(qops_pickup, "sub_issues", lambda *a, **k: [child])
+        assert qops_pickup.first_decomposable(root, "o/r", [epic]) is None
+    # ...and comes back once every child is closed.
+    monkeypatch.setattr(qops_pickup, "sub_issues",
+                        lambda *a, **k: [{"number": 100, "state": "closed"}])
     assert qops_pickup.first_decomposable(root, "o/r", [epic]) == epic
 
 
