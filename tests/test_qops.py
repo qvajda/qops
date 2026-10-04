@@ -7134,6 +7134,16 @@ def test_the_review_prompt_names_the_merge_and_the_reject_question():
     assert "merge" not in other_prompt.lower()
 
 
+def test_the_alert_prompt_sends_the_session_to_the_cause():
+    """#308. Stated limit: a prompt is a preference; this proves the text
+    exists, not that the session obeys."""
+    prompt = qops_pickup.alert_prompt(220, "no-auto: withholds a spend")
+    for needle in ("comments", "defect",
+                   "Leaving the row as it is is a valid answer"):
+        assert needle in prompt
+    assert len(prompt) < 1500
+
+
 def test_the_alerter_holds_no_trigger_predicate():
     """ADR-0031 §1: the set is `pending.waiting_on_owner()`, never
     re-derived. No `gate:` literal anywhere, and no `state:` literal other

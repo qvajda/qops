@@ -349,10 +349,15 @@ def alert_prompt(num: int, clause: str) -> str:
             f"suggests) - do not choose for them.")
     return (
         f"Read issue #{num} on this repo's tracker - it is waiting on the "
-        f"owner ({clause}). State the situation in a few lines, propose "
-        f"exactly one recommendation with at most four options, then wait "
-        f"for the owner - this reaches them, it does not act on their "
-        f"behalf.")
+        f"owner ({clause}). Read the issue's comments first: the loop "
+        f"writes why it stopped there, with each failed run's tail. Find "
+        f"the cause, not just the label. If the loop did something it "
+        f"should not have (re-cut a cut epic, retried done work), say so "
+        f"plainly as a qops defect - a label on the row only hides it. "
+        f"State the situation in a few lines, propose exactly one "
+        f"recommendation with at most four options. Leaving the row as it "
+        f"is is a valid answer. Then wait for the owner - this reaches "
+        f"them, it does not act on their behalf.")
 
 
 def alert_argv(num: int, clause: str, name: str) -> list[str]:
