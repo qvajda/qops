@@ -127,7 +127,20 @@ this ADR exists to remove wearing the costume of progress. So:
   are the fix.
 
 That is the re-alert policy in full: **while the claim is live, silence; when it
-dies, the row returns to the set and alerts on the next pass.**
+dies, the row returns to the set and alerts on the next pass** — *if it changed.*
+
+**Amended (#304): edge, not level.** An owner's answer of "leave it" writes no
+label, so a released row re-enters the set unchanged and, under the policy
+above, was paged again every pass, forever — the muted-alert failure §2 names.
+`alert_launched` therefore records `seen`: the row's labels before the claim and
+every `waiting_on_owner()` clause for it. Once that session is dead, the row is
+alerted again only if its labels or its clauses differ from `seen`. The whole
+snapshot is compared, never the clause alone: a row with two clauses would
+alternate between them each pass. A record without `seen` relaunches once.
+
+The cost, taken: a session killed before the owner saw it does not page again
+until the row changes. The row stays in `qops pending`, which is where an
+unanswered row is read.
 
 ## The critic
 
