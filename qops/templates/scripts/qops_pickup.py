@@ -1250,7 +1250,10 @@ def decompose_prompt(num: str) -> str:
         f"its number). Leave #{num} itself untouched apart from those links: "
         f"no label, no body edit. Never decompose recursively - a child that "
         f"is itself too large is ADR-0027's refusal path, not a second pass "
-        f"of this one. Never write `type:milestone`. If the epic cannot be "
+        f"of this one. Where issues already carry some of the epic's scope "
+        f"(named in its body or comments, or cut by hand), link those "
+        f"instead of filing duplicates, as native sub-issues - a link is the cut. "
+        f"Never write `type:milestone`. If the epic cannot be "
         f"cut into sorties that pass the filing bar, file none, say so on "
         f"issue #{num} as a comment, and stop.")
 def clarified(root: Path, cfg: dict, num: str) -> bool:
