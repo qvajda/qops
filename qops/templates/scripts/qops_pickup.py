@@ -409,7 +409,16 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
         if launch is None or "pid" not in launch:
             break
         if _pid_alive(launch["pid"], image) is False:
-            break
+            # Edge, not level (#304, ADR-0031 §5): a row left exactly as the
+            # owner was shown it was answered, so it is not shown again.
+            # Whole snapshot, never the clause alone - a row with two
+            # clauses would alternate between them every pass.
+            if "seen" not in launch or launch["seen"] != _seen(rows, waiting, num):
+                break
+            print(f"pickup-loop: #{num} is waiting on the owner but is "
+                  f"unchanged since its alert session was shown - not "
+                  f"launching another.")
+            continue
         print(f"pickup-loop: #{num} is waiting on the owner but its alert "
               f"session {launch['pid']} is still running - not launching "
               f"another.")
@@ -421,6 +430,7 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     if "--launch" not in argv:
         print(f"pickup-loop: dry run, not alerting. Would launch {name!r}.")
         return reap_rc
+    seen = _seen(rows, waiting, num)
     row = next((r for r in rows if r["number"] == num), None)
     existing = {l["name"] for l in (row or {}).get("labels", [])}
     prior_state = next((l for l in existing if l.startswith("state:")), None)
@@ -457,9 +467,20 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     # `session` (the display name) alone carries neither.
     ledger.append(root, "alert_launched",
                   {"issue": num, "session": name, "pid": proc.pid,
-                   "prior_state": prior_state, "added": added})
+                   "prior_state": prior_state, "added": added,
+                   "seen": seen})
     print(f"pickup-loop: launched {name!r} for #{num}.")
     return reap_rc
+
+
+def _seen(rows: list[dict], waiting: list[str], num: int) -> dict:
+    """The row as the owner is shown it: its labels and every clause that
+    holds it in `waiting_on_owner()` (#304). Read before the claim, so the
+    labels are the ones `_reap` restores."""
+    row = next((r for r in rows if r["number"] == num), None)
+    return {"labels": sorted(l["name"] for l in (row or {}).get("labels", [])),
+            "clauses": sorted(l.split(" — ", 1)[1] for l in waiting
+                              if int(l.split()[0].lstrip("#")) == num)}
 
 
 def _pid_alive(pid: int, image: str) -> bool | None:
@@ -986,10 +1007,13 @@ def _decompose(argv: list[str], root: Path, cfg: dict, rows: list[dict]) -> int:
     if "--launch" not in argv:
         print("pickup-loop: dry run, not decomposing. Pass --launch to start an agent.")
         return 0
+    before = sub_issue_count(root, repo, num)
+    if before is None:
+        print(f"pickup-loop: #{num} - sub-issues unreadable; not decomposing.")
+        return 1
     log = run_log_path(root, num)
     ledger.append(root, "pickup", {"issue": num, "log": str(log), "mode": "decompose"})
     print(f"pickup-loop: run log {log}")
-    before = sub_issue_count(root, repo, num)
     with log.open("w", encoding="utf-8", errors="replace") as fh:
         # The planner role's toolset and model, reused rather than a second
         # role file: filing a child is `gh issue create`, which is Bash - the
@@ -1033,34 +1057,42 @@ def first_decomposable(root: Path, repo: str, rows: list[dict]) -> dict | None:
         # An epic with sub-issues is skipped unless it already carries a
         # does-not-cover verdict for exactly this child set - otherwise a
         # partial cut would be invisible to every later pass.
-        if sub_issue_count(root, repo, num) > 0 and not uncovered(root, repo, num):
+        count = sub_issue_count(root, repo, num)
+        if count is None:
+            print(f"pickup-loop: skipping #{num} - its sub-issues could not "
+                  f"be read, so it is not known to be uncut.")
+            continue
+        if count > 0 and not uncovered(root, repo, num):
             continue
         return row
     return None
 
 
-def sub_issues(root: Path, repo: str, num: str) -> list[dict]:
+def sub_issues(root: Path, repo: str, num: str) -> list[dict] | None:
     """The epic's native sub-issues, read through the REST endpoint
-    `qops/reconcile.py:parent_origin` already reads the other side of (#81)."""
+    `qops/reconcile.py:parent_origin` already reads the other side of (#81).
+    `None` is an unreadable list, which is not `[]` - "no children"."""
     out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/sub_issues"],
                          cwd=root, capture_output=True, text=True)
     if out.returncode:
-        return []
+        return None
     try:
         return json.loads(out.stdout or "[]")
     except json.JSONDecodeError:
-        return []
+        return None
 
 
-def sub_issue_count(root: Path, repo: str, num: str) -> int:
-    return len(sub_issues(root, repo, num))
+def sub_issue_count(root: Path, repo: str, num: str) -> int | None:
+    kids = sub_issues(root, repo, num)
+    return None if kids is None else len(kids)
 
 
 def produced_children(root: Path, repo: str, num: str, before: int) -> bool:
     """A session that exits 0 having filed nothing is a failed run, not a
     decomposed epic (the same rule `produced_work()` and `produced_plan()`
     apply to their own runs)."""
-    return sub_issue_count(root, repo, num) > before
+    after = sub_issue_count(root, repo, num)
+    return after is not None and before is not None and after > before
 
 
 COVERAGE_MARKER = "<!-- qops-coverage:"
