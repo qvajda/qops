@@ -1059,15 +1059,17 @@ def first_decomposable(root: Path, repo: str, rows: list[dict]) -> dict | None:
             print(f"pickup-loop: skipping #{num} - struck out after "
                   f"{STRIKES} failed runs (#49).")
             continue
-        # An epic with sub-issues is skipped unless it already carries a
-        # does-not-cover verdict for exactly this child set - otherwise a
-        # partial cut would be invisible to every later pass.
-        count = sub_issue_count(root, repo, num)
-        if count is None:
+        # A cut epic is not touched while any child is open (a child with no
+        # `state` is not known closed). Once all are closed it is skipped
+        # unless it carries a does-not-cover verdict for exactly this child
+        # set - otherwise a partial cut would be invisible to every later pass.
+        children = sub_issues(root, repo, num)
+        if children is None:
             print(f"pickup-loop: skipping #{num} - its sub-issues could not "
                   f"be read, so it is not known to be uncut.")
             continue
-        if count > 0 and not uncovered(root, repo, num):
+        if children and (any(c.get("state") != "closed" for c in children)
+                         or not uncovered(root, repo, num)):
             continue
         return row
     return None
