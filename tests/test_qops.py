@@ -2920,6 +2920,13 @@ def test_an_interviewed_epic_decomposes_into_sorties(tmp_path, monkeypatch):
     assert decomposed == []
 
 
+def test_the_decompose_prompt_links_scope_already_filed():
+    """#307: an epic cut by hand reads as uncut; the session must link the
+    existing children rather than file duplicates. A prompt is a preference -
+    this proves the text exists, not that a session obeys."""
+    assert "link those instead of filing duplicates" in         qops_pickup.decompose_prompt("25")
+
+
 def test_a_second_pass_over_the_same_epic_files_no_duplicate_children(monkeypatch):
     """`first_decomposable()` skips an epic that already has a native
     sub-issue - the dedup that stops a second pass re-filing children."""
@@ -7135,6 +7142,16 @@ def test_the_review_prompt_names_the_merge_and_the_reject_question():
     assert "merge" not in other_prompt.lower()
 
 
+def test_the_alert_prompt_sends_the_session_to_the_cause():
+    """#308. Stated limit: a prompt is a preference; this proves the text
+    exists, not that the session obeys."""
+    prompt = qops_pickup.alert_prompt(220, "no-auto: withholds a spend")
+    for needle in ("comments", "defect",
+                   "Leaving the row as it is is a valid answer"):
+        assert needle in prompt
+    assert len(prompt) < 1500
+
+
 def test_the_alerter_holds_no_trigger_predicate():
     """ADR-0031 §1: the set is `pending.waiting_on_owner()`, never
     re-derived. No `gate:` literal anywhere, and no `state:` literal other
@@ -7216,6 +7233,44 @@ def test_a_live_alert_session_keeps_its_claim(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup.subprocess, "Popen",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
     assert qops_pickup._alert(["--launch"], root, cfg) == 0
+
+
+def _alerted_once(tmp_path, monkeypatch, labels, now_labels):
+    """A row alerted with `labels`, its session dead, now carrying `now_labels`.
+    Returns the Popen calls of one further pass."""
+    root = _root(tmp_path)
+    clause = "no-auto: withholds advancing this row"
+    qops_pickup.ledger.append(
+        root, "alert_launched",
+        {"issue": 70, "session": "qops #70", "pid": 999, "prior_state": None,
+         "added": [], "seen": {"labels": sorted(labels), "clauses": [clause]}})
+    qops_pickup.ledger.append(root, "alert_released", {"issue": 70, "pid": 999})
+    row = _claimed_row(70, now_labels)
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: False)
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.pending, "waiting_on_owner",
+                        lambda root, rows: [f"#70 row 70 — {clause}"])
+    monkeypatch.setattr(qops_pickup.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+    popens = []
+
+    def fake_popen(cmd, **kw):
+        popens.append(cmd)
+        return types.SimpleNamespace(pid=1000)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen", fake_popen)
+    assert qops_pickup._alert(["--launch"], root, {"repo": "o/r"}) == 0
+    return popens
+
+
+def test_an_alerted_row_left_as_it_was_is_not_alerted_again(tmp_path, monkeypatch):
+    labels = ("epic", "no-auto")
+    assert _alerted_once(tmp_path, monkeypatch, labels, labels) == []
+
+
+def test_an_alerted_row_that_changed_since_is_a_new_edge(tmp_path, monkeypatch):
+    popens = _alerted_once(tmp_path, monkeypatch, ("epic", "no-auto"),
+                           ("epic", "no-auto", "priority:high"))
+    assert len(popens) == 1
 
 
 @pytest.mark.parametrize("alive, launches", [(True, 0), (None, 0), (False, 1)])
@@ -7622,3 +7677,17 @@ def test_adr_0039_answers_the_three_conflicts():
     assert re.search(r"^status:\s*\S+", text, re.MULTILINE)
     for token in ("ADR-0016", "ADR-0020", "protected_branches", "type:epic"):
         assert text.count(token) > 0, f"{token} missing from ADR-0039"
+
+
+def test_an_epic_whose_children_cannot_be_read_is_not_cut_again(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    monkeypatch.setattr(
+        qops_pickup.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "boom"))
+    epic = _row(29, extra=("type:epic",), body=_INTERVIEWED_EPIC_BODY)
+
+    assert qops_pickup.sub_issues(root, "o/r", "29") is None
+    assert qops_pickup.sub_issue_count(root, "o/r", "29") is None
+    assert qops_pickup.first_decomposable(root, "o/r", [epic]) is None
+    assert not qops_pickup.produced_children(root, "o/r", "29", 0)
+    assert qops_pickup.strikes(root, "29") == 0
