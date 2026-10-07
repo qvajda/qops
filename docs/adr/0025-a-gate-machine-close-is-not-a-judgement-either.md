@@ -99,3 +99,15 @@ allowed to imply full closure of a multi-part one) is not taken here.
   machine gate cannot see now closes its own issue unread, same as it already
   merges unread. No new exposure; the fix is the gate's coverage, not the
   restoration of a click that judged nothing.
+
+## Amendment (#317): an owner-merged `gate:taste` row closes
+
+The carve-out above ("closing that one is a judgement") is narrowed. Automerge
+never merges a `gate:taste` PR, so a taste PR not merged by the bot was merged
+by the owner, and that merge *is* the judgement — closing the row judges
+nothing new (the same reasoning #126 applied to `no-auto`). `_closeable()`
+returns true for `gate:taste` when `_merged_by_bot()` is false; a bot-merged
+taste PR still never closes. Accepted cost: a multi-PR taste row closes on its
+first owner merge, as for `gate:machine` (one row, one deliverable, ADR-0027).
+Tests: `test_an_owner_merged_taste_row_is_closed`,
+`test_a_bot_merged_taste_row_is_not_closed`.
