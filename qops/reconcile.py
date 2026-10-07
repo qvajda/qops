@@ -24,7 +24,9 @@ auto-merge is that a green `gate:machine` PR leaves nothing for a human to
 judge — the gate already judged it. The same reasoning applies to closing that
 issue once its PR is merged: there is no taste read left to give. A
 `gate:taste` row still only reaches `state:done`; closing that one is a
-judgement, and stays the owner's. `no-auto` still vetoes the close, same as it
+judgement, and stays the owner's - **amended, #317:** unless the owner
+merged the PR, since automerge never merges a taste PR and that merge *was*
+the judgement. A bot-merged taste PR still never closes. `no-auto` still vetoes the close, same as it
 vetoes the merge.
 """
 
@@ -442,10 +444,14 @@ def advance_behind(repo: str, limit: int = 50, run=gh) -> dict:
 
 def _closeable(labels: set[str], merged_by_bot: bool = True) -> bool:
     """ADR-0025: the gate already judged this row, so closing it judges
-    nothing new. `gate:taste` withholds that, always. `no-auto` withholds it
-    only when the loop is the one that merged - an owner who merged the PR
-    themselves already exercised the authority `no-auto` protects (#126)."""
-    if "gate:machine" not in labels:
+    nothing new. `gate:taste` withholds that only when the loop merged it:
+    automerge never merges a taste PR, so a taste PR not merged by the bot was
+    merged by the owner, and that merge *was* the judgement (#317). `no-auto`
+    withholds it only when the loop is the one that merged - an owner who
+    merged the PR themselves already exercised the authority it protects
+    (#126)."""
+    if "gate:machine" not in labels and not (
+            "gate:taste" in labels and not merged_by_bot):
         return False
     return "no-auto" not in labels or not merged_by_bot
 
@@ -473,7 +479,8 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
             if data.get("state") == "CLOSED":
                 report["skipped"].append((issue, "issue already closed"))
                 continue
-            owner_override = "no-auto" in labels and not merged_by_bot
+            owner_override = not merged_by_bot and (
+                "no-auto" in labels or "gate:taste" in labels)
             if "no-auto" in labels and not owner_override:
                 # #12: a PR merged against this issue's branch number does not
                 # mean this issue's full scope shipped - a partial fix (#32)
@@ -487,8 +494,8 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
                 continue
             close_comment = (
                 f"Closed by `qops reconcile` because you merged PR #{num} "
-                f"(`{branch}`) yourself — `gate:machine` leaves nothing left "
-                f"to judge (ADR-0025, #126). Reopen if the merge only "
+                f"(`{branch}`) yourself — nothing is left to judge "
+                f"(ADR-0025, #126, #317). Reopen if the merge only "
                 f"covered part of this row's scope."
                 if owner_override else
                 f"Closed by `qops reconcile`: `gate:machine`, already "

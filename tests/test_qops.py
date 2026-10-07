@@ -3422,9 +3422,36 @@ def test_an_owner_merged_no_auto_row_still_closes():
                        "mergedBy": {"login": "qvajda", "is_bot": False}}
     gh_taste = FakeGh([owner_pr_taste], taste_no_auto)
     report_taste = reconcilemod.reconcile("o/r", run=gh_taste)
-    assert report_taste["closed"] == [] and report_taste["advanced"] == [("61", "150")]
+    # #317: an owner-merged taste row closes, `no-auto` or not.
+    assert report_taste["closed"] == [("61", "150")]
     names = {l["name"] for l in gh_taste.issues["61"]["labels"]}
     assert "state:done" in names
+
+
+def test_an_owner_merged_taste_row_is_closed():
+    """#317: automerge never merges a `gate:taste` PR, so one the bot did not
+    merge was merged by the owner - the judgement ADR-0025 reserves."""
+    pr = {"number": 148, "headRefName": "fix/59-orphan-gap",
+          "mergedBy": {"login": "qvajda", "is_bot": False}}
+    for state in ("state:building", "state:done"):
+        issues = {"59": {"state": "OPEN", "labels": [{"name": state},
+                                                     {"name": "gate:taste"}]}}
+        gh = FakeGh([pr], issues)
+        report = reconcilemod.reconcile("o/r", run=gh)
+        assert report["closed"] == [("59", "148")]
+        closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
+        assert closes and "you merged PR #148" in closes[0][-1]
+
+
+def test_a_bot_merged_taste_row_is_not_closed():
+    pr = {"number": 148, "headRefName": "fix/59-orphan-gap",
+          "mergedBy": {"login": "github-actions[bot]", "is_bot": True}}
+    issues = {"59": {"state": "OPEN", "labels": [{"name": "state:done"},
+                                                 {"name": "gate:taste"}]}}
+    gh = FakeGh([pr], issues)
+    report = reconcilemod.reconcile("o/r", run=gh)
+    assert report["closed"] == []
+    assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
 
 
 def test_reconcile_skips_a_branch_that_names_no_issue():
