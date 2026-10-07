@@ -31,6 +31,7 @@ vetoes the merge.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -536,6 +537,40 @@ def reconcile(repo: str, limit: int = 50, run=gh) -> dict:
     return report
 
 
+def git(args: list[str], cwd: Path) -> str:
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                       encoding="utf-8")
+    if p.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {p.stderr.strip()}")
+    return p.stdout.strip()
+
+
+def tag_declared_version(root: Path, run=git) -> str | None:
+    """#315: `master`'s declared version with no `v<version>` tag gets one, on
+    `origin/master`. "Declared and untagged" is a predicate, not a decision
+    (ADR-0025). An existing tag is never moved and nothing is forced.
+
+    Applies to the substrate only: a consumer's `pyproject.toml` names its own
+    package, and its version is not ours to tag. It is skipped inside Actions,
+    where the reconcile job holds no `contents: write` and the rendered
+    workflows must not gain one; the cron host is where it runs. Returns the
+    tag cut, or None. Raises when git refuses, so the run fails.
+    """
+    run(["fetch", "origin", "master", "--tags", "--quiet"], root)
+    text = run(["show", "origin/master:pyproject.toml"], root)
+    if not re.search(r'^name\s*=\s*"qops"', text, re.MULTILINE):
+        return None
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if not m:
+        return None
+    tag = f"v{m.group(1)}"
+    if run(["tag", "-l", tag], root):
+        return None
+    run(["tag", tag, "origin/master"], root)
+    run(["push", "origin", f"refs/tags/{tag}"], root)
+    return tag
+
+
 def main(argv: list[str], root: Path, cfg: dict) -> int:
     repo = cfg.get("repo", "")
     if not repo:
@@ -590,10 +625,19 @@ def main(argv: list[str], root: Path, cfg: dict) -> int:
         print(f"update-branch #{issue}: PR #{pr} was BEHIND")
     for issue, why in behind_report["failed"]:
         print(f"BEHIND FAILED #{issue}: {why}", file=sys.stderr)
+    tag_failed = False
+    if not os.environ.get("GITHUB_ACTIONS"):
+        try:
+            tag = tag_declared_version(root)
+            if tag:
+                print(f"tagged {tag} on origin/master")
+        except Exception as exc:  # noqa: BLE001 - reported, then fails the run
+            print(f"TAG FAILED: {exc}", file=sys.stderr)
+            tag_failed = True
     # Either sweep failing fails the run, once, after all three have finished.
     # The origin sweep must not stop the backstop, and must not pass silently
     # either.
-    return 1 if (report["failed"] or origin_report["failed"]
+    return 1 if (tag_failed or report["failed"] or origin_report["failed"]
                  or unblock_report["failed"] or behind_report["failed"]
                  or strike_report["failed"]
                  or retriage_report["failed"]) else 0
