@@ -445,8 +445,10 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     # only has reconcile swap it back, with a comment, hourly.
     # The pid is the claim that holds (#300).
     done = prior_state == "state:done"
-    added = [l for l in ("state:building", "no-auto")
-             if l not in existing and not (done and l == "state:building")]
+    wanted = ["state:building", "no-auto"]
+    if done:
+        del wanted[0]
+    added = [l for l in wanted if l not in existing]
     claim = ["gh", "issue", "edit", str(num)]
     if prior_state and not done:
         claim += ["--remove-label", prior_state]
