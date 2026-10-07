@@ -4660,6 +4660,34 @@ def test_a_new_verb_with_a_version_bump_passes(tmp_path):
         root, base_ref="master", head_ref="fix/182-fixture") == []
 
 
+def _with_template(root, text):
+    """Commit one more change on the fixture's head branch."""
+    path = root / "qops" / "templates" / "scripts" / "x.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "template")
+
+
+def test_a_template_change_without_a_version_bump_fails(tmp_path):
+    """#314: #300, #301 and #304 fixed a rendered script and shipped to no
+    pinned consumer, because only a new verb asked for a bump."""
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.2.0")
+    _with_template(root, "x = 1")
+    problems = install.version_bump_required(root, base_ref="master",
+                                             head_ref="fix/182-fixture")
+    assert any("x.py" in p and "0.2.0" in p for p in problems), problems
+
+
+def test_a_template_change_with_a_version_bump_passes(tmp_path):
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.3.0")
+    _with_template(root, "x = 1")
+    assert install.version_bump_required(
+        root, base_ref="master", head_ref="fix/182-fixture") == []
+
+
 def test_no_new_verb_needs_no_bump(tmp_path):
     root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
                          version_base="0.2.0", version_head="0.2.0")
