@@ -1474,14 +1474,24 @@ def version_bump_required(root: Path, base_ref: str | None = None,
     if base_verbs is None or head_verbs is None:
         return []
     new_verbs = head_verbs - base_verbs
-    if not new_verbs:
+    # #314: a template is what a consumer re-renders, so a fix to one reaches
+    # a pinned consumer only through a new tag, same as a verb does.
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", merge_base, "HEAD", "--", "qops/templates/"],
+        cwd=root, capture_output=True, text=True, timeout=30)
+    changed = diff.stdout.split() if diff.returncode == 0 else []
+    if not new_verbs and not changed:
         return []
     base_version, head_version = _version_at(root, merge_base), _version_at(root, "HEAD")
-    if base_version == head_version:
-        return [f"new verb(s) {sorted(new_verbs)} added but pyproject.toml "
-                f"version is still {head_version} — bump it before this "
-                f"merges (#182)"]
-    return []
+    if base_version != head_version:
+        return []
+    what = []
+    if new_verbs:
+        what.append(f"new verb(s) {sorted(new_verbs)} added")
+    if changed:
+        what.append(f"template(s) {changed} changed")
+    return [f"{' and '.join(what)} but pyproject.toml version is still "
+            f"{head_version} — bump it before this merges (#182, #314)"]
 
 
 # How long one half of R8's proof may take. R8 runs the named targets twice —
