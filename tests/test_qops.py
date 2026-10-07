@@ -7224,7 +7224,8 @@ def test_the_alerter_holds_no_trigger_predicate():
         qops_pickup.alert_prompt, qops_pickup.alert_session_name,
         qops_pickup._reap, qops_pickup._pid_alive))
     assert not re.findall(r"gate:\w+", src)
-    assert re.findall(r"state:\w+", src) == ["state:building"]
+    # `state:done` is the one state the claim leaves alone (#316).
+    assert re.findall(r"state:\w+", src) == ["state:done", "state:building"]
     assert src.count("no-auto") == 1
 
 
@@ -7293,6 +7294,41 @@ def test_a_live_alert_session_keeps_its_claim(tmp_path, monkeypatch):
     monkeypatch.setattr(qops_pickup.subprocess, "Popen",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launched")))
     assert qops_pickup._alert(["--launch"], root, cfg) == 0
+
+
+def test_an_alert_on_a_done_row_keeps_it_done(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    cfg = {"repo": "o/r"}
+    clause = "gate:taste: needs the owner"
+    row = _claimed_row(52, ("state:done",))
+    monkeypatch.setattr(qops_pickup.pending, "backlog", lambda repo: [row])
+    monkeypatch.setattr(qops_pickup.pending, "waiting_on_owner",
+                        lambda root, rows: [f"#52 row 52 — {clause}"])
+    claims = []
+
+    def fake_run(cmd, **kw):
+        claims.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(qops_pickup.subprocess, "run", fake_run)
+    popens = []
+
+    def fake_popen(cmd, **kw):
+        popens.append(cmd)
+        return types.SimpleNamespace(pid=1234)
+    monkeypatch.setattr(qops_pickup.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(qops_pickup, "_pid_alive", lambda pid, image: True)
+
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert len(claims) == 1 and len(popens) == 1
+    assert "--remove-label" not in claims[0]
+    assert "state:building" not in claims[0]
+    launch = [r for r in qops_pickup.ledger.read(root)
+              if r.get("event") == "alert_launched"][-1]
+    assert launch["added"] == ["no-auto"]
+    assert launch["prior_state"] == "state:done"
+
+    assert qops_pickup._alert(["--launch"], root, cfg) == 0
+    assert len(claims) == 1 and len(popens) == 1
 
 
 def _alerted_once(tmp_path, monkeypatch, labels, now_labels):
