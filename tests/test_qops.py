@@ -4571,6 +4571,38 @@ def test_the_tag_agrees_with_the_declared_version():
         f"(this is what v0.1.1 skipped)")
 
 
+def test_an_untagged_declared_version_is_tagged(tmp_path):
+    """#315: a declared version with no tag is cut on origin/master; an
+    existing tag is left alone, and a consumer's own package is not tagged."""
+    from qops import reconcile
+
+    def fake(pyproject, tags):
+        calls = []
+
+        def run(args, cwd):
+            calls.append(args)
+            if args[0] == "show":
+                return pyproject
+            if args[:2] == ["tag", "-l"]:
+                return args[2] if args[2] in tags else ""
+            return ""
+        return run, calls
+
+    src = "name = 'qops'\nversion = '9.9.9'\n".replace("'", '"')
+    run, calls = fake(src, set())
+    assert reconcile.tag_declared_version(tmp_path, run) == "v9.9.9"
+    assert ["tag", "v9.9.9", "origin/master"] in calls
+    assert ["push", "origin", "refs/tags/v9.9.9"] in calls
+
+    run, calls = fake(src, {"v9.9.9"})
+    assert reconcile.tag_declared_version(tmp_path, run) is None
+    assert not [c for c in calls if c[0] in ("push",) or c[:1] == ["tag"] and c[1] != "-l"]
+
+    run, calls = fake(src.replace("qops", "other"), set())
+    assert reconcile.tag_declared_version(tmp_path, run) is None
+    assert not [c for c in calls if c[0] == "push"]
+
+
 def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
     """The half of #40 that made the check vacuous. A workflow that never runs
     on a tag, or runs without fetching tags, cannot ask the question above —
