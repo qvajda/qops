@@ -441,9 +441,16 @@ def _alert(argv: list[str], root: Path, cfg: dict) -> int:
     prior_state = next((l for l in existing if l.startswith("state:")), None)
     # Only what this claim adds: a label the owner put there is never recorded,
     # so `_reap` can never take it away (#301).
-    added = [l for l in ("state:building", "no-auto") if l not in existing]
+    # A done row stays done (#316): its PR is merged, so a swap to building
+    # only has reconcile swap it back, with a comment, hourly.
+    # The pid is the claim that holds (#300).
+    done = prior_state == "state:done"
+    wanted = ["state:building", "no-auto"]
+    if done:
+        del wanted[0]
+    added = [l for l in wanted if l not in existing]
     claim = ["gh", "issue", "edit", str(num)]
-    if prior_state:
+    if prior_state and not done:
         claim += ["--remove-label", prior_state]
     for label in added:
         claim += ["--add-label", label]
