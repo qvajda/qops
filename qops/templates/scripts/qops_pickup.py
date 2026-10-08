@@ -671,7 +671,27 @@ def _run(argv: list[str], root: Path) -> int:
         if struck_out(root, num, labels):
             strike_out(root, num, strikes(root, num, labels), why)
         return rc or 1
+    bump_template_sortie(launch_cwd, cfg.get("default_branch", "master"))
     return 0
+
+
+def bump_template_sortie(wt: Path, base: str) -> None:
+    """#326: the sortie's PR is open on its branch and the worktree is still
+    on it. A template change with an unbumped version is red at `gate`; bump,
+    commit and push here so nobody has to. Best effort - a failure leaves the
+    PR as it was, which is the state the owner already handles."""
+    head = subprocess.run(["git", "branch", "--show-current"], cwd=wt,
+                          capture_output=True, text=True).stdout.strip()
+    if not head:
+        return
+    version = install.bump_when_required(wt, base, head)
+    if version:
+        for argv in (["add", "pyproject.toml", "README.md"],
+                     ["commit", "-m", f"chore: bump the declared version to {version} (#326)"],
+                     ["push", "origin", head]):
+            if subprocess.run(["git", *argv], cwd=wt, capture_output=True,
+                              text=True).returncode:
+                return
 
 
 def native_parent(root: Path, repo: str, num: str) -> dict | None:

@@ -7834,3 +7834,25 @@ def test_an_epic_whose_children_cannot_be_read_is_not_cut_again(tmp_path, monkey
     assert qops_pickup.first_decomposable(root, "o/r", [epic]) is None
     assert not qops_pickup.produced_children(root, "o/r", "29", 0)
     assert qops_pickup.strikes(root, "29") == 0
+
+
+def test_a_template_sortie_is_bumped_before_its_pr(tmp_path):
+    """#326: the unattended sortie never bumps, so the gate refused every
+    template PR. Unbumped template branch is patch-bumped, README pin too;
+    an already-bumped or non-template branch is left alone."""
+    root = _version_repo(tmp_path, _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.2.0")
+    (root / "README.md").write_text('pip install "qops @ git+https://github.com/qvajda/qops@v0.2.0"\n',
+                                    encoding="utf-8")
+    _with_template(root, "x = 1")
+    assert install.bump_when_required(root, "master", "fix/182-fixture") == "0.2.1"
+    assert 'version = "0.2.1"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "qops@v0.2.1" in (root / "README.md").read_text(encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "bump")
+    assert install.bump_when_required(root, "master", "fix/182-fixture") is None
+
+    docs = _version_repo(tmp_path / "d", _VERBS_BASE, _VERBS_BASE,
+                         version_base="0.2.0", version_head="0.2.0")
+    assert install.bump_when_required(docs, "master", "fix/182-fixture") is None
+    assert 'version = "0.2.0"' in (docs / "pyproject.toml").read_text(encoding="utf-8")
