@@ -4616,9 +4616,15 @@ def test_an_untagged_declared_version_is_tagged(tmp_path):
         return run, calls
 
     src = "name = 'qops'\nversion = '9.9.9'\n".replace("'", '"')
+    (tmp_path / "pyproject.toml").write_text(src, encoding="utf-8")
     run, calls = fake(src, set())
     assert reconcile.tag_declared_version(tmp_path, run) == "v9.9.9"
     assert ["tag", "v9.9.9", "origin/master"] in calls
+
+    run, calls = fake(src, set())
+    assert reconcile.tag_declared_version(tmp_path, run, branch="main") == "v9.9.9"
+    assert ["fetch", "origin", "main", "--tags", "--quiet"] in calls
+    assert ["tag", "v9.9.9", "origin/main"] in calls
     assert ["push", "origin", "refs/tags/v9.9.9"] in calls
 
     run, calls = fake(src, {"v9.9.9"})
@@ -4628,6 +4634,20 @@ def test_an_untagged_declared_version_is_tagged(tmp_path):
     run, calls = fake(src.replace("qops", "other"), set())
     assert reconcile.tag_declared_version(tmp_path, run) is None
     assert not [c for c in calls if c[0] == "push"]
+
+
+def test_a_consumer_reconcile_makes_no_tag_git_call(tmp_path):
+    """#324: a consumer (no qops pyproject.toml, default branch `main`) is
+    told apart before any git call - a fetch of a literal `master` failed
+    every consumer's reconcile run."""
+    from qops import reconcile
+
+    def run(args, cwd):
+        raise RuntimeError(f"git {' '.join(args)}: must not be called")
+
+    assert reconcile.tag_declared_version(tmp_path, run, branch="main") is None
+    (tmp_path / "pyproject.toml").write_text('name = "other"\n', encoding="utf-8")
+    assert reconcile.tag_declared_version(tmp_path, run, branch="main") is None
 
 
 def test_the_rendered_test_workflow_can_see_the_tag_it_judges():
