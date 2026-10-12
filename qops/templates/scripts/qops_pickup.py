@@ -350,14 +350,19 @@ def alert_prompt(num: int, clause: str) -> str:
     return (
         f"Read issue #{num} on this repo's tracker - it is waiting on the "
         f"owner ({clause}). Read the issue's comments first: the loop "
-        f"writes why it stopped there, with each failed run's tail. Find "
-        f"the cause, not just the label. If the loop did something it "
-        f"should not have (re-cut a cut epic, retried done work), say so "
-        f"plainly as a qops defect - a label on the row only hides it. "
-        f"State the situation in a few lines, propose exactly one "
-        f"recommendation with at most four options. Leaving the row as it "
-        f"is is a valid answer. Then wait for the owner - this reaches "
-        f"them, it does not act on their behalf.")
+        f"writes why it stopped there, with each failed run's tail. If it "
+        f"did, find the cause, not just the label. If the loop did "
+        f"something it should not have (re-cut a cut epic, retried done "
+        f"work), say so plainly as a qops defect - a label on the row only "
+        f"hides it. If no loop comment explains the stop, the row was filed "
+        f"this way: do its work now - everything up to the one act only the "
+        f"owner may take (spend, publish, write live, grant) - then show "
+        f"the result and ask for that act. Do not ask about labels first; "
+        f"the work is what the owner opened this for. Otherwise state the "
+        f"situation in a few lines, propose exactly one recommendation with "
+        f"at most four options. Leaving the row as it is is a valid answer. "
+        f"Then wait for the owner - this reaches them, it does not act on "
+        f"their behalf.")
 
 
 def alert_argv(num: int, clause: str, name: str) -> list[str]:

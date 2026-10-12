@@ -7259,6 +7259,26 @@ def test_the_alert_prompt_sends_the_session_to_the_cause():
     assert len(prompt) < 1500
 
 
+def test_an_owner_filed_no_auto_alert_does_the_work_before_asking():
+    """ps#258/#259: a row filed `no-auto` (no loop comment) opened a session
+    that discussed its labels and did no work. The session does everything up
+    to the owner's act, then asks for the act. Stated limit: a prompt is a
+    preference; this proves the text exists, not that the session obeys."""
+    prompt = qops_pickup.alert_prompt(258, "no-auto: withholds the build")
+    assert "do its work now" in prompt
+    assert "ask for that act" in prompt
+    assert "Do not ask about labels first" in prompt
+
+
+def test_spec_to_issue_keeps_no_auto_to_the_owners_act():
+    """ps#258/#259: `no-auto` + `gate:taste` filed as caution withheld a
+    research row's whole build. Both twins carry the R6 rule."""
+    for path in SPEC_TO_ISSUE:
+        text = path.read_text(encoding="utf-8")
+        assert "never to pair with `gate:taste`" in text, path
+        assert "including when unsure" in text, path
+
+
 def test_the_alerter_holds_no_trigger_predicate():
     """ADR-0031 §1: the set is `pending.waiting_on_owner()`, never
     re-derived. No `gate:` literal anywhere, and no `state:` literal other
