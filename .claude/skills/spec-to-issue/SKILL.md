@@ -113,10 +113,21 @@ Exactly one `type:`, one `state:` and one `gate:`, from `.qops/config.yml`:
 - `type:` — what the work *is*, not how urgent it is.
 - `state:` — `triage` on import; `planned` once this skill has written acceptance
   criteria and a real gate. Nothing else is yours to set.
-- `gate:` — `machine` if the acceptance criteria are a command, `taste` if a
-  human has to look at it. `gate:none` is legal at import and blocks `ready:auto`
-  until a real gate is chosen. **Do not use `gate:none` on a sortie you just
-  specified** — if you cannot name the gate, the spec is not finished.
+- `gate:` — *when* the owner is needed, not whether (CADR-0015). `taste` only
+  when the artefact is for the owner's eyes and the review at the end is the
+  gate — the row is still built unattended up to that review. Everything else
+  is `machine`, **including when unsure** and including a `type:manual` row
+  whose finish line is checkable. `gate:none` is legal at import and blocks
+  `ready:auto` until a real gate is chosen. **Do not use `gate:none` on a
+  sortie you just specified** — if you cannot name the gate, the spec is not
+  finished.
+- `no-auto` — only when an **act** in the row is the owner's: it spends,
+  publishes, writes to a live system, grants, or acts in the owner's name
+  (R6). Never as caution, never to pair with `gate:taste`, never on a row
+  whose output is files in this repo (research, docs, code behind a PR): the
+  flag withholds the whole build, so such a row does nothing until someone
+  takes it off. A row needing it still states the work before the act, so
+  the session that opens on it does that work first.
 - `mission:` — one, from the configured list.
 - `origin:` — `owner` when the owner is present in this session, `agent` when a
   sortie filed it unattended. Not a judgement: the guard already knows which
