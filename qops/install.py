@@ -1494,6 +1494,35 @@ def version_bump_required(root: Path, base_ref: str | None = None,
             f"{head_version} — bump it before this merges (#182, #314)"]
 
 
+def bump_when_required(root: Path, base_ref: str, head_ref: str) -> str | None:
+    """#326: the unattended sortie branches, commits and stops, so a template
+    PR met `version_bump_required()` red with nobody to answer it. The trigger
+    is that predicate, called rather than re-derived: a docs-only branch gets
+    `[]` and is left alone. Patch-bumps `pyproject.toml` and the README pin in
+    the working tree of `root` (checked out on the sortie's branch) and returns
+    the new version, or None. Committing and pushing is the caller's.
+
+    Two template PRs in flight both bump to the same number; the second one's
+    merge conflict on `pyproject.toml` is an accepted owner touch, resolved by
+    re-bumping above the new base. ADR-0039 §5's minor/major is not this.
+    """
+    if not version_bump_required(root, base_ref, head_ref):
+        return None
+    py = root / "pyproject.toml"
+    text = py.read_text(encoding="utf-8")
+    m = re.search(r'^(version\s*=\s*"\d+\.\d+\.)(\d+)"', text, re.MULTILINE)
+    if not m:
+        return None
+    version = re.search(r'"(.*)', m.group(1)).group(1) + str(int(m.group(2)) + 1)
+    py.write_text(f'{text[:m.start()]}{m.group(1)}{int(m.group(2)) + 1}"{text[m.end():]}',
+                  encoding="utf-8")
+    readme = root / "README.md"
+    if readme.exists():
+        readme.write_text(re.sub(r"(qvajda/qops@v)\d+\.\d+\.\d+", rf"\g<1>{version}",
+                                 readme.read_text(encoding="utf-8")), encoding="utf-8")
+    return version
+
+
 # How long one half of R8's proof may take. R8 runs the named targets twice —
 # once at HEAD, once at the merge base — and a target may be a whole test file
 # rather than one function, so this is a suite's budget, not a test's. 120s fit
